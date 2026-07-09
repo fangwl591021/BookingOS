@@ -1,0 +1,1 @@
+﻿ALTER TABLE services ADD COLUMN point_redeem_limit INTEGER NOT NULL DEFAULT 0;

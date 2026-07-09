@@ -1,0 +1,13 @@
+﻿name = "bookingos"
+main = "src/index.js"
+compatibility_date = "2026-07-07"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bookingos-db"
+database_id = "86120cac-4bf0-4a76-8dea-eacd3287cd15"
+migrations_dir = "migrations"
