@@ -1,18 +1,16 @@
 ﻿# KNOWN_ISSUES.md
 
-## P0: 平台與店家登入設定硬編碼
+## Resolved 2026-07-10: 平台與店家登入設定硬編碼
 
-- 位置：`src/index.js:6-13`
-- 現象：平台帳密、店家預設密碼與正式網址寫在程式碼中。
-- 風險：不符合正式安全要求，密碼更換也需要改程式。
-- 建議：移至 Cloudflare Secrets 或 D1 設定表，並在 `.env.example` 只保留範例名稱。
+- 狀態：已改為 `PLATFORM_ADMIN_USER`、`PLATFORM_ADMIN_PASSWORD`、`PLATFORM_SESSION_SECRET`、`MERCHANT_ADMIN_PASSWORD`。
+- 注意：正式環境必須在 Cloudflare Secrets 設定這些值，缺值時登入會失敗但不會 fallback 到硬編碼密碼。
 
-## P0: LINE Webhook 未驗證簽章
+## Resolved 2026-07-10: LINE Webhook 未驗證簽章
 
-- 位置：`/platform-line-webhook`、`/line-webhook`
-- 現象：目前會讀取 webhook body 並處理事件，但未驗證 `x-line-signature`。
-- 風險：非 LINE 請求也可能寫入好友 CRM、推薦資料或 webhook logs。
-- 建議：用對應 Channel Secret 驗證 HMAC-SHA256 signature。
+- 狀態：平台與店家 webhook 已驗證 `x-line-signature`。
+- 平台 webhook 使用 `PLATFORM_LINE_CHANNEL_SECRET` 或 D1 `platform_line_oa_settings.channel_secret`。
+- 店家 webhook 使用 tenant scoped env、`LINE_CHANNEL_SECRET` 或 D1 `line_oa_settings.channel_secret`。
+- 缺 secret 回 503，簽章錯誤回 401。
 
 ## P1: 多租戶資料隔離仍有舊常數
 

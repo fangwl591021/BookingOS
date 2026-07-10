@@ -1,4 +1,4 @@
-# ARCHITECTURE.md
+﻿# ARCHITECTURE.md
 
 ## 系統範圍
 
@@ -84,11 +84,11 @@ LINE Messaging API / LIFF SDK / LINE Profile API
 
 目前有三種登入或授權概念：
 
-- 平台總後台：`/platform-login`，使用程式內硬編碼帳密。
+- 平台總後台：`/platform-login`，使用 `PLATFORM_ADMIN_USER`、`PLATFORM_ADMIN_PASSWORD`、`PLATFORM_SESSION_SECRET`。
 - 店家後台帳密：`/merchant-login`，使用店家 Admin 手機/Email/姓名或綁定 CRM 名稱 + 預設密碼。
 - 店家 LINE 綁定登入：`/api/merchant/liff-login`，用 LINE UID 對應 `platform_line_contacts` 或 `tenant_admins`。
 
-已知限制：平台帳密與店家預設密碼仍硬編碼在 `src/index.js`，正式交付前必須移至 Cloudflare Secret 或其他安全設定。
+平台帳密與店家預設密碼已改為環境變數 / Cloudflare Secrets；正式部署前必須在 Cloudflare 設定必要 secret。
 
 ## LINE 串接
 
@@ -106,7 +106,7 @@ LINE Messaging API / LIFF SDK / LINE Profile API
 - 設定表：`line_oa_settings`
 - 用途：各店若要使用自己的 LINE OA，可在平台後台填寫 Channel 與 LIFF 欄位。
 
-已知限制：目前 webhook 未實作 LINE 簽章驗證，屬 P0/P1 安全問題。
+平台與店家 webhook 已實作 LINE `x-line-signature` 驗證；缺 Channel Secret 會拒絕 POST。
 
 ## 店家與租戶隔離方式
 
@@ -142,17 +142,26 @@ npx wrangler deploy --config wrangler.toml
 
 ## 環境變數與 Secret
 
-目前程式主要使用 Cloudflare binding `env.DB`。LINE Channel 與 token 是從 D1 設定表讀取，不是環境變數。
+目前程式使用 Cloudflare binding `env.DB`，並支援 Cloudflare vars/secrets 覆蓋平台與店家 LINE Channel Secret / Access Token。
 
 | 名稱 | 用途 | 必填 | 備註 |
 | ---- | ---- | ---- | ---- |
 | DB | Cloudflare D1 binding | 是 | 在 `wrangler.toml` 設定，不放 `.env` |
+| PUBLIC_BASE_URL | 對外網址產生 | 是 | 非機密 Worker var |
+| PLATFORM_ADMIN_USER | 平台帳號 | 是 | Secret 或安全 var |
+| PLATFORM_ADMIN_PASSWORD | 平台密碼 | 是 | Secret |
+| PLATFORM_SESSION_SECRET | 平台 session cookie 值 | 是 | Secret |
+| MERCHANT_ADMIN_PASSWORD | 店家帳密登入密碼 | 是 | Secret |
+| PLATFORM_LINE_CHANNEL_SECRET | 平台 LINE 簽章驗證 | 建議 | Secret，可覆蓋 D1 |
+| PLATFORM_LINE_CHANNEL_ACCESS_TOKEN | 平台 LINE Messaging API | 建議 | Secret，可覆蓋 D1 |
+| LINE_<TENANT>_CHANNEL_SECRET | 指定店 LINE 簽章驗證 | 選用 | Secret，可覆蓋 D1 |
+| LINE_<TENANT>_CHANNEL_ACCESS_TOKEN | 指定店 LINE Messaging API | 選用 | Secret，可覆蓋 D1 |
 
 ## 已知限制
 
 - `src/index.js` 是大型單檔，維護風險高。
-- 平台與店家登入安全仍不足。
-- Webhook 簽章未驗證。
+- 平台與店家登入已改用 env/secret，但正式環境需要確認 Cloudflare secrets 已設定。
+- Webhook 已驗證簽章，仍需 LINE 控制台 Verify 與實際訊息端到端確認。
 - API 格式未統一到 AIWE 建議格式。
 - 沒有自動化測試。
 - 本機 dev 尚未在本輪成功驗證。

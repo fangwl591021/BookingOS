@@ -3,14 +3,117 @@
   "cache-control": "no-store"
 };
 
-const TENANT_ID = "demo-tenant";
-const PLATFORM_ADMIN_USER = "admin";
-const PLATFORM_ADMIN_PASSWORD = "@1234";
 const PLATFORM_SESSION_COOKIE = "bookingos_platform_session";
-const PLATFORM_SESSION_VALUE = "platform-admin-v1";
-const MERCHANT_ADMIN_PASSWORD = "@1234";
 const MERCHANT_SESSION_COOKIE = "bookingos_merchant_session";
-const PUBLIC_BASE_URL = "https://bookingos.fangwl591021.workers.dev";
+const TENANT_ID = "demo-tenant";
+
+function envValue(env, key, fallback = "") {
+  return String((env && env[key]) || fallback || "").trim();
+}
+
+function publicBaseUrl(env, requestOrUrl = null) {
+  const configured = envValue(env, "PUBLIC_BASE_URL").replace(/\/+$/, "");
+  if (configured) return configured;
+  try {
+    const url = requestOrUrl instanceof URL ? requestOrUrl : new URL(requestOrUrl?.url || String(requestOrUrl || ""));
+    return url.origin;
+  } catch (error) {
+    return "";
+  }
+}
+
+function defaultTenantId(env) {
+  return envValue(env, "DEFAULT_TENANT_ID", TENANT_ID) || TENANT_ID;
+}
+
+function platformAdminUser(env) {
+  return envValue(env, "PLATFORM_ADMIN_USER");
+}
+
+function platformAdminPassword(env) {
+  return envValue(env, "PLATFORM_ADMIN_PASSWORD");
+}
+
+function platformSessionValue(env) {
+  return envValue(env, "PLATFORM_SESSION_SECRET");
+}
+
+function merchantAdminPassword(env) {
+  return envValue(env, "MERCHANT_ADMIN_PASSWORD");
+}
+async function secureCompare(actual, expected) {
+  const left = new TextEncoder().encode(String(actual || ""));
+  const right = new TextEncoder().encode(String(expected || ""));
+  const maxLength = Math.max(left.length, right.length, 1);
+  const paddedLeft = new Uint8Array(maxLength);
+  const paddedRight = new Uint8Array(maxLength);
+  paddedLeft.set(left.slice(0, maxLength));
+  paddedRight.set(right.slice(0, maxLength));
+  const digestLeft = await crypto.subtle.digest("SHA-256", paddedLeft);
+  const digestRight = await crypto.subtle.digest("SHA-256", paddedRight);
+  return left.length === right.length && constantTimeEqual(new Uint8Array(digestLeft), new Uint8Array(digestRight));
+}
+
+function constantTimeEqual(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i += 1) diff |= left[i] ^ right[i];
+  return diff === 0;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  try {
+    const binary = atob(String(value || ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch (error) {
+    return new Uint8Array();
+  }
+}
+
+async function verifyLineWebhookSignature(bodyText, signature, channelSecret) {
+  const secret = String(channelSecret || "").trim();
+  const provided = base64ToBytes(signature);
+  if (!secret || !provided.length) return false;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(bodyText || ""));
+  return constantTimeEqual(base64ToBytes(bytesToBase64(new Uint8Array(digest))), provided);
+}
+
+function mergePlatformLineEnv(env, setting = {}) {
+  return {
+    ...setting,
+    basic_id: envValue(env, "PLATFORM_LINE_BASIC_ID", setting.basic_id || ""),
+    channel_id: envValue(env, "PLATFORM_LINE_CHANNEL_ID", setting.channel_id || ""),
+    channel_secret: envValue(env, "PLATFORM_LINE_CHANNEL_SECRET", setting.channel_secret || ""),
+    channel_access_token: envValue(env, "PLATFORM_LINE_CHANNEL_ACCESS_TOKEN", setting.channel_access_token || ""),
+    login_liff_id: envValue(env, "PLATFORM_LINE_LOGIN_LIFF_ID", setting.login_liff_id || ""),
+    registration_liff_id: envValue(env, "PLATFORM_LINE_REGISTRATION_LIFF_ID", setting.registration_liff_id || ""),
+    friend_add_url: envValue(env, "PLATFORM_LINE_FRIEND_ADD_URL", setting.friend_add_url || "")
+  };
+}
+
+function tenantLineEnvPrefix(tenantId) {
+  return String(tenantId || "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function mergeTenantLineEnv(env, setting = {}) {
+  const prefix = tenantLineEnvPrefix(setting.tenant_id || "");
+  const scopedSecret = prefix ? envValue(env, `LINE_${prefix}_CHANNEL_SECRET`) : "";
+  const scopedToken = prefix ? envValue(env, `LINE_${prefix}_CHANNEL_ACCESS_TOKEN`) : "";
+  return {
+    ...setting,
+    channel_secret: scopedSecret || envValue(env, "LINE_CHANNEL_SECRET", setting.channel_secret || ""),
+    channel_access_token: scopedToken || envValue(env, "LINE_CHANNEL_ACCESS_TOKEN", setting.channel_access_token || "")
+  };
+}
 
 const store = {
   name: "安和整復調理",
@@ -58,13 +161,13 @@ export default {
     const activeTenantId = tenantIdFromUrl(url);
 
     if (url.pathname === "/platform-login") {
-      if (request.method === "POST") return handlePlatformLogin(request);
+      if (request.method === "POST") return handlePlatformLogin(request, env);
       return html(renderPlatformLoginPage(url.searchParams.get("error") || ""));
     }
     if (url.pathname === "/platform-logout") {
       return redirectWithCookie("/platform-login", `${PLATFORM_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
     }
-    if ((url.pathname === "/platform" || url.pathname.startsWith("/api/platform")) && !isPlatformAuthenticated(request)) {
+    if ((url.pathname === "/platform" || url.pathname.startsWith("/api/platform")) && !isPlatformAuthenticated(request, env)) {
       if (url.pathname.startsWith("/api/platform")) return Response.json({ ok: false, error: "platform login required" }, { status: 401, headers: jsonHeaders });
       return Response.redirect(new URL("/platform-login", request.url), 302);
     }
@@ -79,7 +182,7 @@ export default {
     if (url.pathname === "/merchant-logout") {
       return redirectWithCookie(`/merchant-login?tenant=${encodeURIComponent(activeTenantId)}`, `${MERCHANT_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
     }
-    if (isMerchantProtectedPath(url.pathname) && !isMerchantAuthenticated(request, activeTenantId)) {
+    if (isMerchantProtectedPath(url.pathname) && !isMerchantAuthenticated(request, activeTenantId, env)) {
       if (url.pathname.startsWith("/api/")) return Response.json({ ok: false, error: "merchant login required" }, { status: 401, headers: jsonHeaders });
       return Response.redirect(new URL(`/merchant-login?tenant=${encodeURIComponent(activeTenantId)}&next=${encodeURIComponent(url.pathname + url.search)}`, request.url), 302);
     }
@@ -205,7 +308,7 @@ export default {
       return renderReferralLanding(url, env);
     }
     if (url.pathname === "/platform") {
-      return html(renderPlatformPage(await platformData(env), await dashboardData(env, todayInTaipei(), activeTenantId)));
+      return html(renderPlatformPage(await platformData(env), await dashboardData(env, todayInTaipei(), activeTenantId), env, request));
     }
     if (url.pathname === "/book") {
       return html(renderCustomerPage(await dashboardData(env, todayInTaipei(), activeTenantId)));
@@ -236,27 +339,35 @@ export default {
   }
 };
 
-function isPlatformAuthenticated(request) {
+function isPlatformAuthenticated(request, env) {
+  const sessionValue = platformSessionValue(env);
+  if (!sessionValue) return false;
   const cookie = request.headers.get("cookie") || "";
-  return cookie.split(";").map((part) => part.trim()).includes(`${PLATFORM_SESSION_COOKIE}=${PLATFORM_SESSION_VALUE}`);
+  return cookie.split(";").map((part) => part.trim()).includes(`${PLATFORM_SESSION_COOKIE}=${encodeURIComponent(sessionValue)}`);
 }
 
 function redirectWithCookie(location, cookie) {
   return new Response(null, { status: 302, headers: { location, "set-cookie": cookie, "cache-control": "no-store" } });
 }
 
-async function handlePlatformLogin(request) {
+async function handlePlatformLogin(request, env) {
   const form = await request.formData();
   const account = String(form.get("account") || "").trim();
   const password = String(form.get("password") || "").trim();
-  if (account !== PLATFORM_ADMIN_USER || password !== PLATFORM_ADMIN_PASSWORD) {
+  const expectedUser = platformAdminUser(env);
+  const expectedPassword = platformAdminPassword(env);
+  const sessionValue = platformSessionValue(env);
+  if (!expectedUser || !expectedPassword || !sessionValue) {
+    return Response.redirect(new URL("/platform-login?error=config", request.url), 302);
+  }
+  if (!(await secureCompare(account, expectedUser)) || !(await secureCompare(password, expectedPassword))) {
     return Response.redirect(new URL("/platform-login?error=1", request.url), 302);
   }
-  return redirectWithCookie("/platform", `${PLATFORM_SESSION_COOKIE}=${PLATFORM_SESSION_VALUE}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax`);
+  return redirectWithCookie("/platform", `${PLATFORM_SESSION_COOKIE}=${encodeURIComponent(sessionValue)}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax`);
 }
 
 function renderPlatformLoginPage(error = "") {
-  const message = error ? `<div class="error">帳號或密碼錯誤</div>` : "";
+  const message = error === "config" ? `<div class="error">平台登入尚未完成安全設定</div>` : (error ? `<div class="error">帳號或密碼錯誤</div>` : "");
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 平台登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#06c755;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:#062216}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Platform Console</small></div></div><h1>平台總後台登入</h1><p>請輸入平台管理員帳密後進入總後台。</p>${message}<form method="post" action="/platform-login"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form></main></body></html>`;
 }
 function isMerchantProtectedPath(pathname) {
@@ -267,8 +378,8 @@ function merchantSessionValue(tenantId) {
   return encodeURIComponent(String(tenantId || TENANT_ID));
 }
 
-function isMerchantAuthenticated(request, tenantId) {
-  if (isPlatformAuthenticated(request)) return true;
+function isMerchantAuthenticated(request, tenantId, env) {
+  if (isPlatformAuthenticated(request, env)) return true;
   const cookie = request.headers.get("cookie") || "";
   return cookie.split(";").map((part) => part.trim()).includes(`${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(tenantId)}`);
 }
@@ -280,11 +391,12 @@ async function handleMerchantLogin(request, env) {
   const account = String(form.get("account") || "").trim();
   const accountDigits = account.replace(/\D/g, "");
   const password = String(form.get("password") || "").trim();
-  if (account === PLATFORM_ADMIN_USER && password === PLATFORM_ADMIN_PASSWORD) {
+  if (platformAdminUser(env) && platformAdminPassword(env) && await secureCompare(account, platformAdminUser(env)) && await secureCompare(password, platformAdminPassword(env))) {
     const redirectTarget = next.startsWith("/") ? `${next}${next.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(requestedTenantId)}` : `/merchant?tenant=${encodeURIComponent(requestedTenantId)}`;
     return redirectWithCookie(redirectTarget, `${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(requestedTenantId)}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax`);
   }
-  if (!env.DB || password !== MERCHANT_ADMIN_PASSWORD || !account) {
+  const expectedMerchantPassword = merchantAdminPassword(env);
+  if (!env.DB || !expectedMerchantPassword || !(await secureCompare(password, expectedMerchantPassword)) || !account) {
     return Response.redirect(new URL(`/merchant-login?tenant=${encodeURIComponent(requestedTenantId)}&next=${encodeURIComponent(next)}&error=1`, request.url), 302);
   }
   const adminSql = "SELECT tenant_id FROM tenant_admins WHERE (status IS NULL OR status = 'active') AND (phone = ? OR REPLACE(REPLACE(phone, '-', ''), ' ', '') = ? OR email = ? OR name = ?)";
@@ -370,7 +482,7 @@ async function completeLineLogin(){
 document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});
 window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await completeLineLogin();}catch(e){setLineStatus("");}});
 </script>` : "";
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><div class="hint">帳密登入可使用店家 Admin 手機、Email、姓名，或已綁定 CRM 的 LINE 名稱；預設密碼：@1234</div></main>${liffScript}</body></html>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><div class="hint">帳密登入可使用店家 Admin 手機、Email、姓名，或已綁定 CRM 的 LINE 名稱；密碼由平台安全設定管理</div></main>${liffScript}</body></html>`;
 }
 function html(body) {
   return new Response(body, {
@@ -670,14 +782,14 @@ function tenantUrlLinks(tenantId) {
   return `<div style="display:flex;gap:6px;flex-wrap:wrap"><a class="mini" href="/book?tenant=${encoded}" target="_blank">客戶端</a><a class="mini" href="/merchant?tenant=${encoded}" target="_blank">店家端</a><a class="mini" href="/settings?tenant=${encoded}" target="_blank">設定</a><a class="mini" href="/customers?tenant=${encoded}" target="_blank">CRM</a></div><small>/book?tenant=${escapeHtmlValue(tenantId || TENANT_ID)}</small>`;
 }
 
-function lineWebhookUrl(tenantId) {
-  return `${PUBLIC_BASE_URL}/line-webhook?tenant=${encodeURIComponent(tenantId || TENANT_ID)}`;
+function lineWebhookUrl(tenantId, env = {}, requestOrUrl = null) {
+  return `${publicBaseUrl(env, requestOrUrl)}/line-webhook?tenant=${encodeURIComponent(tenantId || defaultTenantId(env))}`;
 }
 
-function platformLineWebhookUrl() {
-  return `${PUBLIC_BASE_URL}/platform-line-webhook`;
+function platformLineWebhookUrl(env = {}, requestOrUrl = null) {
+  return `${publicBaseUrl(env, requestOrUrl)}/platform-line-webhook`;
 }
-function renderPlatformPage(platform = { tenants: [], admins: [] }, currentData = { store }) {
+function renderPlatformPage(platform = { tenants: [], admins: [] }, currentData = { store }, env = {}, requestOrUrl = null) {
   const tenantOptions = platform.tenants.map((tenant) => `<option value="${escapeAttrValue(tenant.id)}">${escapeHtmlValue(tenant.name)}｜${escapeHtmlValue(tenant.id)}</option>`).join("");
   const tenantRows = platform.tenants.map((tenant) => {
     const admins = platform.admins.filter((admin) => admin.tenant_id === tenant.id);
@@ -699,7 +811,7 @@ function renderPlatformPage(platform = { tenants: [], admins: [] }, currentData 
   const lineSettingsByTenant = new Map((platform.lineSettings || []).map((setting) => [setting.tenant_id, setting]));
   const lineRows = platform.tenants.map((tenant) => {
     const setting = lineSettingsByTenant.get(tenant.id) || {};
-    const webhook = lineWebhookUrl(tenant.id);
+    const webhook = lineWebhookUrl(tenant.id, env, requestOrUrl);
     return `<div class="form-card line-card"><div class="head" style="margin:-16px -16px 14px"><h2>${escapeHtmlValue(tenant.name || "未命名")}</h2><span>${escapeHtmlValue(tenant.id)}</span></div><form class="form line-form" data-line-form><input type="hidden" name="tenantId" value="${escapeAttrValue(tenant.id)}"><label>Webhook URL<input readonly value="${escapeAttrValue(webhook)}" onclick="this.select()"></label><div class="form-grid"><label>LINE 官方帳號 Basic ID<input name="basicId" placeholder="@xxxxx" value="${escapeAttrValue(setting.basic_id || "")}"></label><label>LINE Login Channel ID<input name="channelId" value="${escapeAttrValue(setting.channel_id || "")}"></label></div><div class="form-grid"><label>Channel Secret<input name="channelSecret" type="password" value="${escapeAttrValue(setting.channel_secret || "")}"></label><label>Messaging API Access Token<input name="channelAccessToken" type="password" value="${escapeAttrValue(setting.channel_access_token || "")}"></label></div><div class="form-grid"><label>LIFF ID<input name="liffId" placeholder="客戶或店家使用" value="${escapeAttrValue(setting.liff_id || "")}"></label><label>登入 LIFF ID<input name="loginLiffId" placeholder="店家登入註冊用" value="${escapeAttrValue(setting.login_liff_id || "")}"></label></div><label>Rich Menu ID<input name="richMenuId" value="${escapeAttrValue(setting.rich_menu_id || "")}"></label><div class="check-grid"><label><input type="checkbox" name="webhookEnabled" ${Number(setting.webhook_enabled ?? 1) ? "checked" : ""}>啟用 Webhook</label><label><input type="checkbox" name="loginEnabled" ${Number(setting.login_enabled || 0) ? "checked" : ""}>啟用店家 LINE 登入</label><label><input type="checkbox" name="registrationEnabled" ${Number(setting.registration_enabled || 0) ? "checked" : ""}>啟用店家註冊管理</label></div><label>備註<textarea name="notes" placeholder="例如：此 OA 負責店家登入、審核通知、試用轉正式提醒">${escapeHtmlValue(setting.notes || "")}</textarea></label><button class="primary" type="submit">儲存 LINE OA 參數</button></form></div>`;
   }).join("");
   const platformContacts = platform.platformContacts || [];
@@ -731,10 +843,11 @@ function renderPlatformPage(platform = { tenants: [], admins: [] }, currentData 
     return `<tr><td>${escapeHtmlValue(log.created_at || "-")}</td><td><span class="badge ${badgeClass}">${escapeHtmlValue(status)}</span><small>${escapeHtmlValue(log.method || "POST")}｜簽章 ${Number(log.signature_present || 0) ? "有" : "無"}</small></td><td>${Number(log.event_count || 0)}<small>${escapeHtmlValue(log.first_event_type || "-")}</small></td><td>${escapeHtmlValue(log.first_user_id || "-")}<small>${escapeHtmlValue(log.first_message || "-")}</small></td><td>${Number(log.saved_contacts || 0)}</td><td>${escapeHtmlValue(log.error || "-")}<small>${escapeHtmlValue(log.body_preview || "")}</small></td></tr>`;
   }).join("");
   const platformLineOA = platform.platformLineOA || {};
-  const platformWebhook = platformLineWebhookUrl();
+  const platformWebhook = platformLineWebhookUrl(env, requestOrUrl);
   const platformFriendUrl = platformLineOA.friend_add_url || (platformLineOA.basic_id ? `https://line.me/R/ti/p/${encodeURIComponent(platformLineOA.basic_id)}` : "");
-  const platformApplyUrl = `${PUBLIC_BASE_URL}/apply`;
-  const platformTrialUrl = `${PUBLIC_BASE_URL}/trial`;
+  const baseUrl = publicBaseUrl(env, requestOrUrl);
+  const platformApplyUrl = `${baseUrl}/apply`;
+  const platformTrialUrl = `${baseUrl}/trial`;
   const platformLineSection = `<div class="form-card"><div class="head" style="margin:-16px -16px 14px"><h2>平台官方帳號</h2><span>業主加入、註冊、登入</span></div><form class="form" data-platform-line-form><label>Webhook URL<input readonly value="${escapeAttrValue(platformWebhook)}" onclick="this.select()"></label><div class="form-grid"><label>LINE 官方帳號 Basic ID<input name="basicId" placeholder="@xxxxx" value="${escapeAttrValue(platformLineOA.basic_id || "")}"></label><label>LINE Login Channel ID<input name="channelId" value="${escapeAttrValue(platformLineOA.channel_id || "")}"></label></div><div class="form-grid"><label>Channel Secret<input name="channelSecret" type="password" value="${escapeAttrValue(platformLineOA.channel_secret || "")}"></label><label>Messaging API Access Token<input name="channelAccessToken" type="password" value="${escapeAttrValue(platformLineOA.channel_access_token || "")}"></label></div><div class="form-grid"><label>登入 LIFF ID<input name="loginLiffId" placeholder="店家登入用 LIFF" value="${escapeAttrValue(platformLineOA.login_liff_id || "")}"></label><label>註冊 LIFF ID<input name="registrationLiffId" placeholder="店家註冊用 LIFF" value="${escapeAttrValue(platformLineOA.registration_liff_id || "")}"></label></div><div class="form-grid"><label>加入好友網址<input name="friendAddUrl" placeholder="https://line.me/R/ti/p/@xxxxx" value="${escapeAttrValue(platformFriendUrl)}"></label><label>Rich Menu ID<input name="richMenuId" value="${escapeAttrValue(platformLineOA.rich_menu_id || "")}"></label></div><div class="form-grid"><label>正式申請網址<input readonly value="${escapeAttrValue(platformApplyUrl)}" onclick="this.select()"></label><label>試用申請網址<input readonly value="${escapeAttrValue(platformTrialUrl)}" onclick="this.select()"></label></div><div class="check-grid"><label><input type="checkbox" name="webhookEnabled" ${Number(platformLineOA.webhook_enabled ?? 1) ? "checked" : ""}>啟用平台 Webhook</label><label><input type="checkbox" name="ownerLoginEnabled" ${Number(platformLineOA.owner_login_enabled || 0) ? "checked" : ""}>啟用業主 LINE 登入</label><label><input type="checkbox" name="ownerRegistrationEnabled" ${Number(platformLineOA.owner_registration_enabled ?? 1) ? "checked" : ""}>啟用業主註冊管理</label></div><label>備註<textarea name="notes" placeholder="此 OA 負責：業主加入好友、店家註冊、試用申請、登入與審核通知。">${escapeHtmlValue(platformLineOA.notes || "")}</textarea></label><button class="primary" type="submit">儲存平台官方帳號參數</button></form></div>`;
   const pendingOrders = (platform.orders || []).filter((order) => order.status === "pending");  const activeTenants = platform.tenants.filter((tenant) => (tenant.status || "active") === "active").length;
   const totalBookings = platform.tenants.reduce((sum, tenant) => sum + Number(tenant.booking_count || 0), 0);
@@ -1235,7 +1348,7 @@ async function savePlatformLineOASettings(request, env) {
       payload.ownerRegistrationEnabled ? 1 : 0,
       String(payload.notes || "").trim() || null
     ).run();
-    return Response.json({ ok: true, webhookUrl: platformLineWebhookUrl() }, { headers: jsonHeaders });
+    return Response.json({ ok: true, webhookUrl: platformLineWebhookUrl(env, request) }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
@@ -1282,7 +1395,7 @@ async function savePlatformLineOA(request, env) {
       payload.registrationEnabled ? 1 : 0,
       String(payload.notes || "").trim() || null
     ).run();
-    return Response.json({ ok: true, tenantId, webhookUrl: lineWebhookUrl(tenantId) }, { headers: jsonHeaders });
+    return Response.json({ ok: true, tenantId, webhookUrl: lineWebhookUrl(tenantId, env, request) }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
@@ -1291,24 +1404,24 @@ async function savePlatformLineOA(request, env) {
 async function fetchPlatformLineProfile(env, userId) {
   if (!env.DB || !userId) return {};
   try {
-    const settings = await env.DB.prepare("SELECT channel_access_token FROM platform_line_oa_settings WHERE id = 'platform' LIMIT 1").first();
+    const settings = await platformLineSettings(env);
     const token = String(settings?.channel_access_token || "").trim();
     if (!token) return {};
     const res = await fetch("https://api.line.me/v2/bot/profile/" + encodeURIComponent(userId), { headers: { authorization: "Bearer " + token } });
     if (!res.ok) return {};
     const profile = await res.json();
-    return { displayName: String(profile.displayName || "").trim(), pictureUrl: String(profile.pictureUrl || "").trim() };
+    return { displayName: profile.displayName || "", pictureUrl: profile.pictureUrl || "" };
   } catch (error) {
     return {};
   }
 }
 
-function referralLinkFor(lineUserId) {
-  return `${PUBLIC_BASE_URL}/refer?ref=${encodeURIComponent(lineUserId)}`;
+function referralLinkFor(lineUserId, env = {}, requestOrUrl = null) {
+  return `${publicBaseUrl(env, requestOrUrl)}/refer?ref=${encodeURIComponent(lineUserId)}`;
 }
-function referralLiffUrlFor(lineUserId, setting = {}) {
+function referralLiffUrlFor(lineUserId, setting = {}, env = {}, requestOrUrl = null) {
   const liffId = String(setting.registration_liff_id || setting.login_liff_id || "").trim();
-  return liffId ? `https://liff.line.me/${encodeURIComponent(liffId)}?ref=${encodeURIComponent(lineUserId)}` : referralLinkFor(lineUserId);
+  return liffId ? `https://liff.line.me/${encodeURIComponent(liffId)}?ref=${encodeURIComponent(lineUserId)}` : referralLinkFor(lineUserId, env, requestOrUrl);
 }
 function referralRefFromUrl(url) {
   const direct = String(url.searchParams.get("ref") || "").trim();
@@ -1319,7 +1432,7 @@ function referralRefFromUrl(url) {
   try { candidates.push(decodeURIComponent(state)); } catch (error) {}
   for (const candidate of candidates) {
     try {
-      const parsed = new URL(candidate, PUBLIC_BASE_URL);
+      const parsed = new URL(candidate, publicBaseUrl({}, "https://bookingos.local"));
       const ref = String(parsed.searchParams.get("ref") || "").trim();
       if (ref) return ref;
     } catch (error) {}
@@ -1340,11 +1453,18 @@ function isShareReferralKeyword(text) {
   return ["會員分享", "分享朋友", "分享好友", "推薦朋友", "推薦好友"].includes(String(text || "").trim());
 }
 async function platformLineSettings(env) {
-  if (!env.DB) return {};
-  return await env.DB.prepare("SELECT basic_id, friend_add_url, channel_access_token, login_liff_id, registration_liff_id FROM platform_line_oa_settings WHERE id = 'platform' LIMIT 1").first() || {};
+  if (!env.DB) return mergePlatformLineEnv(env, {});
+  const setting = await env.DB.prepare("SELECT basic_id, friend_add_url, channel_id, channel_secret, channel_access_token, login_liff_id, registration_liff_id FROM platform_line_oa_settings WHERE id = 'platform' LIMIT 1").first() || {};
+  return mergePlatformLineEnv(env, setting);
+}
+
+async function tenantLineSettings(env, tenantId) {
+  if (!env.DB || !tenantId) return mergeTenantLineEnv(env, { tenant_id: tenantId || "" });
+  const setting = await env.DB.prepare("SELECT tenant_id, channel_id, channel_secret, channel_access_token, basic_id, liff_id, login_liff_id FROM line_oa_settings WHERE tenant_id = ? LIMIT 1").bind(tenantId).first() || { tenant_id: tenantId };
+  return mergeTenantLineEnv(env, setting);
 }
 function platformFriendAddUrl(setting = {}) {
-  return setting.friend_add_url || (setting.basic_id ? `https://line.me/R/ti/p/${encodeURIComponent(setting.basic_id)}` : "https://line.me/R/ti/p/@549tajqk");
+  return setting.friend_add_url || (setting.basic_id ? `https://line.me/R/ti/p/${encodeURIComponent(setting.basic_id)}` : "");
 }
 async function replyPlatformLineMessages(env, replyToken, messages = [], setting = null) {
   const token = String((setting || await platformLineSettings(env)).channel_access_token || "").trim();
@@ -1363,7 +1483,7 @@ async function replyReferralShare(env, event) {
   const userId = String(event?.source?.userId || "").trim();
   if (!userId) return false;
   const setting = await platformLineSettings(env);
-  const referralUrl = referralLiffUrlFor(userId, setting);
+  const referralUrl = referralLiffUrlFor(userId, setting, env);
   const qrUrl = referralQrUrl(referralUrl);
   const shareUrl = lineShareUrl(`掃碼加入 BookingOS 會員` + "\n" + referralUrl);
   const flex = {
@@ -1396,7 +1516,7 @@ async function recordReferralClick(env, request, referrerLineUserId, referredLin
   if (!env.DB || !referrerLineUserId) return "";
   await ensurePlatformSchema(env);
   const id = "ref-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
-  const url = request ? new URL(request.url).toString() : referralLinkFor(referrerLineUserId);
+  const url = request ? new URL(request.url).toString() : referralLinkFor(referrerLineUserId, env);
   const userAgent = request ? String(request.headers.get("user-agent") || "").slice(0, 500) : "";
   await env.DB.prepare(`
     INSERT INTO platform_referrals (id, referrer_line_user_id, referred_line_user_id, status, source, landing_url, user_agent, created_at, updated_at)
@@ -1532,7 +1652,7 @@ async function processPlatformLineWebhook(env, { method = "POST", signature = ""
 }
 async function handlePlatformLineWebhook(request, env, ctx) {
   try {
-    const webhookUrl = platformLineWebhookUrl();
+    const webhookUrl = platformLineWebhookUrl(env, request);
     if (request.method === "GET") {
       return new Response(JSON.stringify({ ok: true, service: "BookingOS platform LINE OA webhook", scope: "platform", webhookUrl, purpose: "owner-registration-login", accepts: ["POST"] }), { headers: jsonHeaders });
     }
@@ -1541,6 +1661,13 @@ async function handlePlatformLineWebhook(request, env, ctx) {
     }
     const signature = request.headers.get("x-line-signature") || "";
     const bodyText = await request.text();
+    const lineSetting = await platformLineSettings(env);
+    if (!String(lineSetting.channel_secret || "").trim()) {
+      return new Response(JSON.stringify({ ok: false, error: "platform LINE channel secret is not configured" }), { status: 503, headers: jsonHeaders });
+    }
+    if (!(await verifyLineWebhookSignature(bodyText, signature, lineSetting.channel_secret))) {
+      return new Response(JSON.stringify({ ok: false, error: "invalid LINE signature" }), { status: 401, headers: jsonHeaders });
+    }
     let eventCount = 0;
     try {
       const payload = JSON.parse(bodyText || "{}");
@@ -1553,12 +1680,14 @@ async function handlePlatformLineWebhook(request, env, ctx) {
   } catch (error) {
     return new Response(JSON.stringify({ ok: false, error: String(error && error.message ? error.message : error) }), { status: 500, headers: jsonHeaders });
   }
-}async function handleLineWebhook(request, env) {
+}
+
+async function handleLineWebhook(request, env) {
   try {
     const url = new URL(request.url);
     const tenantFromPath = url.pathname.startsWith("/line-webhook/") ? decodeURIComponent(url.pathname.replace("/line-webhook/", "").split("/")[0] || "") : "";
     const tenantId = String(url.searchParams.get("tenant") || tenantFromPath || TENANT_ID).trim() || TENANT_ID;
-    const webhookUrl = `${PUBLIC_BASE_URL}/line-webhook?tenant=${encodeURIComponent(tenantId)}`;
+    const webhookUrl = lineWebhookUrl(tenantId, env, request);
     if (request.method === "GET") {
       return new Response(JSON.stringify({ ok: true, service: "BookingOS LINE OA webhook", tenantId, webhookUrl, accepts: ["POST"] }), { headers: jsonHeaders });
     }
@@ -1567,6 +1696,13 @@ async function handlePlatformLineWebhook(request, env, ctx) {
     }
     const signature = request.headers.get("x-line-signature") || "";
     const bodyText = await request.text();
+    const lineSetting = await tenantLineSettings(env, tenantId);
+    if (!String(lineSetting.channel_secret || "").trim()) {
+      return new Response(JSON.stringify({ ok: false, error: "tenant LINE channel secret is not configured" }), { status: 503, headers: jsonHeaders });
+    }
+    if (!(await verifyLineWebhookSignature(bodyText, signature, lineSetting.channel_secret))) {
+      return new Response(JSON.stringify({ ok: false, error: "invalid LINE signature" }), { status: 401, headers: jsonHeaders });
+    }
     let eventCount = 0;
     try {
       const payload = JSON.parse(bodyText || "{}");
@@ -1583,9 +1719,9 @@ async function renderReferralLanding(url, env) {
   const setting = env.DB ? await platformLineSettings(env) : {};
   const addUrl = platformFriendAddUrl(setting);
   const liffId = String(setting.registration_liff_id || setting.login_liff_id || "").trim();
-  const referralUrl = referralLiffUrlFor(referrer, setting);
+  const referralUrl = referralLiffUrlFor(referrer, setting, env, url);
   const qrUrl = referralQrUrl(referralUrl);
-  const canonicalUrl = referralLinkFor(referrer);
+  const canonicalUrl = referralLinkFor(referrer, env, url);
   const liffScript = liffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
 const ref=${JSON.stringify(referrer)};
 const liffId=${JSON.stringify(liffId)};

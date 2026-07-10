@@ -11,3 +11,6 @@ binding = "DB"
 database_name = "bookingos-db"
 database_id = "86120cac-4bf0-4a76-8dea-eacd3287cd15"
 migrations_dir = "migrations"
+[vars]
+PUBLIC_BASE_URL = "https://bookingos.fangwl591021.workers.dev"
+DEFAULT_TENANT_ID = "demo-tenant"

@@ -14,6 +14,13 @@
 - 新增 `KNOWN_ISSUES.md`，列出目前安全、tenant、方案限制與測試風險。
 - 新增 `.env.example`，說明目前 Cloudflare binding 與 LINE 設定存放位置。
 
+### Security
+
+- 平台帳密、店家預設密碼與 session secret 改為 Cloudflare env/secret。
+- `PUBLIC_BASE_URL` 與 `DEFAULT_TENANT_ID` 改為 Worker vars。
+- 平台 LINE token/secret 支援 env 覆蓋 D1 設定。
+- 店家 LINE token/secret 支援全域與 tenant-scoped env 覆蓋。
+- `/platform-line-webhook` 與 `/line-webhook` 新增 LINE signature 驗證。
 ### Changed
 
 - 本輪未修改業務功能與現有流程。
@@ -28,6 +35,6 @@
 
 ### Not Verified
 
-- 本輪未正式部署。
+- 已正式部署至 Cloudflare Workers，Version ID：`ce4b22a4-c3f1-4df5-9b2f-39f0a62c0c61`。
 - 本輪未完整測試客戶預約端到端流程。
 - `npm run check` 因本機 sandbox ACL 問題未完成，但等價語法檢查已通過。

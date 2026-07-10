@@ -31,7 +31,7 @@
 | 店家後台 `/merchant` | 部分完成 | 可查看預約、CRM、店家資料；管理動作需補強。 |
 | 店家設定 `/settings` | 部分完成 | 可設定店家、服務、人員、資源；試用版方案限制需補強。 |
 | 平台總後台 `/platform` | 部分完成 | 已有店家、試用、收款、審核、LINE OA、好友 CRM。 |
-| LINE 平台 Webhook | 部分完成 | 可收好友資料與分享推薦；尚未驗證簽章。 |
+| LINE 平台 Webhook | 部分完成 | 已接上簽章驗證；仍需用 LINE 控制台 Verify 與實際訊息端到端確認。 |
 | 店家 LINE OA | 雛形 | 有設定欄位與 webhook 入口；尚未完整驗證各店獨立帳號流程。 |
 
 ## 尚未完成
@@ -48,15 +48,16 @@
 
 | 等級 | 風險 | 說明 |
 | ---- | ---- | ---- |
-| P0 | 登入密碼與 base URL 硬編碼 | `src/index.js` 仍含平台帳密、店家預設密碼與正式網址。 |
-| P0 | LINE Webhook 未驗證簽章 | `/platform-line-webhook` 與 `/line-webhook` 接收事件時未檢查 LINE signature。 |
+| Done | Task 001 安全部署 | Cloudflare Secrets 已設定，Worker 已正式部署。 |
 | P1 | Tenant 隔離不完全 | 部分函式仍使用 `TENANT_ID` 常數，可能讓非預設店資料混用。 |
 | P1 | 方案限制未集中控管 | 試用版仍可能新增超額服務人員，需統一在 API 層阻擋。 |
 | P1 | 缺少端到端測試 | 預約、取消、點數、推薦與付款狀態需建立最小驗證清單。 |
 
 ## 本輪未完成事項
 
-- 未改動任何業務流程。
-- 未部署正式版本。
+- Task 001 程式面已完成：Base URL、平台帳密、店家密碼、LINE token/secret 均改為 env/secret 或 D1 設定來源。
+- Webhook Signature 驗證已完成，未通過會回 401。
+- 未改動任何預約業務流程。
+- 已正式部署至 Cloudflare Workers，Version ID：`ce4b22a4-c3f1-4df5-9b2f-39f0a62c0c61`。
 - 未將任何模組搬到 AIWE Dev System。
 - `npm run check` 因本機 sandbox ACL 問題未完成，但等價的 `node --check src/index.js` 已成功。
