@@ -235,7 +235,7 @@ export default {
     }
     if (url.pathname === "/member-login") {
       const liffId = await customerLoginLiffId(env, activeTenantId);
-      return html(renderCustomerLoginPage(await dashboardData(env, todayInTaipei(), activeTenantId), url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
+      return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
     }
     if (url.pathname === "/api/customer/liff-login" && request.method === "POST") {
       return handleCustomerLiffLogin(request, env);
@@ -1745,7 +1745,7 @@ const statusBox=document.querySelector("#login-status");
 let liffReady=null;
 function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
 async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
-async function login(){try{setStatus("Opening LINE login...");if(!shouldInitLiff&&liffEntryUrl){location.href=liffEntryUrl;return;}setStatus("Checking LINE identity...");await initLiff();if(!liff.isLoggedIn()){setStatus("Open from LINE member link");return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
+async function login(){try{setStatus("Opening LINE login...");if(!shouldInitLiff){try{await initLiff();}catch(e){if(liffEntryUrl){location.href=liffEntryUrl;return;}throw e;}}else{await initLiff();}setStatus("Checking LINE identity...");if(!liff.isLoggedIn()){if(liffEntryUrl){location.href=liffEntryUrl;return;}setStatus("Open from LINE member link");return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
 document.querySelector("#line-login")?.addEventListener("click",login);
 document.querySelector("#line-register")?.addEventListener("click",login);
 window.addEventListener("load",async()=>{try{if(!shouldInitLiff)return;await initLiff();if(liff.isLoggedIn())await login();else setStatus("Tap LINE login / register");}catch(error){setStatus("Open from LINE App member link");}});
