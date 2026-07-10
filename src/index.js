@@ -1703,9 +1703,17 @@ function customerLiffEntryUrl(liffId, tenantId, nextPath) {
   return safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${safeTenant}&next=${safeNext}` : `/member-login?tenant=${safeTenant}&next=${safeNext}`;
 }
 
+function compactInlineStore(storeData = store) {
+  const logoUrl = String(storeData.logoUrl || "");
+  return {
+    ...storeData,
+    logoUrl: logoUrl.length > 4096 ? "" : logoUrl
+  };
+}
+
 function renderCustomerPage(data = { store, services, businessHours, staffMembers, resourceTypes }) {
   const tenantId = data.store?.tenantId || TENANT_ID;
-const payload = JSON.stringify({ tenantId, store: data.store || store, services: data.services || services, staffMembers: data.staffMembers || staffMembers, today: todayInTaipei() }).replace(/</g, "\\u003c");
+const payload = JSON.stringify({ tenantId, store: compactInlineStore(data.store || store), services: data.services || services, staffMembers: data.staffMembers || staffMembers, today: todayInTaipei() }).replace(/</g, "\\u003c");
   const memberHref = `/member-login?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(`/member?tenant=${encodeURIComponent(tenantId)}`)}`;
   const pointsHref = `/member-login?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(`/points?tenant=${encodeURIComponent(tenantId)}`)}`;
   const historyHref = `/member-login?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(`/history?tenant=${encodeURIComponent(tenantId)}`)}`;
