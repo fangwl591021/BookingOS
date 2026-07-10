@@ -878,6 +878,13 @@ function merchantLoginJsonError(code, message, status = 400, data = {}) {
   return Response.json({ ok: false, success: false, error: { code, message }, data }, { status, headers: jsonHeaders });
 }
 
+function maskPublicId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 8) return text.slice(0, 2) + "***";
+  return text.slice(0, 6) + "***" + text.slice(-4);
+}
+
 async function shortHash(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
@@ -1107,10 +1114,12 @@ async function handleMerchantLogin(request, env) {
   return redirectWithCookie(redirectTarget, sessionCookie);
 }
 async function merchantLoginLiffId(env) {
+  const envLiffId = envValue(env, "MERCHANT_LIFF_ID");
+  if (envLiffId) return envLiffId;
   if (!env.DB) return "";
   try {
-    const row = await env.DB.prepare("SELECT login_liff_id, registration_liff_id FROM platform_line_oa_settings WHERE id = 'platform' LIMIT 1").first();
-    return String(row?.login_liff_id || row?.registration_liff_id || "").trim();
+    const row = await env.DB.prepare("SELECT login_liff_id FROM platform_line_oa_settings WHERE id = 'platform' LIMIT 1").first();
+    return String(row?.login_liff_id || "").trim();
   } catch (error) {
     return "";
   }
@@ -1313,14 +1322,12 @@ async function handleMerchantLiffLogin(request, env) {
 async function customerLiffConfig(env, tenantId) {
   if (env.DB) await ensurePlatformSchema(env);
   const platformSetting = await platformLineSettings(env);
-  const platformRegistrationLiffId = String(platformSetting?.registration_liff_id || "").trim();
   const platformChannelId = String(platformSetting?.channel_id || "").trim();
-  if (platformRegistrationLiffId && platformChannelId) return { liffId: platformRegistrationLiffId, channelId: platformChannelId, source: "platform-registration" };
+  const envCustomerLiffId = envValue(env, "CUSTOMER_LIFF_ID");
+  if (envCustomerLiffId && platformChannelId) return { liffId: envCustomerLiffId, channelId: platformChannelId, source: "env-customer" };
 
-  const tenantSetting = await tenantLineSettings(env, tenantId);
-  const tenantLiffId = String(tenantSetting?.liff_id || "").trim();
-  const tenantChannelId = String(tenantSetting?.channel_id || "").trim();
-  if (tenantLiffId && tenantChannelId) return { liffId: tenantLiffId, channelId: tenantChannelId, source: "tenant" };
+  const platformRegistrationLiffId = String(platformSetting?.registration_liff_id || "").trim();
+  if (platformRegistrationLiffId && platformChannelId) return { liffId: platformRegistrationLiffId, channelId: platformChannelId, source: "platform-registration" };
 
   return { liffId: "", channelId: platformChannelId, source: "not-configured" };
 }
@@ -1333,7 +1340,9 @@ async function customerLoginLiffId(env, tenantId) {
 async function verifyCustomerLiffLineSubject(env, tenantId, payload) {
   const config = await customerLiffConfig(env, tenantId);
   const idToken = String(payload?.id_token || payload?.idToken || "").trim();
-  const result = idToken ? await verifyLineIdToken(idToken, config.channelId) : await verifyLineAccessToken(String(payload?.access_token || payload?.accessToken || "").trim(), config.channelId);
+  const accessToken = String(payload?.access_token || payload?.accessToken || "").trim();
+  const result = idToken ? await verifyLineIdToken(idToken, config.channelId) : await verifyLineAccessToken(accessToken, config.channelId);
+  console.log(JSON.stringify({ scope: "customer_liff", page_type: "customer", liff_source: config.source, liff_id: maskPublicId(config.liffId), id_token_exists: !!idToken, access_token_exists: !!accessToken, verify_status: result.ok ? "ok" : result.code, expected_channel_id: maskPublicId(config.channelId) }));
   if (!result.ok) {
     const map = { LIFF_TOKEN_REQUIRED: "CUSTOMER_LIFF_TOKEN_REQUIRED", LIFF_TOKEN_INVALID: "CUSTOMER_LIFF_TOKEN_INVALID", LIFF_TOKEN_EXPIRED: "CUSTOMER_LIFF_TOKEN_EXPIRED", LIFF_AUDIENCE_INVALID: "CUSTOMER_LIFF_AUDIENCE_INVALID", LIFF_PROVIDER_SCOPE_INVALID: "CUSTOMER_LIFF_TOKEN_INVALID" };
     return customerAuthError(map[result.code] || "CUSTOMER_LIFF_TOKEN_INVALID", result.message || "LINE token is invalid", result.status || 401);

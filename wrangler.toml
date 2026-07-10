@@ -1,4 +1,4 @@
-﻿name = "bookingos"
+name = "bookingos"
 main = "src/index.js"
 compatibility_date = "2026-07-07"
 workers_dev = true
@@ -16,5 +16,7 @@ PUBLIC_BASE_URL = "https://bookingos.fangwl591021.workers.dev"
 DEFAULT_TENANT_ID = "demo-tenant"
 MERCHANT_TENANT_SELECTION_TTL_SECONDS = "300"
 MERCHANT_LIFF_IDENTITY_LOGIN_ENABLED = "true"
+MERCHANT_LIFF_ID = "2010657278-FgmMUI2U"
 CUSTOMER_SESSION_TTL_SECONDS = "604800"
 CUSTOMER_LIFF_IDENTITY_LOGIN_ENABLED = "true"
+CUSTOMER_LIFF_ID = "2010657278-9wbTln1T"
