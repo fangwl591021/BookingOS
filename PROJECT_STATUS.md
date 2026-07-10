@@ -1,4 +1,4 @@
-﻿# PROJECT_STATUS.md
+# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -68,3 +68,10 @@
 - 已修正客戶、預約、點數與介紹人 JOIN 條件，避免只靠 id 串到其他 tenant。
 - 正式網址 smoke test：`demo-tenant` 查 `0927136847` 可回會員與 31 點；`trial-mrd14uce`、`trial-mrdj8djy` 同手機皆回 `profile:null`。
 - 已部署 Cloudflare Workers Version ID：`5ba8a1ad-14ab-45f4-beb2-55f668569550`。
+
+## Tenant Audit 2026-07-10
+
+- 已完成唯讀掃描並產生 `docs/TENANT_AUDIT.md`。
+- `SELECT ... FROM bookings` 未發現缺少 tenant filter 的查詢。
+- 已列出登入反查 tenant 的 P0 / REVIEW 風險：`tenant_admins` 全域反查可能在多店同帳號時登入錯店。
+- 本輪尚未修補，下一步應先處理店家帳密登入與 LIFF 登入的多 tenant 選店規則，再建立 tenant smoke test。
