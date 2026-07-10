@@ -1,4 +1,4 @@
-# Merchant Tenant Picker
+﻿# Merchant Tenant Picker
 
 Date: 2026-07-10
 Status: Task 009 implemented. No migration and no session table.
@@ -179,3 +179,7 @@ Local D1 test data used only `test-task009-*` rows and was deleted after testing
 - Bad selection token: 401.
 - Bad merchant session cookie: rejected.
 - Remote Task 009 test rows: 0.
+
+## Task 010 LIFF Reuse
+
+Merchant LIFF multi-tenant login reuses this picker. Selection tokens created from LIFF include auth_provider LINE metadata, but final tenant access is still revalidated from DB before issuing the signed merchant session.

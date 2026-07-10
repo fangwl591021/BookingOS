@@ -1,4 +1,4 @@
-## 2026-07-10 - Task 006 D1 Migration History Reconcile
+﻿## 2026-07-10 - Task 006 D1 Migration History Reconcile
 
 ### Added
 
@@ -184,3 +184,28 @@
 - Remote D1 backup created at `.local-backups/bookingos-db-pre-tenant-picker-20260710.sql`.
 - Remote migrations confirmed: No migrations to apply.
 - Live smoke passed for health, login page, single-tenant signed cookie, selected tenant dashboard, tenant mismatch rejection, invalid selection token, and invalid merchant session cookie.
+
+## 2026-07-10 - Task 010 Merchant LIFF Identity Login
+
+### Security
+
+- Merchant LIFF login now verifies LINE token before resolving merchant access.
+- Removed trust in front-end supplied LINE UID for merchant LIFF login.
+- Merchant LIFF access now resolves through scoped IdentityAuth and tenant_admins.identity_id.
+- platform_line_contacts is not used for merchant authorization.
+
+### Added
+
+- Added docs/MERCHANT_LIFF_IDENTITY_LOGIN.md.
+- Added MERCHANT_LIFF_IDENTITY_LOGIN_ENABLED feature flag.
+
+### Not Changed
+
+- No migration, no session table, no Customer Login change, no Platform Login change.
+
+### Deployed
+
+- Task 010 deployed to Cloudflare Workers Version ID: `d8551d2a-6811-45da-8324-ce5686bde9b4`.
+- Remote D1 backup created at `.local-backups/bookingos-db-pre-merchant-liff-identity-20260710.sql`.
+- Remote migrations confirmed: No migrations to apply.
+- Live smoke passed for health, login page ID Token wiring, missing token rejection, invalid ID Token rejection, password merchant login regression, and merchant dashboard access.

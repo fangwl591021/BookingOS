@@ -1,4 +1,4 @@
-# BookingOS Identity Migration Checklist
+﻿# BookingOS Identity Migration Checklist
 
 日期：2026-07-10
 狀態：Task 005 Additive Identity Migration 已完成。未切換登入、Session、LIFF、預約、CRM 行為。
@@ -145,3 +145,13 @@
 - [x] No session table added.
 - [ ] LIFF Login migrated to tenant picker.
 - [ ] Post-login tenant switch implemented.
+
+## Gate 4C - Merchant LIFF Identity Login
+
+- [x] Merchant LIFF login verifies LINE token.
+- [x] Merchant LIFF login does not accept front-end supplied line_user_id as auth.
+- [x] Merchant LIFF login resolves IdentityAuth.
+- [x] Merchant LIFF login queries tenant_admins.identity_id.
+- [x] Merchant LIFF login creates signed merchant session for a single tenant.
+- [x] Merchant LIFF login uses tenant picker for multiple tenants.
+- [x] No migration or session table added.

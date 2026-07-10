@@ -1,4 +1,4 @@
-# PROJECT_STATUS.md
+﻿# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -170,3 +170,23 @@
 - `MERCHANT_SESSION_SECRET` exists in Cloudflare Secrets.
 - `MERCHANT_TENANT_SELECTION_TTL_SECONDS=300` is deployed as a Worker var.
 - Live smoke: `/api/health` 200, merchant login page 200 with tenant picker script, single-tenant login 302 with signed cookie, selected tenant dashboard 200, mismatched tenant redirects with `TENANT_SCOPE_MISMATCH`, bad selection token 401, bad merchant session cookie rejected.
+
+## Task 010 Merchant LIFF Identity Login 2026-07-10
+
+- Merchant LIFF login now posts a LINE ID Token instead of front-end supplied LINE UID.
+- Worker verifies LINE token against the configured LINE Login Channel ID before resolving identity.
+- Merchant auth resolves through scoped IdentityAuth and tenant_admins.identity_id.
+- platform_line_contacts is not used for merchant authorization.
+- Single tenant creates a signed merchant session; multiple tenants reuse Task 009 tenant picker.
+- No migration and no session table were added.
+
+## Task 010 Deployment Result 2026-07-10
+
+- Deployed Cloudflare Workers Version ID: `d8551d2a-6811-45da-8324-ce5686bde9b4`.
+- Remote D1 backup: `.local-backups/bookingos-db-pre-merchant-liff-identity-20260710.sql`.
+- Remote D1 migrations: No migrations to apply.
+- `MERCHANT_SESSION_SECRET` exists in Cloudflare Secrets.
+- Platform LINE Login Channel ID and Login LIFF ID are configured in D1.
+- `MERCHANT_LIFF_IDENTITY_LOGIN_ENABLED=true` is deployed as a Worker var.
+- Live smoke: `/api/health` 200, `/merchant-login` 200, login page sends `id_token`, missing token rejected, invalid ID Token rejected with `LIFF_TOKEN_INVALID`, password merchant login still creates signed cookie, dashboard 200.
+- Real LIFF success-path smoke requires a live LINE ID Token from the configured LIFF app.

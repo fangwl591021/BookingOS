@@ -50,3 +50,7 @@ Session payload 解析後包含 `identity_id`、`tenant_id`、`role`、`issued_a
 Multi-tenant merchant password login returns a short-lived signed selection token instead of choosing a store automatically. The login page renders a tenant picker and `POST /merchant-select-tenant` revalidates DB permission before issuing the real signed merchant session.
 
 See `docs/MERCHANT_TENANT_PICKER.md`.
+
+## Merchant LIFF Identity Login
+
+Task 010 moves merchant LIFF login to verified LINE token -> IdentityAuth -> tenant_admins.identity_id. It does not accept front-end supplied LINE UID as authentication and reuses signed merchant sessions plus tenant picker.

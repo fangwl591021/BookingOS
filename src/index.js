@@ -1,4 +1,4 @@
-const jsonHeaders = {
+﻿const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
@@ -71,6 +71,10 @@ function merchantTenantSelectionTtlSeconds(env) {
   const value = Number(envValue(env, "MERCHANT_TENANT_SELECTION_TTL_SECONDS", "300"));
   if (!Number.isFinite(value) || value < 60) return 300;
   return Math.min(Math.floor(value), 900);
+}
+
+function merchantLiffIdentityLoginEnabled(env) {
+  return envValue(env, "MERCHANT_LIFF_IDENTITY_LOGIN_ENABLED", "true").toLowerCase() !== "false";
 }
 
 async function secureCompare(actual, expected) {
@@ -488,6 +492,7 @@ async function createMerchantTenantSelectionToken(env, input) {
   const iat = Math.floor(Date.now() / 1000);
   const exp = iat + merchantTenantSelectionTtlSeconds(env);
   const payload = { v: MERCHANT_TENANT_SELECTION_VERSION, purpose: MERCHANT_TENANT_SELECTION_PURPOSE, sub: identityId, tenant_ids: tenantIds, iat, exp, nonce: randomNonce() };
+  if (input.authProvider) payload.auth_provider = String(input.authProvider).trim();
   const payloadSegment = stringToBase64Url(JSON.stringify(payload));
   const signatureSegment = await merchantSessionHmac(env, payloadSegment);
   return payloadSegment + "." + signatureSegment;
@@ -838,7 +843,7 @@ async function resolveMerchantSelectionIdentity(env, tenantEntries) {
   return { ok: true, identityId };
 }
 
-async function buildMerchantTenantSelection(env, tenantEntries) {
+async function buildMerchantTenantSelection(env, tenantEntries, options = {}) {
   const identity = await resolveMerchantSelectionIdentity(env, tenantEntries);
   if (!identity.ok) return identity;
   const tenants = [];
@@ -849,7 +854,7 @@ async function buildMerchantTenantSelection(env, tenantEntries) {
     tenants.push({ tenant_id: tenantId, tenant_name: principal.principal.tenantName || tenantId, role: principal.principal.role });
   }
   if (tenants.length < 2) return merchantAuthError("TENANT_SELECTION_NOT_ALLOWED", "Tenant selection requires at least two active tenants", 403);
-  const selectionToken = await createMerchantTenantSelectionToken(env, { identityId: identity.identityId, tenantIds: tenants.map((tenant) => tenant.tenant_id) });
+  const selectionToken = await createMerchantTenantSelectionToken(env, { identityId: identity.identityId, tenantIds: tenants.map((tenant) => tenant.tenant_id), authProvider: options.authProvider || "" });
   return { ok: true, identityId: identity.identityId, selectionToken, expiresIn: merchantTenantSelectionTtlSeconds(env), tenants };
 }
 
@@ -947,31 +952,199 @@ async function merchantLoginLiffId(env) {
   }
 }
 
-async function handleMerchantLiffLogin(request, env) {
-  if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
+function merchantLiffJsonError(code, message, status = 400, data = {}) {
+  return Response.json({ ok: false, success: false, error: { code, message }, data }, { status, headers: jsonHeaders });
+}
+
+function lineProviderScope(channelId) {
+  const scopedChannelId = String(channelId || "").trim();
+  return scopedChannelId ? `LINE:${scopedChannelId}` : "";
+}
+
+async function verifyLineIdToken(idToken, channelId) {
+  const token = String(idToken || "").trim();
+  const clientId = String(channelId || "").trim();
+  if (!token) return merchantAuthError("LIFF_TOKEN_REQUIRED", "LINE ID token is required", 401);
+  if (!clientId) return merchantAuthError("LIFF_PROVIDER_SCOPE_INVALID", "LINE Login Channel ID is not configured", 503);
+  const body = new URLSearchParams({ id_token: token, client_id: clientId });
+  let response;
   try {
-    const payload = await request.json();
-    const lineUserId = String(payload.lineUserId || "").trim();
-    const next = String(payload.next || "/merchant").trim() || "/merchant";
-    if (!lineUserId) return Response.json({ ok: false, error: "LINE UID is required" }, { status: 400, headers: jsonHeaders });
-    await ensurePlatformSchema(env);
-    const contact = await env.DB.prepare(`
-      SELECT c.tenant_id
-      FROM platform_line_contacts c
-      LEFT JOIN tenants t ON t.id = c.tenant_id
-      WHERE c.line_user_id = ? AND c.tenant_id IS NOT NULL
-      LIMIT 1
-    `).bind(lineUserId).first();
-    const admin = contact?.tenant_id ? null : await env.DB.prepare("SELECT tenant_id FROM tenant_admins WHERE line_user_id = ? AND (status IS NULL OR status = 'active') LIMIT 1").bind(lineUserId).first();
-    const tenantId = String(contact?.tenant_id || admin?.tenant_id || "").trim();
-    if (!tenantId) return Response.json({ ok: false, error: "這個 LINE 尚未綁定店家" }, { status: 403, headers: jsonHeaders });
-    const redirectTo = next.startsWith("/") ? `${next}${next.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(tenantId)}` : `/merchant?tenant=${encodeURIComponent(tenantId)}`;
-    return new Response(JSON.stringify({ ok: true, tenantId, redirect: redirectTo }), {
-      headers: { ...jsonHeaders, "set-cookie": `${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(tenantId)}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax` }
+    response = await fetch("https://api.line.me/oauth2/v2.1/verify", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body
     });
   } catch (error) {
-    return Response.json({ ok: false, error: String(error && error.message ? error.message : error) }, { status: 500, headers: jsonHeaders });
+    return merchantAuthError("LIFF_TOKEN_INVALID", "LINE token verification failed", 401);
   }
+  let data = {};
+  try { data = await response.json(); } catch (error) {}
+  if (!response.ok) {
+    const message = String(data?.error_description || data?.error || "LINE token is invalid");
+    const code = message.toLowerCase().includes("expired") ? "LIFF_TOKEN_EXPIRED" : "LIFF_TOKEN_INVALID";
+    return merchantAuthError(code, "LINE token is invalid", 401);
+  }
+  if (String(data?.aud || "") !== clientId) return merchantAuthError("LIFF_AUDIENCE_INVALID", "LINE token audience is invalid", 401);
+  if (String(data?.iss || "") && String(data.iss) !== "https://access.line.me") return merchantAuthError("LIFF_TOKEN_INVALID", "LINE token issuer is invalid", 401);
+  if (Number(data?.exp || 0) && Number(data.exp) <= Math.floor(Date.now() / 1000)) return merchantAuthError("LIFF_TOKEN_EXPIRED", "LINE token has expired", 401);
+  const subject = String(data?.sub || "").trim();
+  if (!subject) return merchantAuthError("LIFF_TOKEN_INVALID", "LINE token has no subject", 401);
+  return { ok: true, lineUserId: subject, profile: { displayName: data?.name || "", pictureUrl: data?.picture || "" } };
+}
+
+async function verifyLineAccessToken(accessToken, channelId) {
+  const token = String(accessToken || "").trim();
+  const clientId = String(channelId || "").trim();
+  if (!token) return merchantAuthError("LIFF_TOKEN_REQUIRED", "LINE access token is required", 401);
+  if (!clientId) return merchantAuthError("LIFF_PROVIDER_SCOPE_INVALID", "LINE Login Channel ID is not configured", 503);
+  let verifyResponse;
+  try {
+    verifyResponse = await fetch("https://api.line.me/oauth2/v2.1/verify?access_token=" + encodeURIComponent(token));
+  } catch (error) {
+    return merchantAuthError("LIFF_TOKEN_INVALID", "LINE access token verification failed", 401);
+  }
+  let verifyData = {};
+  try { verifyData = await verifyResponse.json(); } catch (error) {}
+  if (!verifyResponse.ok || String(verifyData?.client_id || "") !== clientId || Number(verifyData?.expires_in || 0) <= 0) {
+    return merchantAuthError("LIFF_TOKEN_INVALID", "LINE access token is invalid", 401);
+  }
+  let profileResponse;
+  try {
+    profileResponse = await fetch("https://api.line.me/v2/profile", { headers: { authorization: "Bearer " + token } });
+  } catch (error) {
+    return merchantAuthError("LIFF_TOKEN_INVALID", "LINE profile lookup failed", 401);
+  }
+  let profile = {};
+  try { profile = await profileResponse.json(); } catch (error) {}
+  if (!profileResponse.ok || !profile?.userId) return merchantAuthError("LIFF_TOKEN_INVALID", "LINE profile lookup failed", 401);
+  return { ok: true, lineUserId: String(profile.userId || "").trim(), profile: { displayName: profile.displayName || "", pictureUrl: profile.pictureUrl || "" } };
+}
+
+async function verifyMerchantLiffLineSubject(env, payload) {
+  const settings = await platformLineSettings(env);
+  const channelId = String(settings?.channel_id || "").trim();
+  const idToken = String(payload?.id_token || payload?.idToken || "").trim();
+  if (idToken) return verifyLineIdToken(idToken, channelId);
+  const accessToken = String(payload?.access_token || payload?.accessToken || "").trim();
+  return verifyLineAccessToken(accessToken, channelId);
+}
+
+async function resolveLineIdentityAuth(env, verifiedLine, channelId) {
+  const lineUserId = String(verifiedLine?.lineUserId || "").trim();
+  const provider = lineProviderScope(channelId);
+  if (!lineUserId || !provider) return merchantAuthError("LIFF_PROVIDER_SCOPE_INVALID", "LINE provider scope is invalid", 403);
+  const existing = await env.DB.prepare(`
+    SELECT ia.id, ia.identity_id, i.status
+    FROM identity_auth ia
+    JOIN identities i ON i.id = ia.identity_id
+    WHERE ia.provider = ? AND ia.provider_uid = ?
+  `).bind(provider, lineUserId).all();
+  const authRows = existing.results || [];
+  if (authRows.length > 1) return merchantAuthError("LIFF_IDENTITY_INVALID", "LINE identity is duplicated", 403);
+  if (authRows.length === 1) {
+    const row = authRows[0];
+    if (!row.identity_id || String(row.status || "active") !== "active") return merchantAuthError("LIFF_IDENTITY_INVALID", "LINE identity is not active", 403);
+    await env.DB.prepare("UPDATE identity_auth SET verified = 1, verified_at = datetime('now'), last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(row.id).run();
+    return { ok: true, identityId: String(row.identity_id), provider, linked: false, created: false };
+  }
+
+  const legacyRows = (await env.DB.prepare(`
+    SELECT a.id, a.identity_id
+    FROM tenant_admins a
+    JOIN tenants t ON t.id = a.tenant_id
+    WHERE a.line_user_id = ? AND (a.status IS NULL OR a.status = 'active') AND (t.status IS NULL OR t.status IN ('active','trial'))
+  `).bind(lineUserId).all()).results || [];
+  if (!legacyRows.length) return merchantAuthError("LIFF_IDENTITY_LINK_REQUIRED", "LINE account is not linked to a merchant admin", 403);
+  const identityIds = Array.from(new Set(legacyRows.map((row) => String(row.identity_id || "").trim()).filter(Boolean)));
+  if (identityIds.length > 1) return merchantAuthError("LIFF_IDENTITY_INVALID", "LINE account points to conflicting identities", 403);
+  const identityId = identityIds[0] || `idn_line_${await shortHash(provider + ":" + lineUserId)}`;
+  const metadata = JSON.stringify({ line_channel_id: channelId, line_user_id_hash: await shortHash(lineUserId), display_name: verifiedLine?.profile?.displayName || "", picture_url: verifiedLine?.profile?.pictureUrl || "" });
+  await env.DB.prepare("INSERT OR IGNORE INTO identities (id, status, created_at, updated_at) VALUES (?, 'active', datetime('now'), datetime('now'))").bind(identityId).run();
+  const identity = await env.DB.prepare("SELECT id, status FROM identities WHERE id = ?").bind(identityId).first();
+  if (!identity?.id || String(identity.status || "active") !== "active") return merchantAuthError("LIFF_IDENTITY_INVALID", "LINE identity is not active", 403);
+  await env.DB.prepare("INSERT OR IGNORE INTO identity_auth (id, identity_id, provider, provider_uid, verified, verified_at, last_login_at, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'), ?, datetime('now'), datetime('now'))").bind(`auth_line_${await shortHash(provider + ":" + lineUserId)}`, identityId, provider, lineUserId, metadata).run();
+  for (const row of legacyRows) {
+    if (!String(row.identity_id || "").trim()) await env.DB.prepare("UPDATE tenant_admins SET identity_id = ?, updated_at = datetime('now') WHERE id = ? AND identity_id IS NULL").bind(identityId, row.id).run();
+  }
+  await merchantLoginLog("liff_identity_linked", { identity_id: identityId, provider });
+  return { ok: true, identityId, provider, linked: true, created: !identityIds.length };
+}
+
+async function merchantTenantEntriesForIdentity(env, identityId, requestedTenantId = "") {
+  const tenantFilter = requestedTenantId ? "AND a.tenant_id = ?" : "";
+  const sql = `
+    SELECT a.id, a.identity_id, a.tenant_id, a.role, a.status, t.name AS tenant_name, t.status AS tenant_status
+    FROM tenant_admins a
+    JOIN tenants t ON t.id = a.tenant_id
+    WHERE a.identity_id = ? ${tenantFilter}
+      AND (a.status IS NULL OR a.status = 'active')
+      AND (t.status IS NULL OR t.status IN ('active','trial'))
+    ORDER BY t.name, a.tenant_id
+  `;
+  const query = requestedTenantId ? env.DB.prepare(sql).bind(identityId, requestedTenantId) : env.DB.prepare(sql).bind(identityId);
+  const rows = (await query.all()).results || [];
+  const byTenant = new Map();
+  for (const row of rows) {
+    const tenantId = String(row.tenant_id || "").trim();
+    if (!tenantId) continue;
+    if (!byTenant.has(tenantId)) byTenant.set(tenantId, []);
+    byTenant.get(tenantId).push(row);
+  }
+  return Array.from(byTenant.entries()).map(([tenantId, rows]) => ({ tenantId, rows }));
+}
+
+async function completeMerchantLiffIdentityLogin(env, identityId, requestedTenantId, next) {
+  const tenantEntries = await merchantTenantEntriesForIdentity(env, identityId, requestedTenantId);
+  if (requestedTenantId && tenantEntries.length === 0) return merchantAuthError("TENANT_SELECTION_NOT_ALLOWED", "Requested tenant is not allowed for this LINE identity", 403);
+  if (tenantEntries.length === 0) return merchantAuthError("LIFF_MERCHANT_ACCESS_DENIED", "LINE identity has no merchant access", 403);
+  if (tenantEntries.length > 1) {
+    const selection = await buildMerchantTenantSelection(env, tenantEntries, { authProvider: "LINE" });
+    if (!selection.ok) return selection;
+    return { ok: false, selectionRequired: true, status: 409, code: "TENANT_SELECTION_REQUIRED", message: "Please choose a store to manage.", data: { selection_token: selection.selectionToken, expires_in: selection.expiresIn, tenants: selection.tenants } };
+  }
+  const tenantId = String(tenantEntries[0].tenantId || "").trim();
+  const principal = await loadMerchantPrincipal(env, identityId, tenantId);
+  if (!principal.ok) return merchantAuthError("LIFF_MERCHANT_ACCESS_DENIED", "Merchant tenant permission is not active", principal.status || 403);
+  const redirect = next.startsWith("/") ? next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId) : "/merchant?tenant=" + encodeURIComponent(tenantId);
+  const sessionCookie = await setMerchantSessionCookie(env, { identityId, tenantId, role: principal.principal.role });
+  return { ok: true, tenantId, redirect, role: principal.principal.role, sessionCookie };
+}
+async function handleMerchantLiffLogin(request, env) {
+  if (!env.DB) return merchantLiffJsonError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  if (!merchantLiffIdentityLoginEnabled(env)) return merchantLiffJsonError("MERCHANT_LIFF_IDENTITY_LOGIN_DISABLED", "Merchant LINE login is disabled", 403);
+  if (!merchantSessionSecret(env)) return merchantLiffJsonError("SESSION_CONFIG_INVALID", "Merchant session secret is not configured", 503);
+  let payload;
+  try {
+    payload = await request.json();
+  } catch (error) {
+    return merchantLiffJsonError("LIFF_TOKEN_REQUIRED", "LINE token is required", 400);
+  }
+  const next = String(payload?.next || "/merchant").trim() || "/merchant";
+  const requestedTenantId = String(payload?.tenant || payload?.tenant_id || payload?.tenantId || "").trim();
+  await ensurePlatformSchema(env);
+  const settings = await platformLineSettings(env);
+  const channelId = String(settings?.channel_id || "").trim();
+  const verified = await verifyMerchantLiffLineSubject(env, payload);
+  if (!verified.ok) {
+    await merchantLoginLog("liff_token_failed", { reason: verified.code, tenant_id: requestedTenantId });
+    return merchantLiffJsonError(verified.code || "LIFF_TOKEN_INVALID", verified.message || "LINE token is invalid", verified.status || 401);
+  }
+  const identity = await resolveLineIdentityAuth(env, verified, channelId);
+  if (!identity.ok) {
+    await merchantLoginLog("liff_identity_failed", { reason: identity.code, tenant_id: requestedTenantId, line_user_id: verified.lineUserId });
+    return merchantLiffJsonError(identity.code || "LIFF_IDENTITY_NOT_FOUND", identity.message || "LINE identity is not linked", identity.status || 403);
+  }
+  const login = await completeMerchantLiffIdentityLogin(env, identity.identityId, requestedTenantId, next);
+  if (login.selectionRequired) {
+    await merchantLoginLog("liff_tenant_selection_required", { identity_id: identity.identityId, count: login.data?.tenants?.length || 0 });
+    return merchantLiffJsonError(login.code, login.message, login.status || 409, login.data || {});
+  }
+  if (!login.ok) {
+    await merchantLoginLog("liff_login_failed", { reason: login.code, tenant_id: requestedTenantId, identity_id: identity.identityId });
+    return merchantLiffJsonError(login.code || "LIFF_MERCHANT_ACCESS_DENIED", login.message || "LINE identity has no merchant access", login.status || 403);
+  }
+  await merchantLoginLog("liff_login_success", { tenant_id: login.tenantId, identity_id: identity.identityId, provider: identity.provider });
+  return Response.json({ ok: true, success: true, tenantId: login.tenantId, redirect: login.redirect, data: { tenant_id: login.tenantId, role: login.role, redirect: login.redirect } }, { headers: { ...jsonHeaders, "set-cookie": login.sessionCookie } });
 }
 function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error = "", liffId = "") {
   const message = error ? `<div class="error">帳號或密碼錯誤</div>` : "";
@@ -1003,6 +1176,7 @@ function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error
     picker.hidden=false;
     setPickerStatus("Please choose within 5 minutes.");
   }
+  window.bookingosRenderTenantPicker=renderTenantPicker;
   form?.addEventListener("submit",async function(event){
     event.preventDefault();
     const button=form.querySelector("button[type=submit]");
@@ -1053,11 +1227,14 @@ async function completeLineLogin(){
   setLineStatus("正在確認 LINE 身分...");
   await initLiff();
   if(!liff.isLoggedIn()){return false;}
-  const profile=await liff.getProfile();
-  const res=await fetch("/api/merchant/liff-login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({lineUserId:profile.userId,next})});
+  const idToken=liff.getIDToken();
+  const tenant=document.querySelector("input[name=tenant]")?.value||"";
+  if(!idToken){setLineStatus("LINE 登入憑證取得失敗，請重新登入");return true;}
+  const res=await fetch("/api/merchant/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,next,tenant})});
   const data=await res.json();
-  if(!data.ok){setLineStatus(data.error||"LINE 尚未綁定店家");return true;}
-  location.href=data.redirect;
+  if(data?.error?.code==="TENANT_SELECTION_REQUIRED"&&window.bookingosRenderTenantPicker){window.bookingosRenderTenantPicker(data.data||{});setLineStatus("");return true;}
+  if(!data.ok){setLineStatus(data?.error?.message||data.error||"LINE 尚未綁定店家");return true;}
+  location.href=data.redirect||data.data?.redirect||"/merchant";
   return true;
 }
 document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});

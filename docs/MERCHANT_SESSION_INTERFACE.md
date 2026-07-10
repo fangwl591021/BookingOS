@@ -1,4 +1,4 @@
-# Merchant Signed Session Interface
+﻿# Merchant Signed Session Interface
 
 日期：2026-07-10
 狀態：Task 008 已實作程式面，部署需先設定 `MERCHANT_SESSION_SECRET`。
@@ -135,3 +135,7 @@ Task 008 沒有切換 LIFF Login。既有 LIFF endpoint 仍可能產生 legacy t
 Merchant tenant selection token is separate from merchant session. It uses the same secret but a different payload purpose: `merchant_tenant_selection`.
 
 The token contains `sub` and allowed `tenant_ids`, but no role and no `tenant_id` session field. The merchant session validator rejects it if it is used as `bookingos_merchant_session`.
+
+## Task 010 LIFF Session Update
+
+Merchant LIFF login now issues the same signed merchant session used by password login after LINE token verification and IdentityAuth resolution. Multi-tenant LIFF login returns the Task 009 tenant picker token before issuing a session.

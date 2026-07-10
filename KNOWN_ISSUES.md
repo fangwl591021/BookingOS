@@ -88,3 +88,7 @@
 - Status: Task 009 uses short TTL, signed purpose-scoped token and DB revalidation.
 - Limitation: No server-side nonce store was added, so a valid selection token can theoretically be reused within the TTL.
 - Risk reduction: Token cannot become a merchant session, does not contain PII, expires quickly, and every selection revalidates DB permission.
+
+## Task 010 Live LIFF Smoke
+
+- A real LIFF success-path smoke test requires a live LINE ID Token from the configured LIFF app. Non-token and invalid-token rejection can be tested without storing LINE credentials in Git.

@@ -187,3 +187,7 @@ Status: not started.
 Multi-tenant merchant login now requires a shared active `tenant_admins.identity_id` across all selectable tenants. This avoids automatically merging admin rows only because phone/email matched.
 
 Post-login tenant switching remains deferred.
+
+## Task 010 Update
+
+Merchant LIFF login is now the first LINE login path to use scoped IdentityAuth provider LINE:<channel_id>. Missing IdentityAuth can be bootstrapped only from active tenant_admins.line_user_id matching a verified LINE subject; platform_line_contacts is not an auth source.

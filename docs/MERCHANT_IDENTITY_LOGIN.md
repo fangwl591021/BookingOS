@@ -71,3 +71,7 @@ Cookie 內 role 只是 snapshot；後台 request 仍以 `tenant_admins` 目前 r
 When no tenant is provided and the account matches multiple tenant_admin rows, `/merchant-login` now returns `TENANT_SELECTION_REQUIRED` with a signed short-lived selection token. It does not issue the real merchant session until `/merchant-select-tenant` revalidates the selected tenant.
 
 For safety, multi-tenant picker requires all matched tenant_admin rows to already share one active `identity_id`. It does not merge phone/email records during selection.
+
+## Task 010 Update
+
+Merchant LIFF login now uses verified LINE token -> scoped IdentityAuth -> tenant_admins.identity_id. It no longer authenticates merchants from platform_line_contacts or front-end supplied line_user_id.
