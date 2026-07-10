@@ -191,3 +191,13 @@ Post-login tenant switching remains deferred.
 ## Task 010 Update
 
 Merchant LIFF login is now the first LINE login path to use scoped IdentityAuth provider LINE:<channel_id>. Missing IdentityAuth can be bootstrapped only from active tenant_admins.line_user_id matching a verified LINE subject; platform_line_contacts is not an auth source.
+
+## Task 011 Update: Customer Identity Session
+
+Status: customer session read path is implemented.
+
+- Customer LIFF login resolves LINE ID Token through scoped IdentityAuth.
+- Missing Customer rows are created by `tenant_id + identity_id`, without phone/email/display-name merge.
+- Customer protected APIs use signed customer cookie and DB revalidation.
+- Public guest booking remains compatible.
+- Unique partial index `idx_customers_tenant_identity_unique` is added in migration `0013_customer_identity_unique.sql` after local and remote duplicate audits returned no rows.

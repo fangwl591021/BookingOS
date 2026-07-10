@@ -54,3 +54,9 @@ See `docs/MERCHANT_TENANT_PICKER.md`.
 ## Merchant LIFF Identity Login
 
 Task 010 moves merchant LIFF login to verified LINE token -> IdentityAuth -> tenant_admins.identity_id. It does not accept front-end supplied LINE UID as authentication and reuses signed merchant sessions plus tenant picker.
+
+## Customer Identity Session
+
+Task 011 adds Customer LIFF identity login and a signed customer session cookie. Customer profile, points and history now use `tenant_id + customer_id` from the verified session. Public guest booking remains supported.
+
+Required production secret: `CUSTOMER_SESSION_SECRET`. See `docs/CUSTOMER_IDENTITY_SESSION.md`.

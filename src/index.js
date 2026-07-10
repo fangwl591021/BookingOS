@@ -5,7 +5,9 @@
 
 const PLATFORM_SESSION_COOKIE = "bookingos_platform_session";
 const MERCHANT_SESSION_COOKIE = "bookingos_merchant_session";
+const CUSTOMER_SESSION_COOKIE = "bookingos_customer_session";
 const MERCHANT_SESSION_VERSION = 1;
+const CUSTOMER_SESSION_VERSION = 1;
 const MERCHANT_TENANT_SELECTION_VERSION = 1;
 const MERCHANT_TENANT_SELECTION_PURPOSE = "merchant_tenant_selection";
 const TENANT_ID = "demo-tenant";
@@ -75,6 +77,20 @@ function merchantTenantSelectionTtlSeconds(env) {
 
 function merchantLiffIdentityLoginEnabled(env) {
   return envValue(env, "MERCHANT_LIFF_IDENTITY_LOGIN_ENABLED", "true").toLowerCase() !== "false";
+}
+
+function customerSessionSecret(env) {
+  return envValue(env, "CUSTOMER_SESSION_SECRET");
+}
+
+function customerSessionTtlSeconds(env) {
+  const value = Number(envValue(env, "CUSTOMER_SESSION_TTL_SECONDS", "604800"));
+  if (!Number.isFinite(value) || value < 300) return 604800;
+  return Math.min(Math.floor(value), 2592000);
+}
+
+function customerLiffIdentityLoginEnabled(env) {
+  return envValue(env, "CUSTOMER_LIFF_IDENTITY_LOGIN_ENABLED", "true").toLowerCase() !== "false";
 }
 
 async function secureCompare(actual, expected) {
@@ -215,6 +231,21 @@ export default {
     if (url.pathname === "/api/merchant/liff-login" && request.method === "POST") {
       return handleMerchantLiffLogin(request, env);
     }
+    if (url.pathname === "/member-login") {
+      const liffId = await customerLoginLiffId(env, activeTenantId);
+      return html(renderCustomerLoginPage(await dashboardData(env, todayInTaipei(), activeTenantId), url.searchParams.get("next") || "/member", url.searchParams.get("error") || "", liffId));
+    }
+    if (url.pathname === "/api/customer/liff-login" && request.method === "POST") {
+      return handleCustomerLiffLogin(request, env);
+    }
+    if (url.pathname === "/api/customer/session") {
+      const session = await requireCustomerSession(request, env, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      return Response.json({ ok: true, success: true, session: { tenant_id: session.tenantId, customer_id: session.customerId, role: "Customer" }, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
+    }
+    if (url.pathname === "/customer-logout") {
+      return redirectWithCookie(`/member-login?tenant=${encodeURIComponent(activeTenantId)}`, clearCustomerSessionCookie());
+    }
     if (url.pathname === "/merchant-select-tenant" && request.method === "POST") {
       return handleMerchantSelectTenant(request, env);
     }
@@ -322,12 +353,28 @@ export default {
     }
 
     if (url.pathname === "/api/customer-profile") {
+      const session = await readCustomerSession(request, env);
+      if (session.ok && session.tenantId === activeTenantId) return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
       return Response.json({ ok: true, profile: await loadCustomerProfile(env, activeTenantId, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/member") {
-      if (request.method === "POST") return saveMemberProfile(request, env, activeTenantId);
-      return Response.json({ ok: true, profile: await loadCustomerProfile(env, activeTenantId, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
+      const session = await requireCustomerSession(request, env, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      if (request.method === "POST") return saveMemberProfile(request, env, activeTenantId, session);
+      return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
+    }
+
+    if (url.pathname === "/api/customer-history") {
+      const session = await requireCustomerSession(request, env, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      return Response.json({ ok: true, bookings: await loadCustomerBookings(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
+    }
+
+    if (url.pathname === "/api/customer-points") {
+      const session = await requireCustomerSession(request, env, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      return Response.json({ ok: true, points: await loadCustomerPointTransactions(env, session.tenantId, session.customerId), profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/bookings/cancel" && request.method === "POST") {
@@ -358,6 +405,8 @@ export default {
     }
 
     if (url.pathname === "/member" || url.pathname === "/points" || url.pathname === "/history") {
+      const session = await requireCustomerSession(request, env, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       const active = url.pathname === "/points" ? "points" : url.pathname === "/history" ? "history" : "member";
       return html(renderMemberPage(await dashboardData(env, todayInTaipei(), activeTenantId), active));
     }
@@ -525,6 +574,114 @@ function tenantSelectionFailureResponse(auth) {
   return Response.json({ ok: false, success: false, error: { code: auth.code || "TENANT_SELECTION_TOKEN_INVALID", message: auth.message || "Tenant selection failed" } }, { status, headers: jsonHeaders });
 }
 
+async function customerSessionHmac(env, payloadSegment) {
+  const secret = customerSessionSecret(env);
+  if (!secret) throw new Error("CUSTOMER_SESSION_SECRET is not configured");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payloadSegment));
+  return bytesToBase64Url(new Uint8Array(signature));
+}
+
+function customerAuthError(code, message, status = 401) {
+  return { ok: false, code, message, status };
+}
+
+function customerJsonError(code, message, status = 400, data = {}) {
+  return Response.json({ ok: false, success: false, error: { code, message }, data }, { status, headers: jsonHeaders });
+}
+
+async function createCustomerSession(env, input) {
+  const identityId = String(input.identityId || "").trim();
+  const tenantId = String(input.tenantId || "").trim();
+  const customerId = String(input.customerId || "").trim();
+  if (!identityId || !tenantId || !customerId) throw new Error("Customer session principal is incomplete");
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + customerSessionTtlSeconds(env);
+  return { v: CUSTOMER_SESSION_VERSION, sub: identityId, tenant_id: tenantId, customer_id: customerId, role: "Customer", iat, exp };
+}
+
+async function signCustomerSession(env, payload) {
+  const payloadSegment = stringToBase64Url(JSON.stringify(payload));
+  const signatureSegment = await customerSessionHmac(env, payloadSegment);
+  return payloadSegment + "." + signatureSegment;
+}
+
+async function verifyCustomerSession(env, token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return customerAuthError("CUSTOMER_SESSION_INVALID", "Customer session format is invalid");
+  let payload;
+  try {
+    const expectedSignature = await customerSessionHmac(env, parts[0]);
+    if (!(await secureCompare(parts[1], expectedSignature))) return customerAuthError("CUSTOMER_SESSION_INVALID", "Customer session signature is invalid");
+    payload = JSON.parse(base64UrlToString(parts[0]));
+  } catch (error) {
+    return customerAuthError("CUSTOMER_SESSION_INVALID", "Customer session cannot be decoded");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(payload.v) !== CUSTOMER_SESSION_VERSION) return customerAuthError("CUSTOMER_SESSION_INVALID", "Customer session version is invalid");
+  if (!payload.sub || !payload.tenant_id || !payload.customer_id || payload.role !== "Customer" || !payload.iat || !payload.exp) return customerAuthError("CUSTOMER_SESSION_INVALID", "Customer session is missing required fields");
+  if (Number(payload.iat) > now + 300) return customerAuthError("CUSTOMER_SESSION_INVALID", "Customer session issued_at is invalid");
+  if (Number(payload.exp) <= now) return customerAuthError("CUSTOMER_SESSION_EXPIRED", "Customer session has expired");
+  return { ok: true, payload: { v: CUSTOMER_SESSION_VERSION, sub: String(payload.sub), tenant_id: String(payload.tenant_id), customer_id: String(payload.customer_id), role: "Customer", iat: Number(payload.iat), exp: Number(payload.exp) } };
+}
+
+async function loadCustomerPrincipal(env, identityId, tenantId, customerId) {
+  if (!env.DB) return customerAuthError("CUSTOMER_SESSION_INVALID", "Database is not configured", 503);
+  const rows = (await env.DB.prepare(`
+    SELECT c.id AS customer_id, c.identity_id, c.tenant_id, c.name, c.phone, c.email, c.status AS customer_status,
+      i.status AS identity_status, t.status AS tenant_status, t.name AS tenant_name
+    FROM customers c
+    JOIN identities i ON i.id = c.identity_id
+    JOIN tenants t ON t.id = c.tenant_id
+    WHERE c.id = ? AND c.tenant_id = ? AND c.identity_id = ?
+  `).bind(customerId, tenantId, identityId).all()).results || [];
+  if (rows.length !== 1) return customerAuthError("CUSTOMER_ACCESS_DENIED", "Customer principal is invalid", 403);
+  const row = rows[0];
+  if (String(row.identity_status || "active") !== "active") return customerAuthError("CUSTOMER_IDENTITY_INVALID", "Identity is not active", 403);
+  if (!isActiveTenantStatus(row.tenant_status)) return customerAuthError("CUSTOMER_ACCESS_DENIED", "Tenant is not active", 403);
+  if (String(row.customer_status || "active") !== "active") return customerAuthError("CUSTOMER_ACCESS_DENIED", "Customer is not active", 403);
+  return { ok: true, principal: { identityId, tenantId, customerId, role: "Customer", tenantName: row.tenant_name || tenantId, customer: row } };
+}
+
+async function readCustomerSession(request, env) {
+  const token = readCookie(request, CUSTOMER_SESSION_COOKIE);
+  if (!token) return customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required");
+  const verified = await verifyCustomerSession(env, decodeURIComponent(token));
+  if (!verified.ok) return verified;
+  const principal = await loadCustomerPrincipal(env, verified.payload.sub, verified.payload.tenant_id, verified.payload.customer_id);
+  if (!principal.ok) return principal;
+  return { ok: true, payload: verified.payload, principal: principal.principal, identityId: principal.principal.identityId, tenantId: principal.principal.tenantId, customerId: principal.principal.customerId, role: "Customer" };
+}
+
+async function requireCustomerSession(request, env, expectedTenantId = "") {
+  const session = await readCustomerSession(request, env);
+  if (!session.ok) return session;
+  const tenantId = String(expectedTenantId || "").trim();
+  if (tenantId && session.tenantId !== tenantId) return customerAuthError("CUSTOMER_TENANT_SCOPE_MISMATCH", "Request tenant does not match customer session", 403);
+  if (await requestTenantScopeMismatch(request, session.tenantId)) return customerAuthError("CUSTOMER_TENANT_SCOPE_MISMATCH", "Request tenant does not match customer session", 403);
+  return session;
+}
+
+async function setCustomerSessionCookie(env, principal) {
+  const payload = await createCustomerSession(env, principal);
+  const token = await signCustomerSession(env, payload);
+  const ttl = Math.max(1, Number(payload.exp || 0) - Math.floor(Date.now() / 1000));
+  return CUSTOMER_SESSION_COOKIE + "=" + encodeURIComponent(token) + "; Path=/; Max-Age=" + ttl + "; HttpOnly; Secure; SameSite=Lax";
+}
+
+function clearCustomerSessionCookie() {
+  return CUSTOMER_SESSION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
+}
+
+function customerAuthFailureResponse(request, auth, tenantId = "") {
+  const status = auth.status || 401;
+  if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
+  const url = new URL("/member-login", request.url);
+  if (tenantId) url.searchParams.set("tenant", tenantId);
+  url.searchParams.set("next", new URL(request.url).pathname + new URL(request.url).search);
+  url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
+  return new Response(null, { status: 302, headers: { location: url.toString(), "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
+}
 function normalizeMerchantRole(role) {
   const raw = String(role || "").trim().toLowerCase();
   if (raw === "tenantowner" || raw === "owner") return "TenantOwner";
@@ -1146,6 +1303,101 @@ async function handleMerchantLiffLogin(request, env) {
   await merchantLoginLog("liff_login_success", { tenant_id: login.tenantId, identity_id: identity.identityId, provider: identity.provider });
   return Response.json({ ok: true, success: true, tenantId: login.tenantId, redirect: login.redirect, data: { tenant_id: login.tenantId, role: login.role, redirect: login.redirect } }, { headers: { ...jsonHeaders, "set-cookie": login.sessionCookie } });
 }
+async function customerLiffConfig(env, tenantId) {
+  if (env.DB) await ensurePlatformSchema(env);
+  const tenantSetting = await tenantLineSettings(env, tenantId);
+  const tenantLiffId = String(tenantSetting?.liff_id || "").trim();
+  const tenantChannelId = String(tenantSetting?.channel_id || "").trim();
+  if (tenantLiffId && tenantChannelId) return { liffId: tenantLiffId, channelId: tenantChannelId, source: "tenant" };
+  const platformSetting = await platformLineSettings(env);
+  return { liffId: String(platformSetting?.registration_liff_id || platformSetting?.login_liff_id || "").trim(), channelId: String(platformSetting?.channel_id || "").trim(), source: "platform" };
+}
+
+async function customerLoginLiffId(env, tenantId) {
+  const config = await customerLiffConfig(env, tenantId);
+  return config.liffId || "";
+}
+
+async function verifyCustomerLiffLineSubject(env, tenantId, payload) {
+  const config = await customerLiffConfig(env, tenantId);
+  const idToken = String(payload?.id_token || payload?.idToken || "").trim();
+  const result = idToken ? await verifyLineIdToken(idToken, config.channelId) : await verifyLineAccessToken(String(payload?.access_token || payload?.accessToken || "").trim(), config.channelId);
+  if (!result.ok) {
+    const map = { LIFF_TOKEN_REQUIRED: "CUSTOMER_LIFF_TOKEN_REQUIRED", LIFF_TOKEN_INVALID: "CUSTOMER_LIFF_TOKEN_INVALID", LIFF_TOKEN_EXPIRED: "CUSTOMER_LIFF_TOKEN_EXPIRED", LIFF_AUDIENCE_INVALID: "CUSTOMER_LIFF_AUDIENCE_INVALID", LIFF_PROVIDER_SCOPE_INVALID: "CUSTOMER_LIFF_TOKEN_INVALID" };
+    return customerAuthError(map[result.code] || "CUSTOMER_LIFF_TOKEN_INVALID", result.message || "LINE token is invalid", result.status || 401);
+  }
+  return { ...result, channelId: config.channelId, provider: lineProviderScope(config.channelId), liffSource: config.source };
+}
+
+async function resolveCustomerLineIdentityAuth(env, verifiedLine) {
+  const lineUserId = String(verifiedLine?.lineUserId || "").trim();
+  const provider = String(verifiedLine?.provider || "").trim();
+  if (!lineUserId || !provider) return customerAuthError("CUSTOMER_LIFF_TOKEN_INVALID", "LINE provider scope is invalid", 401);
+  const rows = (await env.DB.prepare(`
+    SELECT ia.id, ia.identity_id, i.status
+    FROM identity_auth ia
+    JOIN identities i ON i.id = ia.identity_id
+    WHERE ia.provider = ? AND ia.provider_uid = ?
+  `).bind(provider, lineUserId).all()).results || [];
+  if (rows.length > 1) return customerAuthError("CUSTOMER_IDENTITY_CONFLICT", "LINE identity is duplicated", 409);
+  const metadata = JSON.stringify({ line_channel_id: verifiedLine.channelId || "", line_user_id_hash: await shortHash(lineUserId), display_name: verifiedLine?.profile?.displayName || "", picture_url: verifiedLine?.profile?.pictureUrl || "", scope: "customer_liff" });
+  if (rows.length === 1) {
+    const row = rows[0];
+    if (!row.identity_id || String(row.status || "active") !== "active") return customerAuthError("CUSTOMER_IDENTITY_INVALID", "Identity is not active", 403);
+    await env.DB.prepare("UPDATE identity_auth SET verified = 1, verified_at = datetime('now'), last_login_at = datetime('now'), metadata_json = ?, updated_at = datetime('now') WHERE id = ?").bind(metadata, row.id).run();
+    return { ok: true, identityId: String(row.identity_id), provider, created: false };
+  }
+  const identityId = `idn_line_${await shortHash(provider + ":" + lineUserId)}`;
+  await env.DB.prepare("INSERT OR IGNORE INTO identities (id, status, created_at, updated_at) VALUES (?, 'active', datetime('now'), datetime('now'))").bind(identityId).run();
+  const identity = await env.DB.prepare("SELECT id, status FROM identities WHERE id = ?").bind(identityId).first();
+  if (!identity?.id || String(identity.status || "active") !== "active") return customerAuthError("CUSTOMER_IDENTITY_INVALID", "Identity is not active", 403);
+  await env.DB.prepare("INSERT OR IGNORE INTO identity_auth (id, identity_id, provider, provider_uid, verified, verified_at, last_login_at, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'), ?, datetime('now'), datetime('now'))").bind(`auth_line_${await shortHash(provider + ":" + lineUserId)}`, identityId, provider, lineUserId, metadata).run();
+  return { ok: true, identityId, provider, created: true };
+}
+
+function makeCustomerNo() {
+  return "C" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
+}
+
+async function resolveCustomerForIdentity(env, tenantId, identityId, verifiedLine) {
+  const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(tenantId).first();
+  if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return customerAuthError("CUSTOMER_ACCESS_DENIED", "Tenant is not active", 403);
+  const rows = (await env.DB.prepare("SELECT id, tenant_id, identity_id, status FROM customers WHERE tenant_id = ? AND identity_id = ?").bind(tenantId, identityId).all()).results || [];
+  if (rows.length > 1) return customerAuthError("CUSTOMER_PROFILE_CONFLICT", "Customer profile is duplicated", 409);
+  if (rows.length === 1) {
+    if (String(rows[0].status || "active") !== "active") return customerAuthError("CUSTOMER_ACCESS_DENIED", "Customer is not active", 403);
+    return { ok: true, customerId: String(rows[0].id), created: false };
+  }
+  const customerId = crypto.randomUUID();
+  const displayName = String(verifiedLine?.profile?.displayName || "LINE 會員").trim() || "LINE 會員";
+  const lineUserId = String(verifiedLine?.lineUserId || "").trim() || null;
+  await env.DB.prepare(`
+    INSERT INTO customers (id, tenant_id, identity_id, customer_no, name, phone, line_user_id, line_display_name, referral_code, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'), datetime('now'))
+  `).bind(customerId, tenantId, identityId, makeCustomerNo(), displayName.slice(0, 80), lineUserId, displayName.slice(0, 80), makeReferralCode(identityId)).run();
+  return { ok: true, customerId, created: true };
+}
+
+async function handleCustomerLiffLogin(request, env) {
+  if (!env.DB) return customerJsonError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  if (!customerLiffIdentityLoginEnabled(env)) return customerJsonError("CUSTOMER_LIFF_LOGIN_DISABLED", "Customer LINE login is temporarily disabled", 503);
+  if (!customerSessionSecret(env)) return customerJsonError("CUSTOMER_SESSION_CONFIG_INVALID", "Customer session secret is not configured", 503);
+  let payload;
+  try { payload = await request.json(); } catch (error) { return customerJsonError("CUSTOMER_LIFF_TOKEN_REQUIRED", "LINE token is required", 401); }
+  const tenantId = String(payload?.tenant || payload?.tenant_id || payload?.tenantId || "").trim();
+  const next = String(payload?.next || "/member").trim() || "/member";
+  if (!tenantId) return customerJsonError("CUSTOMER_TENANT_SCOPE_MISMATCH", "Tenant is required", 400);
+  await ensurePlatformSchema(env);
+  const verified = await verifyCustomerLiffLineSubject(env, tenantId, payload);
+  if (!verified.ok) return customerJsonError(verified.code || "CUSTOMER_LIFF_TOKEN_INVALID", verified.message || "LINE token is invalid", verified.status || 401);
+  const identity = await resolveCustomerLineIdentityAuth(env, verified);
+  if (!identity.ok) return customerJsonError(identity.code || "CUSTOMER_IDENTITY_INVALID", identity.message || "Identity is invalid", identity.status || 403);
+  const customer = await resolveCustomerForIdentity(env, tenantId, identity.identityId, verified);
+  if (!customer.ok) return customerJsonError(customer.code || "CUSTOMER_ACCESS_DENIED", customer.message || "Customer access denied", customer.status || 403);
+  const sessionCookie = await setCustomerSessionCookie(env, { identityId: identity.identityId, tenantId, customerId: customer.customerId });
+  const redirect = next.startsWith("/") ? next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId) : "/member?tenant=" + encodeURIComponent(tenantId);
+  return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customer.customerId, identity_created: !!identity.created, customer_created: !!customer.created, redirect } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
+}
 function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error = "", liffId = "") {
   const message = error ? `<div class="error">帳號或密碼錯誤</div>` : "";
   const safeTenant = escapeAttrValue(tenantId || "");
@@ -1418,26 +1670,61 @@ function renderCustomerPage(data = { store, services, businessHours, staffMember
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BookingOS Book</title><style>
   :root{--bg:#eef2ed;--surface:#fff;--soft:#f8faf6;--ink:#202124;--muted:#667067;--line:#dfe5dd;--brand:#176b5b;--brand2:#0f463e;--amber-soft:#f4e6db;--blue:#3d6f9f;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:92px}.hero{background:var(--brand2);color:white;padding:18px 16px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.mark{display:flex;align-items:center;gap:10px}.logo{width:38px;height:38px;border-radius:8px;background:white;color:var(--brand2);display:grid;place-items:center;font-weight:900;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}.product{font-size:15px;font-weight:900}.version{color:rgba(255,255,255,.7);font-size:12px;margin-top:2px}.mode{white-space:nowrap;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.1);border-radius:999px;padding:7px 10px;font-size:12px;font-weight:850}h1,h2,p{margin:0}h1{font-size:25px;line-height:1.2}.store-meta{margin-top:7px;color:rgba(255,255,255,.76);font-size:13px;line-height:1.45}.content{padding:14px}section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 10px 24px rgba(32,33,36,.055)}.step-bar{display:flex;align-items:center;gap:10px;background:var(--brand2);color:white;border-radius:8px;padding:12px 13px;margin-bottom:12px}.step-bar span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:5px 8px;font-size:12px;font-weight:950}.step-bar strong{font-size:20px}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}input,select{width:100%;min-height:44px;border-radius:8px;border:1px solid var(--line);background:white;color:var(--ink);padding:9px 10px}.service-select{color:#1f5f9b;font-weight:900}.price-row,.staff-row{display:flex;gap:7px;overflow-x:auto;padding-top:10px;scrollbar-width:none}.choice{flex:0 0 auto;border-radius:999px;background:white;color:var(--ink);border:1px solid var(--line);min-height:36px;padding:7px 10px;font-weight:900}.choice.active{background:var(--brand);border-color:var(--brand);color:white}.price{flex:0 0 auto;border-radius:999px;background:var(--amber-soft);color:#7b3e20;padding:6px 9px;font-size:12px;font-weight:850}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.slot{min-height:42px;border-radius:8px;background:#f2faf6;border:1px solid #cddbd4;color:var(--brand2);display:grid;place-items:center;font-weight:900}.slot.active{background:var(--brand);border-color:var(--brand);color:white}.empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);text-align:center;font-size:13px}.notice{border-radius:8px;background:var(--ok);color:var(--brand2);padding:11px;font-size:13px;font-weight:850;line-height:1.45}.pay-card{border:1px solid var(--line);border-radius:8px;background:var(--soft);padding:12px;display:grid;gap:10px}.money-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.money{border:1px solid var(--line);border-radius:8px;background:white;padding:10px}.money span{display:block;color:var(--muted);font-size:12px}.money b{display:block;margin-top:5px;font-size:18px}.submit{width:100%;min-height:52px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:white;font-weight:950}.submit:disabled{opacity:.45}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line);backdrop-filter:blur(14px)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand2)}@media(min-width:760px){body{padding:18px 0}.page{min-height:calc(100vh - 36px);border:1px solid var(--line);border-radius:8px;overflow:hidden}.bottom-nav{border:1px solid var(--line);border-bottom:0;border-top-left-radius:8px;border-top-right-radius:8px}}
   </style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="mark"><div class="logo" id="logo-box">B</div><div><div class="product">BookingOS Book</div><div class="version">客戶預約端 V0.1</div></div></div><div class="mode">預約中</div></div><h1 id="store-name"></h1><p class="store-meta" id="store-meta"></p></section><div class="content"><section><div class="step-bar"><span>STEP 1</span><strong>選擇服務</strong></div><label class="field">服務項目<select id="service" class="service-select"></select></label><div class="price-row" id="price-row"></div></section><section><div class="step-bar"><span>STEP 2</span><strong>選擇日期與時長</strong></div><div class="grid"><label class="field">日期<input id="date" type="date"></label><label class="field">時長<select id="duration"></select></label></div></section><section><div class="step-bar"><span>STEP 3</span><strong>選擇服務人員</strong></div><div class="staff-row" id="staff-row"></div><div class="slots" id="slots"><div class="empty">請先選擇服務與日期</div></div></section><section><h2 style="margin-bottom:12px">送出預約</h2><div class="grid"><label class="field">姓名<input id="customer-name" autocomplete="name"></label><label class="field">手機<input id="customer-phone" autocomplete="tel"></label></div><div class="pay-card" style="margin-top:12px"><div class="notice" id="pay-note">選擇時間後會顯示金額與可折抵點數。</div><label class="field">使用點數折抵<input id="redeem" type="number" min="0" value="0"></label><div class="money-grid"><div class="money"><span>原價</span><b id="original-price">NT$0</b></div><div class="money"><span>應付金額</span><b id="payable-price">NT$0</b></div></div></div><div class="notice" id="status" style="margin-top:12px">請依序選擇服務、日期、服務人員與時間。</div><button class="submit" id="submit" type="button" disabled>送出預約</button></section></div></main><nav class="bottom-nav"><a class="nav-item active" href="/book?tenant=${encodeURIComponent(tenantId)}">預約</a><a class="nav-item" href="/member?tenant=${encodeURIComponent(tenantId)}">會員</a><a class="nav-item" href="/points?tenant=${encodeURIComponent(tenantId)}">點數</a><a class="nav-item" href="/history?tenant=${encodeURIComponent(tenantId)}">紀錄</a></nav><script>
-  const state=${payload}; let selectedServiceId=""; let selectedDuration=0; let selectedStaffId="any"; let selectedTime=""; let selectedPrice=0; let maxRedeem=0;
+  const state=${payload}; let selectedServiceId=""; let selectedDuration=0; let selectedStaffId="any"; let selectedTime=""; let selectedPrice=0; let maxRedeem=0; let memberPoints=0;
   const $=(id)=>document.getElementById(id); const money=(n)=>"NT$"+Number(n||0).toLocaleString("zh-TW");
   function service(){return state.services.find(s=>s.id===selectedServiceId)||state.services[0];}
   function durationItem(){const s=service(); return (s.prices||[]).find(p=>Number(p.minutes)===Number(selectedDuration))||(s.prices||[])[0]||{minutes:0,price:0};}
   function capableStaff(){const s=service(); return (state.staffMembers||[]).filter(st=>!Array.isArray(st.serviceIds)||st.serviceIds.length===0||st.serviceIds.includes(s.id));}
-  function init(){const st=state.store||{}; $("store-name").textContent=st.name||"BookingOS"; $("store-meta").innerHTML=(st.address||"")+"<br>"+(st.phone||""); if(st.logoUrl){$("logo-box").innerHTML='<img src="'+st.logoUrl+'" alt="Logo">';} $("date").value=state.today; $("service").innerHTML=(state.services||[]).map(s=>'<option value="'+s.id+'">'+s.name+'｜'+(s.category||'')+'</option>').join(''); selectedServiceId=$("service").value || (state.services[0]&&state.services[0].id)||""; $("service").onchange=()=>{selectedServiceId=$("service").value; selectedTime=""; renderDurations(); renderStaff(); updatePay(); loadSlots();}; $("date").onchange=()=>{selectedTime=""; loadSlots();}; $("duration").onchange=()=>{selectedDuration=Number($("duration").value); selectedTime=""; updatePay(); loadSlots();}; $("redeem").oninput=updatePay; $("submit").onclick=submitBooking; $("customer-name").oninput=updateReady; $("customer-phone").oninput=updateReady; renderDurations(); renderStaff(); updatePay(); loadSlots();}
+  function init(){const st=state.store||{}; $("store-name").textContent=st.name||"BookingOS"; $("store-meta").innerHTML=(st.address||"")+"<br>"+(st.phone||""); if(st.logoUrl){$("logo-box").innerHTML='<img src="'+st.logoUrl+'" alt="Logo">';} $("date").value=state.today; $("service").innerHTML=(state.services||[]).map(s=>'<option value="'+s.id+'">'+s.name+'｜'+(s.category||'')+'</option>').join(''); selectedServiceId=$("service").value || (state.services[0]&&state.services[0].id)||""; $("service").onchange=()=>{selectedServiceId=$("service").value; selectedTime=""; renderDurations(); renderStaff(); updatePay(); loadSlots(); loadMemberSession();}; $("date").onchange=()=>{selectedTime=""; loadSlots();}; $("duration").onchange=()=>{selectedDuration=Number($("duration").value); selectedTime=""; updatePay(); loadSlots();}; $("redeem").oninput=updatePay; $("submit").onclick=submitBooking; $("customer-name").oninput=updateReady; $("customer-phone").oninput=updateReady; renderDurations(); renderStaff(); updatePay(); loadSlots(); loadMemberSession();}
   function renderDurations(){const prices=service().prices||[]; selectedDuration=Number((prices[0]||{}).minutes||0); $("duration").innerHTML=prices.map(p=>'<option value="'+p.minutes+'">'+p.minutes+' 分鐘 · '+money(p.price)+'</option>').join(''); $("price-row").innerHTML=prices.map(p=>'<span class="price">'+p.minutes+' 分 · '+money(p.price)+'</span>').join('');}
   function renderStaff(){const rows=['<button class="choice active" data-staff="any" type="button">系統安排</button>'].concat(capableStaff().map(st=>'<button class="choice" data-staff="'+st.id+'" type="button">'+st.name+'</button>')); $("staff-row").innerHTML=rows.join(''); document.querySelectorAll('[data-staff]').forEach(btn=>btn.onclick=()=>{selectedStaffId=btn.dataset.staff; selectedTime=""; document.querySelectorAll('[data-staff]').forEach(x=>x.classList.toggle('active',x===btn)); loadSlots();}); selectedStaffId="any";}
   async function loadSlots(){const s=service(); if(!s||!selectedDuration)return; $("slots").innerHTML='<div class="empty">載入可預約時間...</div>'; const params=new URLSearchParams({tenant:state.tenantId,date:$("date").value,serviceId:s.id,duration:String(selectedDuration),staffId:selectedStaffId}); const res=await fetch('/api/availability?'+params.toString()); const data=await res.json(); if(!data.ok||!data.slots||!data.slots.length){$("slots").innerHTML='<div class="empty">目前沒有可預約時間</div>'; $("submit").disabled=true; return;} $("slots").innerHTML=data.slots.map(t=>'<button class="slot" data-time="'+t+'" type="button">'+t+'</button>').join(''); document.querySelectorAll('[data-time]').forEach(btn=>btn.onclick=()=>{selectedTime=btn.dataset.time; document.querySelectorAll('[data-time]').forEach(x=>x.classList.toggle('active',x===btn)); updateReady();}); updateReady();}
-  function updatePay(){const item=durationItem(); selectedPrice=Number(item.price||0); const limit=Number(service().pointRedeemLimit||0); maxRedeem=limit===0?selectedPrice:Math.min(limit,selectedPrice); let redeem=Math.max(0,Math.floor(Number($("redeem").value||0))); if(redeem>maxRedeem){redeem=maxRedeem; $("redeem").value=redeem;} $("pay-note").textContent='本服務最多可折抵 '+maxRedeem+' 點，實際可用仍依會員點數為準。'; $("original-price").textContent=money(selectedPrice); $("payable-price").textContent=money(Math.max(0,selectedPrice-redeem)); updateReady();}
+  function updatePay(){const item=durationItem(); selectedPrice=Number(item.price||0); const limit=Number(service().pointRedeemLimit||0); const serviceMax=limit===0?selectedPrice:Math.min(limit,selectedPrice); maxRedeem=memberPoints>0?Math.min(memberPoints,serviceMax):serviceMax; let redeem=Math.max(0,Math.floor(Number($("redeem").value||0))); if(redeem>maxRedeem){redeem=maxRedeem; $("redeem").value=redeem;} $("pay-note").textContent=memberPoints>0?'可用 '+memberPoints+' 點，本服務最多可折抵 '+maxRedeem+' 點。':'本服務最多可折抵 '+maxRedeem+' 點，登入會員後會帶入實際可用點數。'; $("original-price").textContent=money(selectedPrice); $("payable-price").textContent=money(Math.max(0,selectedPrice-redeem)); updateReady();}
   function updateReady(){const ready=!!selectedTime && !!$("customer-name").value.trim() && !!$("customer-phone").value.trim(); $("submit").disabled=!ready; if(selectedTime) $("status").textContent='已選擇 '+$("date").value+' '+selectedTime+'，送出前請確認服務時長與金額。';}
-  async function submitBooking(){const item=durationItem(); if(!selectedTime){$("status").textContent='請先選擇預約時間'; return;} $("status").textContent='送出中...'; const body={serviceId:selectedServiceId,duration:item.minutes,date:$("date").value,startTime:selectedTime,staffId:selectedStaffId,customerName:$("customer-name").value.trim(),customerPhone:$("customer-phone").value.trim(),redeemPoints:Number($("redeem").value||0)}; const res=await fetch('/api/bookings?tenant='+encodeURIComponent(state.tenantId),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); const data=await res.json(); if(!data.ok){$("status").textContent='預約失敗：'+(data.error||'請重新選擇時間'); return;} $("status").textContent='預約完成：'+data.booking.date+' '+data.booking.start+'，'+data.booking.service+'，'+data.booking.duration+' 分鐘。'; loadSlots();}
+  async function loadMemberSession(){try{const res=await fetch('/api/customer/session?tenant='+encodeURIComponent(state.tenantId),{credentials:'same-origin'}); if(!res.ok)return; const data=await res.json(); const c=data.profile&&data.profile.customer; if(!c)return; memberPoints=Number(c.points_balance||0); if(!$('customer-name').value)$('customer-name').value=c.name||''; if(!$('customer-phone').value)$('customer-phone').value=c.phone||''; updatePay(); updateReady();}catch(e){}}
+  async function submitBooking(){const item=durationItem(); if(!selectedTime){$("status").textContent='請先選擇預約時間'; return;} $("status").textContent='送出中...'; const body={serviceId:selectedServiceId,duration:item.minutes,date:$("date").value,startTime:selectedTime,staffId:selectedStaffId,customerName:$("customer-name").value.trim(),customerPhone:$("customer-phone").value.trim(),redeemPoints:Number($("redeem").value||0)}; const res=await fetch('/api/bookings?tenant='+encodeURIComponent(state.tenantId),{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify(body)}); const data=await res.json(); if(!data.ok){$("status").textContent='預約失敗：'+(data.error||'請重新選擇時間'); return;} $("status").textContent='預約完成：'+data.booking.date+' '+data.booking.start+'，'+data.booking.service+'，'+data.booking.duration+' 分鐘。'; loadSlots();}
   init();
   </script></body></html>`;
+}
+
+function renderCustomerLoginPage(data = { store }, next = "/member", error = "", liffId = "") {
+  const tenantId = data.store?.tenantId || TENANT_ID;
+  const storeName = data.store?.name || "BookingOS";
+  const safeLiffId = String(liffId || "").trim();
+  const safeNext = next && String(next).startsWith("/") ? String(next) : "/member";
+  const errorBox = error ? `<div class="error">登入失敗：${escapeHtmlValue(error)}</div>` : "";
+  const liffScript = safeLiffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
+const liffId=${JSON.stringify(safeLiffId)};
+const tenant=${JSON.stringify(tenantId)};
+const next=${JSON.stringify(safeNext)};
+const statusBox=document.querySelector("#login-status");
+let liffReady=null;
+function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
+async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
+async function login(){try{setStatus("正在確認 LINE 身分...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE 登入憑證取得失敗，請重新開啟");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"會員登入失敗");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("請由 LINE App 開啟會員入口");}}
+document.querySelector("#line-login")?.addEventListener("click",login);
+window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await login();}catch(error){setStatus("請由 LINE App 開啟會員入口");}});
+</script>` : `<script>window.addEventListener("load",()=>{document.querySelector("#login-status").textContent="此店尚未設定會員 LIFF，請先使用公開預約。";});</script>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} 會員登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 6px}p{color:var(--muted);line-height:1.55}.line{width:100%;min-height:48px;border:0;border-radius:8px;background:#06c755;color:#062216;font-weight:950;font-size:17px}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p style="margin:2px 0 0">會員中心登入</p></div></div>${errorBox}<p>請使用 LINE 開啟並授權登入，系統只會建立這家店的會員 Session。</p><button class="line" id="line-login" type="button">使用 LINE 登入會員</button><div class="status" id="login-status"></div><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">先回預約頁</a></main>${liffScript}</body></html>`;
 }
 
 function renderMemberPage(data = { store }, active = "member") {
   const title = active === "points" ? "會員點數" : active === "history" ? "預約紀錄" : "會員資料";
   const tenantId = data.store?.tenantId || TENANT_ID;
-  return pageShell(title, `<section class="panel"><h2>${escapeHtmlValue(title)}</h2><p class="muted">會員資料、點數與預約歷史會在這裡顯示。</p></section>`, "book", tenantId);
+  const payload = JSON.stringify({ tenantId, active, title, store: data.store || store }).replace(/</g, "\\u003c");
+  const body = `<style>.member-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}.member-card{background:#f7fbf8;border:1px solid var(--line);border-radius:8px;padding:14px}.member-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.item-list{display:grid;gap:10px}.item-row{border:1px solid var(--line);border-radius:8px;padding:12px;background:white}.muted-small{color:var(--muted);font-size:13px}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.field input,.field select{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit}.save-btn{min-height:44px;border:0;border-radius:8px;background:var(--blue);color:white;padding:0 18px;font-weight:950}.danger-btn{min-height:38px;border:1px solid #f2b8b8;border-radius:8px;background:#fff;color:#9b1c1c;font-weight:900}@media(max-width:640px){.member-grid{grid-template-columns:1fr}}</style><section class="panel"><div class="member-tools"><h2 style="margin:0">${escapeHtmlValue(title)}</h2><form method="post" action="/customer-logout?tenant=${encodeURIComponent(tenantId)}"><button class="btn" type="submit">登出</button></form></div><div id="member-content" class="member-card">載入會員資料中...</div></section><script>
+const memberState=${payload};
+const content=document.querySelector("#member-content");
+const esc=(v)=>String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+function money(n){return "NT$"+Number(n||0).toLocaleString("zh-TW");}
+async function api(path,options={}){const res=await fetch(path+(path.includes("?")?"&":"?")+"tenant="+encodeURIComponent(memberState.tenantId),{credentials:"same-origin",...options});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!res.ok||!data.ok)throw new Error(data?.error?.message||data?.error||"讀取失敗");return data;}
+function profileView(profile){const c=profile.customer||{};content.innerHTML='<form id="profile-form" class="item-list"><div class="member-grid"><label class="field">姓名<input name="name" value="'+esc(c.name||'')+'"></label><label class="field">手機<input name="phone" value="'+esc(c.phone||'')+'"></label><label class="field">Email<input name="email" value="'+esc(c.email||'')+'"></label><label class="field">生日<input name="birthday" type="date" value="'+esc(c.birthday||'')+'"></label><label class="field">性別<input name="gender" value="'+esc(c.gender||'')+'"></label><label class="field">聯絡偏好<select name="contactPreference"><option value="phone">電話</option><option value="line">LINE</option><option value="email">Email</option></select></label></div><label class="field">地址<input name="address" value="'+esc(c.address||'')+'"></label><label class="field">偏好服務<input name="preferredService" value="'+esc(c.preferred_service||'')+'"></label><label class="field">過敏或提醒<input name="allergyNote" value="'+esc(c.allergy_note||'')+'"></label><button class="save-btn" type="submit">儲存會員資料</button><div class="muted-small" id="save-status">點數餘額：'+Number(c.points_balance||0)+' 點</div></form>';const pref=content.querySelector('[name="contactPreference"]');if(pref)pref.value=c.contact_preference||'phone';document.querySelector('#profile-form').addEventListener('submit',async(e)=>{e.preventDefault();const fd=new FormData(e.target);document.querySelector('#save-status').textContent='儲存中...';try{await api('/api/member',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(fd.entries()))});document.querySelector('#save-status').textContent='已儲存';}catch(err){document.querySelector('#save-status').textContent='儲存失敗：'+err.message;}});}
+function pointsView(profile){const c=profile.customer||{};const rows=(profile.points||[]).map(p=>'<div class="item-row"><b>'+Number(p.points||0)+' 點</b><div class="muted-small">'+esc(p.type||'')+' · '+esc(p.reason||'')+'</div><div class="muted-small">'+esc(p.created_at||'')+'</div></div>').join('');content.innerHTML='<div class="item-list"><div class="item-row"><b>可用點數 '+Number(c.points_balance||0)+' 點</b><div class="muted-small">累積取得 '+Number(c.total_points_earned||0)+'，累積使用 '+Number(c.total_points_used||0)+'</div></div>'+(rows||'<div class="item-row">尚無點數紀錄</div>')+'</div>';}
+function historyView(profile){const rows=(profile.bookings||[]).map(b=>'<div class="item-row"><b>'+esc(b.service_name||'預約')+'</b><div class="muted-small">'+esc(b.booking_date||'')+' '+esc(b.start_time||'')+' · '+Number(b.duration_minutes||0)+' 分鐘 · '+money(b.price||0)+'</div><div class="muted-small">狀態：'+esc(b.status||'')+'</div>'+(b.status==='cancelled'?'':'<button class="danger-btn" data-cancel="'+esc(b.id)+'" type="button">取消預約</button>')+'</div>').join('');content.innerHTML='<div class="item-list">'+(rows||'<div class="item-row">尚無預約紀錄</div>')+'</div>';content.querySelectorAll('[data-cancel]').forEach(btn=>btn.onclick=async()=>{btn.disabled=true;try{await api('/api/bookings/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({bookingId:btn.dataset.cancel})});await load();}catch(err){btn.textContent='取消失敗';}});}
+async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-login?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
+load();
+</script>`;
+  return pageShell(title, body, active === "points" ? "points" : active === "history" ? "history" : "member", tenantId);
 }
 function renderSchedulePage(data = { staffMembers, resourceTypes }) {
   const staffRows = (data.staffMembers || staffMembers).map((staff) => `<tr><td>${escapeHtmlValue(staff.name)}</td><td>${escapeHtmlValue(staff.role || "-")}</td></tr>`).join("");
@@ -2643,39 +2930,43 @@ async function loadBookings(env, date, tenantId) {
   }));
 }
 
-async function saveMemberProfile(request, env, tenantId) {
+async function saveMemberProfile(request, env, tenantId, session = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
+  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required"), tenantId);
   try {
     const payload = await request.json();
-    const name = String(payload.name || "").trim();
-    const phone = String(payload.phone || "").trim();
-    if (!name || !phone) return Response.json({ ok: false, error: "name and phone are required" }, { status: 400, headers: jsonHeaders });
-
-    const existing = await env.DB.prepare("SELECT id, referral_code FROM customers WHERE tenant_id = ? AND phone = ?").bind(tenantId, phone).first();
-    const customerId = existing?.id || crypto.randomUUID();
-    const referredByCode = String(payload.referredByCode || "").trim() || null;
-    const referrer = referredByCode ? await env.DB.prepare("SELECT id FROM customers WHERE tenant_id = ? AND referral_code = ?").bind(tenantId, referredByCode).first() : null;
-
-    if (existing) {
-      await env.DB.prepare(`
-        UPDATE customers SET
-          name = ?, email = ?, gender = ?, address = ?, birthday = ?, note = ?, preferred_service = ?, allergy_note = ?, contact_preference = ?, marketing_opt_in = ?,
-          referred_by_customer_id = COALESCE(referred_by_customer_id, ?), referred_by_code = COALESCE(referred_by_code, ?), updated_at = datetime('now')
-        WHERE tenant_id = ? AND id = ?
-      `).bind(name, clean(payload.email), clean(payload.gender), clean(payload.address), clean(payload.birthday), clean(payload.note), clean(payload.preferredService), clean(payload.allergyNote), clean(payload.contactPreference) || "phone", payload.marketingOptIn ? 1 : 0, referrer?.id || null, referredByCode, tenantId, customerId).run();
-    } else {
-      await env.DB.prepare(`
-        INSERT INTO customers (id, tenant_id, name, phone, email, gender, address, birthday, note, preferred_service, allergy_note, contact_preference, marketing_opt_in, referral_code, referred_by_customer_id, referred_by_code, referred_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, datetime('now'), datetime('now'))
-      `).bind(customerId, tenantId, name, phone, clean(payload.email), clean(payload.gender), clean(payload.address), clean(payload.birthday), clean(payload.note), clean(payload.preferredService), clean(payload.allergyNote), clean(payload.contactPreference) || "phone", payload.marketingOptIn ? 1 : 0, makeReferralCode(phone), referrer?.id || null, referredByCode, referredByCode).run();
-    }
-
-    return Response.json({ ok: true, profile: await loadCustomerProfile(env, tenantId, phone) }, { headers: jsonHeaders });
+    const name = limitText(payload.name, 80);
+    const phone = limitText(payload.phone, 32);
+    if (!name) return customerJsonError("CUSTOMER_UPDATE_FORBIDDEN", "name is required", 400);
+    await env.DB.prepare(`
+      UPDATE customers SET
+        name = ?, phone = ?, email = ?, gender = ?, address = ?, birthday = ?, preferred_service = ?, allergy_note = ?, contact_preference = ?, marketing_opt_in = ?, updated_at = datetime('now')
+      WHERE tenant_id = ? AND id = ? AND identity_id = ?
+    `).bind(
+      name,
+      phone || null,
+      limitText(payload.email, 120) || null,
+      limitText(payload.gender, 24) || null,
+      limitText(payload.address, 180) || null,
+      limitText(payload.birthday, 20) || null,
+      limitText(payload.preferredService || payload.preferred_service, 120) || null,
+      limitText(payload.allergyNote || payload.allergy_note, 180) || null,
+      limitText(payload.contactPreference || payload.contact_preference, 32) || "phone",
+      payload.marketingOptIn === false ? 0 : 1,
+      session.tenantId,
+      session.customerId,
+      session.identityId
+    ).run();
+    return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
 }
 
+function limitText(value, maxLength) {
+  const text = String(value || "").trim();
+  return text.slice(0, Math.max(1, Number(maxLength || 120)));
+}
 function parseServiceIds(value) {
   if (value === null || value === undefined || value === "") return null;
   try {
@@ -2772,25 +3063,51 @@ async function loadCustomerProfile(env, tenantId, phone) {
     WHERE c.tenant_id = ? AND c.phone = ?
   `).bind(tenantId, phone).first();
   if (!customer) return null;
+  return loadCustomerProfileBundle(env, tenantId, customer);
+}
 
+async function loadCustomerProfileById(env, tenantId, customerId) {
+  if (!env.DB || !tenantId || !customerId) return null;
+  const customer = await env.DB.prepare(`
+    SELECT c.id, c.tenant_id, c.identity_id, c.customer_no, c.name, c.phone, c.email, c.gender, c.address, c.birthday, c.marketing_opt_in, c.preferred_service, c.allergy_note, c.contact_preference, c.points_balance, c.total_points_earned, c.total_points_used, c.referral_code, c.referred_by_code, r.name AS referrer_name, c.total_bookings, c.last_booking_at, c.status, c.created_at
+    FROM customers c
+    LEFT JOIN customers r ON r.id = c.referred_by_customer_id AND r.tenant_id = c.tenant_id
+    WHERE c.tenant_id = ? AND c.id = ?
+  `).bind(tenantId, customerId).first();
+  if (!customer) return null;
+  return loadCustomerProfileBundle(env, tenantId, customer);
+}
+
+async function loadCustomerProfileBundle(env, tenantId, customer) {
   const [points, bookingRows] = await Promise.all([
-    env.DB.prepare(`
-      SELECT type, points, reason, expires_at, created_at
-      FROM point_transactions
-      WHERE tenant_id = ? AND customer_id = ?
-      ORDER BY created_at DESC
-      LIMIT 30
-    `).bind(tenantId, customer.id).all(),
-    env.DB.prepare(`
-      SELECT id, booking_date, start_time, end_time, service_name, duration_minutes, price, status
-      FROM bookings
-      WHERE tenant_id = ? AND customer_id = ?
-      ORDER BY booking_date DESC, start_time DESC
-      LIMIT 30
-    `).bind(tenantId, customer.id).all()
+    loadCustomerPointTransactions(env, tenantId, customer.id),
+    loadCustomerBookings(env, tenantId, customer.id)
   ]);
+  return { customer, points, bookings: bookingRows };
+}
 
-  return { customer, points: points.results || [], bookings: bookingRows.results || [] };
+async function loadCustomerPointTransactions(env, tenantId, customerId) {
+  if (!env.DB || !tenantId || !customerId) return [];
+  const rows = await env.DB.prepare(`
+    SELECT type, points, reason, booking_id, expires_at, created_at
+    FROM point_transactions
+    WHERE tenant_id = ? AND customer_id = ?
+    ORDER BY created_at DESC
+    LIMIT 30
+  `).bind(tenantId, customerId).all();
+  return rows.results || [];
+}
+
+async function loadCustomerBookings(env, tenantId, customerId) {
+  if (!env.DB || !tenantId || !customerId) return [];
+  const rows = await env.DB.prepare(`
+    SELECT id, booking_date, start_time, end_time, service_name, duration_minutes, price, status
+    FROM bookings
+    WHERE tenant_id = ? AND customer_id = ?
+    ORDER BY booking_date DESC, start_time DESC
+    LIMIT 30
+  `).bind(tenantId, customerId).all();
+  return rows.results || [];
 }
 async function loadCustomers(env, tenantId = TENANT_ID) {
   if (!env.DB) return [];
@@ -2935,11 +3252,22 @@ async function cancelBooking(request, env, tenantId) {
   try {
     const payload = await request.json();
     const bookingId = String(payload.bookingId || "").trim();
-    const phone = String(payload.phone || "").trim();
-    if (!bookingId || !phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
+    if (!bookingId) return Response.json({ ok: false, error: "bookingId is required" }, { status: 400, headers: jsonHeaders });
+    const customerSession = await readCustomerSession(request, env);
     const booking = await env.DB.prepare("SELECT b.id, b.customer_id, b.customer_phone, b.status, c.phone AS member_phone FROM bookings b LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.id = ?").bind(tenantId, bookingId).first();
     if (!booking) return Response.json({ ok: false, error: "booking not found" }, { status: 404, headers: jsonHeaders });
-    if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
+    let authorizedCustomerId = "";
+    let responseProfilePhone = "";
+    if (customerSession.ok && customerSession.tenantId === tenantId) {
+      if (String(booking.customer_id || "") !== customerSession.customerId) return customerJsonError("CUSTOMER_ACCESS_DENIED", "not allowed", 403);
+      authorizedCustomerId = customerSession.customerId;
+    } else {
+      const phone = String(payload.phone || "").trim();
+      if (!phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
+      if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
+      authorizedCustomerId = booking.customer_id || "";
+      responseProfilePhone = phone;
+    }
     if (booking.status !== "cancelled") {
       await env.DB.prepare("UPDATE bookings SET status = 'cancelled', updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, bookingId).run();
       if (booking.customer_id) {
@@ -2964,7 +3292,8 @@ async function cancelBooking(request, env, tenantId) {
         }
       }
     }
-    return Response.json({ ok: true, profile: await loadCustomerProfile(env, tenantId, phone) }, { headers: jsonHeaders });
+    const profile = authorizedCustomerId ? await loadCustomerProfileById(env, tenantId, authorizedCustomerId) : await loadCustomerProfile(env, tenantId, responseProfilePhone);
+    return Response.json({ ok: true, profile }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
@@ -2973,6 +3302,7 @@ async function createBooking(request, env, data) {
   const tenantId = data.store?.tenantId || TENANT_ID;
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   const payload = await request.json();
+  const customerSession = await readCustomerSession(request, env);
   const selectedService = data.services.find((item) => item.id === payload.serviceId) || data.services[0];
   const selectedPrice = selectedService.prices.find((item) => Number(item.minutes) === Number(payload.duration)) || selectedService.prices[0];
   const date = payload.date || todayInTaipei();
@@ -2980,10 +3310,18 @@ async function createBooking(request, env, data) {
   const duration = Number(selectedPrice.minutes);
   const end = toTime(toMinutes(start) + duration);
   const source = String(payload.source || "web").trim() === "walk_in" ? "walk_in" : "web";
-  const name = String(payload.customerName || payload.name || "").trim() || (source === "walk_in" ? "現場客" : "");
-  const rawPhone = String(payload.customerPhone || payload.phone || "").trim();
-  const phone = rawPhone || (source === "walk_in" ? `walk-in-${date}-${start}-${crypto.randomUUID().slice(0, 8)}` : "");
+  let name = String(payload.customerName || payload.name || "").trim() || (source === "walk_in" ? "現場客" : "");
+  let rawPhone = String(payload.customerPhone || payload.phone || "").trim();
+  let phone = rawPhone || (source === "walk_in" ? `walk-in-${date}-${start}-${crypto.randomUUID().slice(0, 8)}` : "");
   const referredByCode = String(payload.referredByCode || payload.referrer || "").trim() || null;
+  let sessionCustomer = null;
+  if (customerSession.ok && customerSession.tenantId === tenantId) {
+    const profile = await loadCustomerProfileById(env, customerSession.tenantId, customerSession.customerId);
+    sessionCustomer = profile?.customer || null;
+    name = name || String(sessionCustomer?.name || "").trim();
+    rawPhone = rawPhone || String(sessionCustomer?.phone || "").trim();
+    phone = phone || rawPhone;
+  }
 
   if (!name || !phone) return Response.json({ ok: false, error: "name and phone are required" }, { status: 400, headers: jsonHeaders });
 
@@ -3007,17 +3345,24 @@ async function createBooking(request, env, data) {
   if (!selectedStaffId) return Response.json({ ok: false, error: "no staff member is available for this slot" }, { status: 409, headers: jsonHeaders });
   const selectedStaff = freshData.staffMembers.find((staff) => staff.id === selectedStaffId) || { id: selectedStaffId, name: selectedStaffId };
 
-  const existing = await env.DB.prepare("SELECT id FROM customers WHERE tenant_id = ? AND phone = ?").bind(tenantId, phone).first();
-  const customerId = existing?.id || crypto.randomUUID();
+  let existing = null;
+  let customerId = sessionCustomer?.id || "";
   const referrer = referredByCode ? await env.DB.prepare("SELECT id FROM customers WHERE tenant_id = ? AND referral_code = ?").bind(tenantId, referredByCode).first() : null;
 
-  if (!existing) {
-    await env.DB.prepare(`
-      INSERT INTO customers (id, tenant_id, name, phone, referral_code, referred_by_customer_id, referred_by_code, referred_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, datetime('now'), datetime('now'))
-    `).bind(customerId, tenantId, name, phone, makeReferralCode(phone), referrer?.id || null, referredByCode, referredByCode).run();
+  if (customerId) {
+    existing = { id: customerId };
+    await env.DB.prepare("UPDATE customers SET name = COALESCE(NULLIF(?, ''), name), phone = COALESCE(NULLIF(?, ''), phone), updated_at = datetime('now') WHERE tenant_id = ? AND id = ? AND identity_id = ?").bind(name, rawPhone, tenantId, customerId, customerSession.identityId).run();
   } else {
-    await env.DB.prepare("UPDATE customers SET name = ?, referred_by_code = COALESCE(referred_by_code, ?), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(name, referredByCode, tenantId, customerId).run();
+    existing = await env.DB.prepare("SELECT id FROM customers WHERE tenant_id = ? AND phone = ?").bind(tenantId, phone).first();
+    customerId = existing?.id || crypto.randomUUID();
+    if (!existing) {
+      await env.DB.prepare(`
+        INSERT INTO customers (id, tenant_id, name, phone, referral_code, referred_by_customer_id, referred_by_code, referred_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, datetime('now'), datetime('now'))
+      `).bind(customerId, tenantId, name, phone, makeReferralCode(phone), referrer?.id || null, referredByCode, referredByCode).run();
+    } else {
+      await env.DB.prepare("UPDATE customers SET name = ?, referred_by_code = COALESCE(referred_by_code, ?), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(name, referredByCode, tenantId, customerId).run();
+    }
   }
 
   const currentCustomer = await env.DB.prepare("SELECT points_balance FROM customers WHERE tenant_id = ? AND id = ?").bind(tenantId, customerId).first();

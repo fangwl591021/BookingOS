@@ -96,3 +96,14 @@
 ## LIFF Endpoint Operational Guard
 
 - If `https://liff.line.me/2010657278-9wbTln1T` shows JSON for `/platform-line-webhook`, the LIFF App Endpoint URL is misconfigured. It must point to `/merchant-login?tenant=demo-tenant&next=%2Fmerchant` for merchant login.
+
+## P1: Guest booking cancel still needs cancel token
+
+- 現象：Task 011 已讓登入會員用 Customer Session 取消自己的預約，但未登入訪客仍暫時使用 bookingId + phone。
+- 風險：phone 不是不可猜測憑證，正式版應改成預約取消 token。
+- 建議：下一輪建立 booking_cancel_token 或一次性取消連結，再逐步淘汰 phone cancel。
+
+## P1: Customer LIFF live acceptance pending
+
+- 現象：Task 011 程式面建立 Customer LIFF Login，但仍需設定正式 Customer LIFF Endpoint 並由 LINE App 實測。
+- 建議：部署後使用 `/member-login?tenant=<tenant_id>&next=/member` 完成真實 LINE App 驗收。

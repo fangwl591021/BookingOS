@@ -155,3 +155,18 @@
 - [x] Merchant LIFF login creates signed merchant session for a single tenant.
 - [x] Merchant LIFF login uses tenant picker for multiple tenants.
 - [x] No migration or session table added.
+
+## Gate 5A: Task 011 Customer Identity Session
+
+- [x] Customer LIFF login resolves Identity through scoped `identity_auth`.
+- [x] Customer profile lookup prefers `tenant_id + identity_id` during login.
+- [x] Signed Customer Session returns `identity_id`, `tenant_id`, `customer_id`, `role` and expiry.
+- [x] Member profile reads by session `customer_id`.
+- [x] Points read by session `customer_id`.
+- [x] Booking history reads by session `customer_id`.
+- [x] Booking writes session `customer_id` when same-tenant Customer Session exists.
+- [x] Logged-in customer cancel authorizes by Customer Session.
+- [x] Guest booking remains compatible.
+- [x] No `sessions` table added.
+- [ ] Guest cancel token still pending.
+- [ ] Customer LIFF live acceptance still pending.

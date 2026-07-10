@@ -1,4 +1,4 @@
-﻿## 2026-07-10 - Task 006 D1 Migration History Reconcile
+## 2026-07-10 - Task 006 D1 Migration History Reconcile
 
 ### Added
 
@@ -221,3 +221,30 @@
 ### Operational Note
 
 - LIFF Endpoint URL must point to `/merchant-login?tenant=demo-tenant&next=%2Fmerchant`; `/platform-line-webhook` is only for LINE OA Callback URL.
+
+## 2026-07-10 - Task 011 Customer Identity Session
+
+### Added
+
+- Added Customer LIFF identity login and signed Customer Session foundation.
+- Added `/member-login`, `/api/customer/liff-login`, `/api/customer/session`, `/api/customer-history`, `/api/customer-points`, and `/customer-logout`.
+- Added `docs/CUSTOMER_IDENTITY_SESSION.md`.
+- Added `migrations/0013_customer_identity_unique.sql` partial unique index for `customers(tenant_id, identity_id)`.
+
+### Security
+
+- Customer session payload contains identity_id, tenant_id, customer_id, role, iat and exp only.
+- Member profile, points and history now use Customer Session customer_id instead of phone for formal logged-in reads.
+- Booking cancellation for logged-in customers checks session customer_id and tenant_id.
+
+### Compatibility
+
+- Public guest booking remains available.
+- Legacy booking cancel by bookingId + phone remains temporarily for guests.
+### Deployed
+
+- Task 011 deployed to Cloudflare Workers Version ID: a607338b-bc53-443f-b1bc-48d1a9955bef.
+- Remote D1 backup created at .local-backups/bookingos-db-pre-customer-session-20260710.sql.
+- Remote migration 0013_customer_identity_unique.sql applied.
+- Customer session secret configured in Cloudflare Secrets.
+- Live success-path Customer LIFF test remains pending; token rejection and regression smoke passed.

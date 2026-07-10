@@ -1,4 +1,4 @@
-﻿# PROJECT_STATUS.md
+# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -199,3 +199,21 @@
 - Counts stayed stable: identities 3 -> 3, identity_auth 4 -> 4, tenant_admins 3 -> 3, platform_line_contacts 2 -> 2.
 - Regression before acceptance: health 200, public booking page 200, invalid LINE webhook signature 401, platform login 200, merchant password login 200, cookie attributes valid, tampered cookie rejected, logout invalidated session.
 - Acceptance status: Merchant LIFF Login Pass.
+
+## Task 011 Customer Identity Session 2026-07-10
+
+- Added Customer LIFF login foundation: `/member-login`, `POST /api/customer/liff-login`, `GET /api/customer/session`, `/customer-logout`.
+- Added HMAC-SHA256 signed customer cookie `bookingos_customer_session` with identity_id, tenant_id, customer_id and role=Customer.
+- Customer member pages `/member`, `/points`, `/history` now require Customer Session and load data by session customer_id.
+- `/api/member`, `/api/customer-history`, `/api/customer-points` use session tenant/customer scope.
+- Booking creation keeps guest flow, but valid same-tenant Customer Session now uses session customer_id.
+- Logged-in customer cancel uses session customer_id; legacy phone cancel remains as transitional risk.
+- Local and remote duplicate audit for `customers(tenant_id, identity_id)` returned no rows; added `0013_customer_identity_unique.sql`.
+## Task 011 Deployment Result 2026-07-10
+
+- Deployed Cloudflare Workers Version ID: a607338b-bc53-443f-b1bc-48d1a9955bef.
+- Remote D1 backup: .local-backups/bookingos-db-pre-customer-session-20260710.sql.
+- CUSTOMER_SESSION_SECRET configured as Cloudflare Secret.
+- Remote migration 0013_customer_identity_unique.sql applied; migrations now report no pending.
+- Smoke passed: health 200, member protected redirect, member-login page, customer session 401 without cookie, missing/invalid/line_user_id-only LIFF token rejected, public booking page 200, platform login 200, merchant login 200, invalid LINE webhook signature 401.
+- Real Customer LIFF success-path live test remains pending because it requires LINE App ID Token from Tony.
