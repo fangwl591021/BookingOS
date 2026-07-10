@@ -1739,6 +1739,8 @@ function renderCustomerLoginPage(data = { store }, next = "/member", error = "",
   const shouldInitLiff = Boolean(isLiffEntry);
   const liffScript = safeLiffId ? `<script>
 const liffId=${JSON.stringify(safeLiffId)};
+const liffEntryUrl=${JSON.stringify(liffEntryUrl)};
+const shouldInitLiff=${JSON.stringify(shouldInitLiff)};
 const liffSdkUrl="https://static.line-scdn.net/liff/edge/2/sdk.js";
 let liffSdkReady=null;
 function loadLiffSdk(){if(window.liff)return Promise.resolve();if(!liffSdkReady){liffSdkReady=new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=liffSdkUrl;script.async=true;script.onload=resolve;script.onerror=reject;document.head.appendChild(script);});}return liffSdkReady;}
