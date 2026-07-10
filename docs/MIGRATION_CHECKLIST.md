@@ -1,4 +1,4 @@
-﻿# BookingOS Identity Migration Checklist
+# BookingOS Identity Migration Checklist
 
 日期：2026-07-10
 狀態：Task 005 Additive Identity Migration 已完成。未切換登入、Session、LIFF、預約、CRM 行為。
@@ -60,9 +60,9 @@
 
 ## Gate 5: Customer Flow
 
-- [ ] Customer LINE/phone login resolves Identity through `identity_auth`.
+- [x] Customer phone + ROC birthday login resolves Identity through PHONE `identity_auth`.
 - [ ] Customer profile lookup prefers `tenant_id + identity_id`.
-- [ ] Phone fallback remains during transition.
+- [x] Phone + ROC birthday is the active V1 customer login path.
 - [ ] Booking writes `customer_id`.
 - [ ] Points write `customer_id`.
 - [ ] Booking history reads by `customer_id`.
@@ -158,7 +158,7 @@
 
 ## Gate 5A: Task 011 Customer Identity Session
 
-- [x] Customer LIFF login resolves Identity through scoped `identity_auth`.
+- [x] Customer phone + ROC birthday login resolves Identity through PHONE `identity_auth`.
 - [x] Customer profile lookup prefers `tenant_id + identity_id` during login.
 - [x] Signed Customer Session returns `identity_id`, `tenant_id`, `customer_id`, `role` and expiry.
 - [x] Member profile reads by session `customer_id`.
@@ -169,4 +169,10 @@
 - [x] Guest booking remains compatible.
 - [x] No `sessions` table added.
 - [ ] Guest cancel token still pending.
-- [ ] Customer LIFF live acceptance still pending.
+- [x] Customer LIFF live acceptance removed from V1 scope; Customer LINE login is parked.
+## Current V1 Customer Auth Decision - 2026-07-11
+
+- [x] Customer member login is phone + ROC birthday, for example `591021`.
+- [x] Customer LINE / LIFF login is paused.
+- [x] Customer LINE binding is deferred until phone session, tenant isolation, and smoke tests are stable.
+- [x] Merchant LINE login remains active and must not be changed by customer auth work.

@@ -233,12 +233,6 @@ export default {
       return Response.redirect(new URL("/platform-login", request.url), 302);
     }
     if (url.pathname === "/merchant-login") {
-      const customerIntent = customerIntentFromLoginUrl(url);
-      if (customerIntent.ok) {
-        const loginNext = customerIntent.next || url.searchParams.get("next") || "/member";
-        const loginError = url.searchParams.get("error") || "";
-        return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, loginNext, loginError));
-      }
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
       return html(renderMerchantLoginPage(url.searchParams.has("tenant") ? activeTenantId : "", url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
@@ -298,6 +292,8 @@ export default {
       return handleLineWebhook(request, env);
     }
 
+    const apiRoute = classifyApiRoute(url.pathname, request.method);
+    if (!apiRoute.ok) return apiRouteFailureResponse(apiRoute);
     if (url.pathname === "/api/health") {
       return Response.json({ ok: true, service: "BookingOS", version: "0.2.2-resource-capacity", database: Boolean(env.DB) }, { headers: jsonHeaders });
     }
@@ -383,9 +379,9 @@ export default {
     }
 
     if (url.pathname === "/api/customer-profile") {
-      const session = await readCustomerSession(request, env);
-      if (session.ok && session.tenantId === activeTenantId) return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
-      return Response.json({ ok: true, profile: await loadCustomerProfile(env, activeTenantId, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
+      const session = await requireCustomerSession(request, env, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/member") {
@@ -435,7 +431,7 @@ export default {
       return html(renderCustomerPage(data));
     }
 
-    if (url.pathname === "/member" || url.pathname === "/points" || url.pathname === "/history") {
+    if (isCustomerProtectedPath(url.pathname)) {
       const session = await requireCustomerSession(request, env, activeTenantId);
       if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       const active = url.pathname === "/points" ? "points" : url.pathname === "/history" ? "history" : "member";
@@ -478,40 +474,65 @@ function isCustomerMemberNext(next = "") {
   return path === "/member" || path === "/points" || path === "/history";
 }
 
-function customerIntentFromLoginUrl(url) {
-  const next = url.searchParams.get("next") || "";
-  const intent = String(url.searchParams.get("intent") || "").trim().toLowerCase();
-  if (isCustomerMemberNext(next)) return { ok: true, next, intent };
-  if (intent === "login" || intent === "register") return { ok: true, next: next || "/member", intent };
-  const rawState = String(url.searchParams.get("liff.state") || "").trim();
-  if (!rawState) return { ok: false };
-  const states = [rawState];
-  try { states.push(decodeURIComponent(rawState)); } catch {}
-  const hasExplicitMerchantNext = states.some((state) => {
-    try {
-      const stateUrl = new URL(state, url.origin);
-      return stateUrl.pathname === "/merchant" || stateUrl.searchParams.get("next") === "/merchant";
-    } catch {
-      return state.includes("/merchant") || state.includes("next=%2Fmerchant") || state.includes("next=/merchant");
-    }
-  });
-  if (!hasExplicitMerchantNext && url.searchParams.has("liff.state")) return { ok: true, next: "/member", intent: "login" };
-  for (const state of states) {
-    try {
-      const stateUrl = new URL(state, url.origin);
-      const stateNext = stateUrl.searchParams.get("next") || stateUrl.pathname || "";
-      const stateIntent = String(stateUrl.searchParams.get("intent") || "").trim().toLowerCase();
-      if (isCustomerMemberNext(stateNext) || stateUrl.pathname === "/member-login") return { ok: true, next: stateNext || "/member", intent: stateIntent };
-      if (stateIntent === "login" || stateIntent === "register") return { ok: true, next: stateNext || "/member", intent: stateIntent };
-    } catch {
-      if (state.includes("/member") || state.includes("/points") || state.includes("/history") || state.includes("intent=login") || state.includes("intent=register")) {
-        return { ok: true, next: "/member", intent: "" };
-      }
-    }
-  }
-  return { ok: false };
+function isCustomerProtectedPath(pathname) {
+  return pathname === "/member" || pathname === "/points" || pathname === "/history";
 }
 
+function classifyApiRoute(pathname, method = "GET") {
+  if (!String(pathname || "").startsWith("/api/")) return { ok: true };
+  const normalizedMethod = String(method || "GET").toUpperCase() === "HEAD" ? "GET" : String(method || "GET").toUpperCase();
+  const routeMethods = apiRouteMethods(pathname);
+  if (!routeMethods) return { ok: false, status: 404, code: "API_ROUTE_NOT_FOUND", message: "API route is not registered" };
+  if (!routeMethods.includes(normalizedMethod)) return { ok: false, status: 405, code: "API_METHOD_NOT_ALLOWED", message: "API method is not allowed", allow: routeMethods.join(", ") };
+  return { ok: true };
+}
+
+function apiRouteMethods(pathname) {
+  const routes = {
+    "/api/health": ["GET"],
+    "/api/merchant/liff-login": ["POST"],
+    "/api/customer/register": ["POST"],
+    "/api/customer/phone-login": ["POST"],
+    "/api/customer/phone-register": ["POST"],
+    "/api/customer/liff-login": ["POST"],
+    "/api/customer/session": ["GET"],
+    "/api/platform": ["GET"],
+    "/api/applications": ["POST"],
+    "/api/trials": ["POST"],
+    "/api/platform/applications/approve": ["POST"],
+    "/api/platform/trials/convert": ["POST"],
+    "/api/platform/orders/mark-paid": ["POST"],
+    "/api/platform/orders/plan": ["POST"],
+    "/api/platform/tenants": ["POST"],
+    "/api/platform/admins": ["POST"],
+    "/api/platform/platform-line-oa": ["POST"],
+    "/api/platform/line-oa": ["POST"],
+    "/api/referrals/claim": ["POST"],
+    "/api/dashboard": ["GET"],
+    "/api/availability": ["GET"],
+    "/api/store": ["GET", "POST"],
+    "/api/settings": ["GET", "POST"],
+    "/api/services": ["GET", "POST"],
+    "/api/staff": ["GET", "POST"],
+    "/api/resources": ["GET", "POST"],
+    "/api/customers/export": ["GET"],
+    "/api/customers": ["GET"],
+    "/api/customer-profile": ["GET"],
+    "/api/member": ["GET", "POST"],
+    "/api/customer-history": ["GET"],
+    "/api/customer-points": ["GET"],
+    "/api/bookings/cancel": ["POST"],
+    "/api/bookings": ["POST"]
+  };
+  if (pathname.startsWith("/api/resources/")) return ["GET", "POST"];
+  return routes[pathname] || null;
+}
+
+function apiRouteFailureResponse(result) {
+  const headers = { ...jsonHeaders };
+  if (result.allow) headers.allow = result.allow;
+  return Response.json({ ok: false, success: false, error: { code: result.code, message: result.message } }, { status: result.status || 404, headers });
+}
 function customerMemberLoginUrl(request, tenantId = "", next = "/member", error = "") {
   const url = new URL("/member-login", request.url);
   if (tenantId) url.searchParams.set("tenant", tenantId);
@@ -791,7 +812,7 @@ async function loadCustomerPrincipal(env, identityId, tenantId, customerId) {
 
 async function readCustomerSession(request, env) {
   const token = readCookie(request, CUSTOMER_SESSION_COOKIE);
-  if (!token) return customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required");
+  if (!token) return customerAuthError("CUSTOMER_SESSION_REQUIRED", "請先登入會員");
   const verified = await verifyCustomerSession(env, decodeURIComponent(token));
   if (!verified.ok) return verified;
   const principal = await loadCustomerPrincipal(env, verified.payload.sub, verified.payload.tenant_id, verified.payload.customer_id);
@@ -821,7 +842,7 @@ function clearCustomerSessionCookie() {
 
 function customerAuthFailureResponse(request, auth, tenantId = "") {
   const status = auth.status || 401;
-  if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
+  if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "請先登入會員" } }, { status, headers: jsonHeaders });
   const current = new URL(request.url);
   const url = new URL("/member-login", request.url);
   if (tenantId) url.searchParams.set("tenant", tenantId);
@@ -1008,12 +1029,35 @@ function normalizeCustomerPhone(value) {
 
 function normalizeCustomerBirthdayCredential(value) {
   const digits = String(value || "").trim().replace(/\D/g, "");
-  if (digits.length !== 8) return "";
-  const year = Number(digits.slice(0, 4));
-  const month = Number(digits.slice(4, 6));
-  const day = Number(digits.slice(6, 8));
-  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return "";
-  return digits;
+  if (!digits) return "";
+
+  let rocYear = 0;
+  let month = 0;
+  let day = 0;
+
+  if (digits.length === 8) {
+    const gregorianYear = Number(digits.slice(0, 4));
+    if (gregorianYear < 1912 || gregorianYear > 2100) return "";
+    rocYear = gregorianYear - 1911;
+    month = Number(digits.slice(4, 6));
+    day = Number(digits.slice(6, 8));
+  } else if (digits.length === 6 || digits.length === 7) {
+    rocYear = Number(digits.slice(0, -4));
+    month = Number(digits.slice(-4, -2));
+    day = Number(digits.slice(-2));
+  } else {
+    return "";
+  }
+
+  const gregorianYear = rocYear + 1911;
+  if (rocYear < 1 || rocYear > 199 || !isValidDateParts(gregorianYear, month, day)) return "";
+  return String(rocYear) + String(month).padStart(2, "0") + String(day).padStart(2, "0");
+}
+
+function isValidDateParts(year, month, day) {
+  if (year < 1912 || year > 2110 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 function customerBirthdayMatches(stored, input) {
@@ -1610,7 +1654,7 @@ async function handleCustomerPhoneLogin(request, env, tenantId = TENANT_ID) {
   const phone = normalizeCustomerPhone(payload?.phone);
   const birthday = normalizeCustomerBirthdayCredential(payload?.birthday);
   const next = safeCustomerNext(payload?.next || "/member", "/member");
-  if (!phone || !birthday) return customerJsonError("CUSTOMER_LOGIN_REQUIRED", "請輸入手機與生日 YYYYMMDD", 400);
+  if (!phone || !birthday) return customerJsonError("CUSTOMER_LOGIN_REQUIRED", "請輸入手機與民國生日，例如 591021", 400);
   const identity = await findPhoneIdentity(env, phone);
   if (!identity.ok) return customerJsonError(identity.code, identity.message, identity.status || 401);
   const customer = await resolveCustomerByPhoneCredential(env, tenantId, identity.identityId, phone, birthday);
@@ -1630,7 +1674,7 @@ async function handleCustomerPhoneRegister(request, env, tenantId = TENANT_ID) {
   const birthday = normalizeCustomerBirthdayCredential(payload?.birthday);
   const email = limitText(payload?.email, 120);
   const next = safeCustomerNext(payload?.next || "/member", "/member");
-  if (!name || !phone || !birthday) return customerJsonError("CUSTOMER_REGISTER_REQUIRED", "請輸入姓名、手機與生日 YYYYMMDD", 400);
+  if (!name || !phone || !birthday) return customerJsonError("CUSTOMER_REGISTER_REQUIRED", "請輸入姓名、手機與民國生日，例如 591021", 400);
   const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(tenantId).first();
   if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return customerJsonError("CUSTOMER_ACCESS_DENIED", "店家目前無法註冊會員", 403);
   const identity = await ensureCustomerPhoneIdentity(env, phone);
@@ -2062,9 +2106,9 @@ const payload = JSON.stringify({ tenantId, store: compactInlineStore(data.store 
 function renderCustomerLoginPage(data = { store }, next = "/member", error = "") {
   const tenantId = data.store?.tenantId || TENANT_ID;
   const storeName = data.store?.name || "BookingOS";
-  const safeNext = next && String(next).startsWith("/") ? String(next) : "/member";
+  const safeNext = safeCustomerNext(next, "/member");
   const errorBox = error ? `<div class="error">登入失效，請重新登入</div>` : "";
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} 會員登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad;--soft:#f2faf6}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 4px}p{color:var(--muted);line-height:1.55;margin:0}.mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0 14px}.mode button{min-height:42px;border:1px solid var(--line);border-radius:8px;background:white;font-weight:950}.mode button.active{background:var(--green);border-color:var(--green);color:white}.field{display:grid;gap:6px;margin-top:12px;color:var(--muted);font-weight:850}.field input{width:100%;min-height:48px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}.hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}.submit{width:100%;min-height:50px;border:0;border-radius:8px;background:var(--blue);color:white;font-weight:950;font-size:17px;margin-top:14px}.submit.login{background:var(--green);color:white}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}.register-only{display:none}.is-register .register-only{display:grid}.notice{border-radius:8px;background:var(--soft);border:1px solid var(--line);padding:11px;margin-top:12px;color:var(--muted);line-height:1.5}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p>會員登入</p></div></div>${errorBox}<div class="mode"><button class="active" id="mode-login" type="button">登入</button><button id="mode-register" type="button">註冊</button></div><form id="phone-member-form"><input type="hidden" name="tenant" value="${escapeAttrValue(tenantId)}"><input type="hidden" name="next" value="${escapeAttrValue(safeNext)}"><label class="field register-only">姓名<input name="name" autocomplete="name" placeholder="首次註冊必填"></label><label class="field">手機<input name="phone" autocomplete="tel" inputmode="tel" placeholder="0912345678" required></label><label class="field">生日<input name="birthday" inputmode="numeric" placeholder="YYYYMMDD" maxlength="8" required></label><div class="hint">第一版會員登入使用手機作為帳號，生日 YYYYMMDD 作為登入憑證。LINE 綁定稍後再開。</div><button class="submit login" id="submit-member" type="submit">登入</button><div class="status" id="login-status"></div></form><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">先回預約頁</a></main><script>let mode="login";const form=document.querySelector("#phone-member-form");const card=document.querySelector(".card");const statusBox=document.querySelector("#login-status");const submit=document.querySelector("#submit-member");const loginBtn=document.querySelector("#mode-login");const registerBtn=document.querySelector("#mode-register");function setMode(next){mode=next==="register"?"register":"login";card.classList.toggle("is-register",mode==="register");loginBtn.classList.toggle("active",mode==="login");registerBtn.classList.toggle("active",mode==="register");submit.textContent=mode==="register"?"建立會員並登入":"登入";submit.classList.toggle("login",mode==="login");statusBox.textContent="";}loginBtn.onclick=()=>setMode("login");registerBtn.onclick=()=>setMode("register");form.addEventListener("submit",async(e)=>{e.preventDefault();statusBox.textContent=mode==="register"?"建立會員中...":"登入中...";const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.next=${JSON.stringify(safeNext)};const endpoint=mode==="register"?"/api/customer/phone-register":"/api/customer/phone-login";try{const res=await fetch(endpoint+"?tenant="+encodeURIComponent(payload.tenant),{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify(payload)});const data=await res.json();if(!res.ok||!data.ok){statusBox.textContent=data?.error?.message||"操作失敗";return;}location.href=data.redirect||payload.next;}catch(error){statusBox.textContent="操作失敗，請稍後再試";}});</script></body></html>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} 會員登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad;--soft:#f2faf6}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 4px}p{color:var(--muted);line-height:1.55;margin:0}.mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0 14px}.mode button{min-height:42px;border:1px solid var(--line);border-radius:8px;background:white;font-weight:950}.mode button.active{background:var(--green);border-color:var(--green);color:white}.field{display:grid;gap:6px;margin-top:12px;color:var(--muted);font-weight:850}.field input{width:100%;min-height:48px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}.hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}.submit{width:100%;min-height:50px;border:0;border-radius:8px;background:var(--blue);color:white;font-weight:950;font-size:17px;margin-top:14px}.submit.login{background:var(--green);color:white}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}.register-only{display:none}.is-register .register-only{display:grid}.notice{border-radius:8px;background:var(--soft);border:1px solid var(--line);padding:11px;margin-top:12px;color:var(--muted);line-height:1.5}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p>會員登入</p></div></div>${errorBox}<div class="mode"><button class="active" id="mode-login" type="button">登入</button><button id="mode-register" type="button">註冊</button></div><form id="phone-member-form"><input type="hidden" name="tenant" value="${escapeAttrValue(tenantId)}"><input type="hidden" name="next" value="${escapeAttrValue(safeNext)}"><label class="field register-only">姓名<input name="name" autocomplete="name" placeholder="首次註冊必填"></label><label class="field">手機<input name="phone" autocomplete="tel" inputmode="tel" placeholder="0912345678" required></label><label class="field">生日<input name="birthday" inputmode="numeric" placeholder="例如 591021" maxlength="7" required></label><div class="hint">第一版會員登入使用手機作為帳號，民國生日作為登入憑證，例如 591021。LINE 綁定稍後再開。</div><button class="submit login" id="submit-member" type="submit">登入</button><div class="status" id="login-status"></div></form><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">先回預約頁</a></main><script>let mode="login";const form=document.querySelector("#phone-member-form");const card=document.querySelector(".card");const statusBox=document.querySelector("#login-status");const submit=document.querySelector("#submit-member");const loginBtn=document.querySelector("#mode-login");const registerBtn=document.querySelector("#mode-register");function setMode(next){mode=next==="register"?"register":"login";card.classList.toggle("is-register",mode==="register");loginBtn.classList.toggle("active",mode==="login");registerBtn.classList.toggle("active",mode==="register");submit.textContent=mode==="register"?"建立會員並登入":"登入";submit.classList.toggle("login",mode==="login");statusBox.textContent="";}loginBtn.onclick=()=>setMode("login");registerBtn.onclick=()=>setMode("register");form.addEventListener("submit",async(e)=>{e.preventDefault();statusBox.textContent=mode==="register"?"建立會員中...":"登入中...";const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.next=${JSON.stringify(safeNext)};const endpoint=mode==="register"?"/api/customer/phone-register":"/api/customer/phone-login";try{const res=await fetch(endpoint+"?tenant="+encodeURIComponent(payload.tenant),{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify(payload)});const data=await res.json();if(!res.ok||!data.ok){statusBox.textContent=data?.error?.message||"操作失敗";return;}location.href=data.redirect||payload.next;}catch(error){statusBox.textContent="操作失敗，請稍後再試";}});</script></body></html>`;
 }
 async function renderCustomerRegisterPage(request, env, tenantId = TENANT_ID, error = "") {
   const token = readCookie(request, CUSTOMER_REGISTRATION_COOKIE);
@@ -2094,7 +2138,7 @@ const content=document.querySelector("#member-content");
 const esc=(v)=>String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 function money(n){return "NT$"+Number(n||0).toLocaleString("zh-TW");}
 async function api(path,options={}){const res=await fetch(path+(path.includes("?")?"&":"?")+"tenant="+encodeURIComponent(memberState.tenantId),{credentials:"same-origin",...options});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!res.ok||!data.ok)throw new Error(data?.error?.message||data?.error||"讀取失敗");return data;}
-function profileView(profile){const c=profile.customer||{};const summary=[c.phone,c.birthday,c.gender].filter(Boolean).join(' · ');content.innerHTML='<div class="item-list"><div class="profile-summary"><div><b>'+esc(c.name||'會員')+'</b><div class="muted-small">'+esc(summary||'尚未填寫完整資料')+'</div><div class="muted-small">點數餘額：'+Number(c.points_balance||0)+' 點</div></div><button class="collapse-btn" id="profile-toggle" type="button" aria-expanded="false">展開</button></div><form id="profile-form" class="item-list collapsible" hidden><div class="member-grid"><label class="field">姓名<input name="name" value="'+esc(c.name||'')+'"></label><label class="field">手機<input name="phone" value="'+esc(c.phone||'')+'"></label><label class="field">Email<input name="email" value="'+esc(c.email||'')+'"></label><label class="field">生日<input name="birthday" inputmode="numeric" maxlength="8" placeholder="YYYYMMDD" value="'+esc(c.birthday||'')+'"></label><label class="field">性別<select name="gender"><option value="">未填寫</option><option value="男">男</option><option value="女">女</option><option value="其他">其他</option><option value="不提供">不提供</option></select></label><label class="field">聯絡偏好<select name="contactPreference"><option value="phone">電話</option><option value="line">LINE</option><option value="email">Email</option></select></label></div><label class="field">地址<input name="address" value="'+esc(c.address||'')+'"></label><label class="field">偏好服務<input name="preferredService" value="'+esc(c.preferred_service||'')+'"></label><label class="field">過敏或提醒<input name="allergyNote" value="'+esc(c.allergy_note||'')+'"></label><button class="save-btn" type="submit">儲存會員資料</button><div class="muted-small" id="save-status"></div></form></div>';const pref=content.querySelector('[name="contactPreference"]');if(pref)pref.value=c.contact_preference||'phone';const gender=content.querySelector('[name="gender"]');if(gender){const g=c.gender||'';gender.value=['','男','女','其他','不提供'].includes(g)?g:'';}const toggle=content.querySelector('#profile-toggle');const form=content.querySelector('#profile-form');toggle.onclick=()=>{const open=form.hidden;form.hidden=!open;toggle.textContent=open?'收合':'展開';toggle.setAttribute('aria-expanded',String(open));};form.addEventListener('submit',async(e)=>{e.preventDefault();const fd=new FormData(e.target);document.querySelector('#save-status').textContent='儲存中...';try{await api('/api/member',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(fd.entries()))});document.querySelector('#save-status').textContent='已儲存';}catch(err){document.querySelector('#save-status').textContent='儲存失敗：'+err.message;}});}
+function profileView(profile){const c=profile.customer||{};const summary=[c.phone,c.birthday,c.gender].filter(Boolean).join(' · ');content.innerHTML='<div class="item-list"><div class="profile-summary"><div><b>'+esc(c.name||'會員')+'</b><div class="muted-small">'+esc(summary||'尚未填寫完整資料')+'</div><div class="muted-small">點數餘額：'+Number(c.points_balance||0)+' 點</div></div><button class="collapse-btn" id="profile-toggle" type="button" aria-expanded="false">展開</button></div><form id="profile-form" class="item-list collapsible" hidden><div class="member-grid"><label class="field">姓名<input name="name" value="'+esc(c.name||'')+'"></label><label class="field">手機<input name="phone" value="'+esc(c.phone||'')+'"></label><label class="field">Email<input name="email" value="'+esc(c.email||'')+'"></label><label class="field">生日<input name="birthday" inputmode="numeric" maxlength="7" placeholder="例如 591021" value="'+esc(c.birthday||'')+'"></label><label class="field">性別<select name="gender"><option value="">未填寫</option><option value="男">男</option><option value="女">女</option><option value="其他">其他</option><option value="不提供">不提供</option></select></label><label class="field">聯絡偏好<select name="contactPreference"><option value="phone">電話</option><option value="line">LINE</option><option value="email">Email</option></select></label></div><label class="field">地址<input name="address" value="'+esc(c.address||'')+'"></label><label class="field">偏好服務<input name="preferredService" value="'+esc(c.preferred_service||'')+'"></label><label class="field">過敏或提醒<input name="allergyNote" value="'+esc(c.allergy_note||'')+'"></label><button class="save-btn" type="submit">儲存會員資料</button><div class="muted-small" id="save-status"></div></form></div>';const pref=content.querySelector('[name="contactPreference"]');if(pref)pref.value=c.contact_preference||'phone';const gender=content.querySelector('[name="gender"]');if(gender){const g=c.gender||'';gender.value=['','男','女','其他','不提供'].includes(g)?g:'';}const toggle=content.querySelector('#profile-toggle');const form=content.querySelector('#profile-form');toggle.onclick=()=>{const open=form.hidden;form.hidden=!open;toggle.textContent=open?'收合':'展開';toggle.setAttribute('aria-expanded',String(open));};form.addEventListener('submit',async(e)=>{e.preventDefault();const fd=new FormData(e.target);document.querySelector('#save-status').textContent='儲存中...';try{await api('/api/member',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(fd.entries()))});document.querySelector('#save-status').textContent='已儲存';}catch(err){document.querySelector('#save-status').textContent='儲存失敗：'+err.message;}});}
 function pointsView(profile){const c=profile.customer||{};const rows=(profile.points||[]).map(p=>'<div class="item-row"><b>'+Number(p.points||0)+' 點</b><div class="muted-small">'+esc(p.type||'')+' · '+esc(p.reason||'')+'</div><div class="muted-small">'+esc(p.created_at||'')+'</div></div>').join('');content.innerHTML='<div class="item-list"><div class="item-row"><b>可用點數 '+Number(c.points_balance||0)+' 點</b><div class="muted-small">累積取得 '+Number(c.total_points_earned||0)+'，累積使用 '+Number(c.total_points_used||0)+'</div></div>'+(rows||'<div class="item-row">尚無點數紀錄</div>')+'</div>';}
 function historyView(profile){const rows=(profile.bookings||[]).map(b=>'<div class="item-row"><b>'+esc(b.service_name||'預約')+'</b><div class="muted-small">'+esc(b.booking_date||'')+' '+esc(b.start_time||'')+' · '+Number(b.duration_minutes||0)+' 分鐘 · '+money(b.price||0)+'</div><div class="muted-small">狀態：'+esc(b.status||'')+'</div>'+(b.status==='cancelled'?'':'<button class="danger-btn" data-cancel="'+esc(b.id)+'" type="button">取消預約</button>')+'</div>').join('');content.innerHTML='<div class="item-list">'+(rows||'<div class="item-row">尚無預約紀錄</div>')+'</div>';content.querySelectorAll('[data-cancel]').forEach(btn=>btn.onclick=async()=>{btn.disabled=true;try{await api('/api/bookings/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({bookingId:btn.dataset.cancel})});await load();}catch(err){btn.textContent='取消失敗';}});}
 async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-login?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
@@ -3308,7 +3352,7 @@ async function loadBookings(env, date, tenantId) {
 
 async function saveMemberProfile(request, env, tenantId, session = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
-  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required"), tenantId);
+  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, customerAuthError("CUSTOMER_SESSION_REQUIRED", "請先登入會員"), tenantId);
   try {
     const payload = await request.json();
     const name = limitText(payload.name, 80);
@@ -3442,6 +3486,25 @@ async function loadCustomerProfile(env, tenantId, phone) {
   return loadCustomerProfileBundle(env, tenantId, customer);
 }
 
+async function loadCustomerPrefillByPhone(env, tenantId, phone) {
+  if (!env.DB || !tenantId || !phone) return null;
+  const normalizedPhone = String(phone || "").trim();
+  if (!normalizedPhone) return null;
+  const customer = await env.DB.prepare(`
+    SELECT name, phone
+    FROM customers
+    WHERE tenant_id = ? AND phone = ?
+  `).bind(tenantId, normalizedPhone).first();
+  if (!customer) return null;
+  return {
+    customer: {
+      name: customer.name || "",
+      phone: customer.phone || ""
+    },
+    points: [],
+    bookings: []
+  };
+}
 async function loadCustomerProfileById(env, tenantId, customerId) {
   if (!env.DB || !tenantId || !customerId) return null;
   const customer = await env.DB.prepare(`
@@ -3641,7 +3704,6 @@ async function cancelBooking(request, env, tenantId) {
       const phone = String(payload.phone || "").trim();
       if (!phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
       if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
-      authorizedCustomerId = booking.customer_id || "";
       responseProfilePhone = phone;
     }
     if (booking.status !== "cancelled") {
@@ -3668,7 +3730,7 @@ async function cancelBooking(request, env, tenantId) {
         }
       }
     }
-    const profile = authorizedCustomerId ? await loadCustomerProfileById(env, tenantId, authorizedCustomerId) : await loadCustomerProfile(env, tenantId, responseProfilePhone);
+    const profile = authorizedCustomerId ? await loadCustomerProfileById(env, tenantId, authorizedCustomerId) : await loadCustomerPrefillByPhone(env, tenantId, responseProfilePhone);
     return Response.json({ ok: true, profile }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
