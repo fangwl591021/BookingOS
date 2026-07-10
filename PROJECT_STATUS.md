@@ -75,3 +75,11 @@
 - `SELECT ... FROM bookings` 未發現缺少 tenant filter 的查詢。
 - 已列出登入反查 tenant 的 P0 / REVIEW 風險：`tenant_admins` 全域反查可能在多店同帳號時登入錯店。
 - 本輪尚未修補，下一步應先處理店家帳密登入與 LIFF 登入的多 tenant 選店規則，再建立 tenant smoke test。
+
+## Identity Audit 2026-07-10
+
+- 已完成唯讀掃描並產生 `docs/IDENTITY_AUDIT.md`。
+- 目前沒有獨立 `users`、`tenant_users`、`roles`、`sessions` 表。
+- 目前平台 session 只代表平台 secret 命中；店家 session 只存 tenant，不存 `user_id` 與 `role`。
+- 目前一人多店在 schema 上部分可發生，但登入流程會以 requested tenant 或 `LIMIT 1` 自動選店。
+- 本輪尚未修補；下一步需先確認 V2 Identity Model，再改登入、session、permission。

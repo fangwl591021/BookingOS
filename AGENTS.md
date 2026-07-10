@@ -30,6 +30,7 @@
 - 不得將真實 Token、Secret、Channel Secret、Access Token 或密碼寫入 Git。
 - 每次任務完成後必須更新 `PROJECT_STATUS.md` 與 `CHANGELOG.md`。
 - AIWE Rule：任何租戶資料表 SQL 若沒有 tenant filter，全部視為 P0 資料外洩風險；不得降級為 P1。新增或修改 API/SQL/CRUD 前必須先確認 tenant_id。
+- AIWE Rule：Identity 優先於 Tenant；順序必須是 Identity -> Tenant -> Permission -> Data。登入流程不得用 `LIMIT 1` 靜默替使用者選店。
 
 ## AIWE 共用規範摘要
 

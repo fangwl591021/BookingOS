@@ -4,6 +4,8 @@
 
 ### Added
 
+- 新增 `docs/IDENTITY_AUDIT.md`，整理目前登入方式、Session、Identity/Tenant 關係與 V2 模型方向。
+
 - 新增 `docs/TENANT_AUDIT.md`，完整列出 API、Worker、CRUD 與 SQL tenant filter audit。
 
 - 接入 AIWE Dev System 專案文件。
@@ -17,6 +19,8 @@
 - 新增 `.env.example`，說明目前 Cloudflare binding 與 LINE 設定存放位置。
 
 ### Security
+
+- 新增 AIWE Rule：Identity 優先於 Tenant，登入需先識別 user，再選 tenant，再判斷 permission。
 
 - 新增 AIWE Rule：任何租戶資料表 SQL 沒有 tenant filter，一律列為 P0 資料外洩風險。
 
