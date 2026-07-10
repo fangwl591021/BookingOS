@@ -235,9 +235,10 @@ export default {
     if (url.pathname === "/merchant-login") {
       const customerIntent = customerIntentFromLoginUrl(url);
       if (customerIntent.ok) {
-        const redirectUrl = customerMemberLoginUrl(request, activeTenantId, customerIntent.next || "/member", url.searchParams.get("error") || "");
-        if (customerIntent.intent === "login" || customerIntent.intent === "register") redirectUrl.searchParams.set("intent", customerIntent.intent);
-        return Response.redirect(redirectUrl, 302);
+        const loginNext = customerIntent.next || url.searchParams.get("next") || "/member";
+        const loginError = url.searchParams.get("error") || "";
+        const liffId = await customerLoginLiffId(env, activeTenantId);
+        return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, loginNext, loginError, liffId, true));
       }
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
