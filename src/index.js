@@ -226,6 +226,7 @@ export default {
       return Response.redirect(new URL("/platform-login", request.url), 302);
     }
     if (url.pathname === "/merchant-login") {
+      const requestedNext = url.searchParams.get('next') || '';       if (isCustomerMemberNext(requestedNext)) {         return Response.redirect(customerMemberLoginUrl(request, activeTenantId, requestedNext, url.searchParams.get('error') || ''), 302);       }
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
       return html(renderMerchantLoginPage(url.searchParams.has("tenant") ? activeTenantId : "", url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
@@ -447,6 +448,7 @@ function redirectWithCookie(location, cookie) {
   return new Response(null, { status: 302, headers: { location, "set-cookie": cookie, "cache-control": "no-store" } });
 }
 
+function isCustomerMemberNext(next = '') {   const path = String(next || '').trim().split('?')[0];   return path === '/member' || path === '/points' || path === '/history'; }  function customerMemberLoginUrl(request, tenantId = '', next = '/member', error = '') {   const url = new URL('/member-login', request.url);   if (tenantId) url.searchParams.set('tenant', tenantId);   url.searchParams.set('next', next || '/member');   if (error) url.searchParams.set('error', error);   return url; }
 async function handlePlatformLogin(request, env) {
   const form = await request.formData();
   const account = String(form.get("account") || "").trim();
