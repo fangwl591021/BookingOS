@@ -233,7 +233,12 @@ export default {
       return Response.redirect(new URL("/platform-login", request.url), 302);
     }
     if (url.pathname === "/merchant-login") {
-      const requestedNext = url.searchParams.get('next') || '';       if (isCustomerMemberNext(requestedNext)) {         return Response.redirect(customerMemberLoginUrl(request, activeTenantId, requestedNext, url.searchParams.get('error') || ''), 302);       }
+      const customerIntent = customerIntentFromLoginUrl(url);
+      if (customerIntent.ok) {
+        const redirectUrl = customerMemberLoginUrl(request, activeTenantId, customerIntent.next || "/member", url.searchParams.get("error") || "");
+        if (customerIntent.intent === "login" || customerIntent.intent === "register") redirectUrl.searchParams.set("intent", customerIntent.intent);
+        return Response.redirect(redirectUrl, 302);
+      }
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
       return html(renderMerchantLoginPage(url.searchParams.has("tenant") ? activeTenantId : "", url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
@@ -467,6 +472,31 @@ function redirectWithCookie(location, cookie) {
 function isCustomerMemberNext(next = "") {
   const path = String(next || "").trim().split("?")[0];
   return path === "/member" || path === "/points" || path === "/history";
+}
+
+function customerIntentFromLoginUrl(url) {
+  const next = url.searchParams.get("next") || "";
+  const intent = String(url.searchParams.get("intent") || "").trim().toLowerCase();
+  if (isCustomerMemberNext(next)) return { ok: true, next, intent };
+  if (intent === "login" || intent === "register") return { ok: true, next: next || "/member", intent };
+  const rawState = String(url.searchParams.get("liff.state") || "").trim();
+  if (!rawState) return { ok: false };
+  const states = [rawState];
+  try { states.push(decodeURIComponent(rawState)); } catch {}
+  for (const state of states) {
+    try {
+      const stateUrl = new URL(state, url.origin);
+      const stateNext = stateUrl.searchParams.get("next") || stateUrl.pathname || "";
+      const stateIntent = String(stateUrl.searchParams.get("intent") || "").trim().toLowerCase();
+      if (isCustomerMemberNext(stateNext) || stateUrl.pathname === "/member-login") return { ok: true, next: stateNext || "/member", intent: stateIntent };
+      if (stateIntent === "login" || stateIntent === "register") return { ok: true, next: stateNext || "/member", intent: stateIntent };
+    } catch {
+      if (state.includes("/member") || state.includes("/points") || state.includes("/history") || state.includes("intent=login") || state.includes("intent=register")) {
+        return { ok: true, next: "/member", intent: "" };
+      }
+    }
+  }
+  return { ok: false };
 }
 
 function customerMemberLoginUrl(request, tenantId = "", next = "/member", error = "") {
