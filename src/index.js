@@ -1737,14 +1737,17 @@ function renderCustomerLoginPage(data = { store }, next = "/member", error = "",
   const lineActionText = "&#29992; LINE &#30331;&#20837; / &#35387;&#20874;";
   const liffEntryUrl = safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(safeNext)}` : "";
   const shouldInitLiff = Boolean(isLiffEntry);
-  const liffScript = safeLiffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
+  const liffScript = safeLiffId ? `<script>
 const liffId=${JSON.stringify(safeLiffId)};
+const liffSdkUrl="https://static.line-scdn.net/liff/edge/2/sdk.js";
+let liffSdkReady=null;
+function loadLiffSdk(){if(window.liff)return Promise.resolve();if(!liffSdkReady){liffSdkReady=new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=liffSdkUrl;script.async=true;script.onload=resolve;script.onerror=reject;document.head.appendChild(script);});}return liffSdkReady;}
 const tenant=${JSON.stringify(tenantId)};
 const next=${JSON.stringify(safeNext)};
 const statusBox=document.querySelector("#login-status");
 let liffReady=null;
 function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
-async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
+async function initLiff(){await loadLiffSdk();if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
 async function login(){try{setStatus("Opening LINE login...");if(!shouldInitLiff){try{await initLiff();}catch(e){if(liffEntryUrl){location.href=liffEntryUrl;return;}throw e;}}else{await initLiff();}setStatus("Checking LINE identity...");if(!liff.isLoggedIn()){if(liffEntryUrl){location.href=liffEntryUrl;return;}setStatus("Open from LINE member link");return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
 document.querySelector("#line-login")?.addEventListener("click",login);
 document.querySelector("#line-register")?.addEventListener("click",login);
