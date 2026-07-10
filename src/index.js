@@ -1310,12 +1310,17 @@ async function handleMerchantLiffLogin(request, env) {
 }
 async function customerLiffConfig(env, tenantId) {
   if (env.DB) await ensurePlatformSchema(env);
+  const platformSetting = await platformLineSettings(env);
+  const platformRegistrationLiffId = String(platformSetting?.registration_liff_id || "").trim();
+  const platformChannelId = String(platformSetting?.channel_id || "").trim();
+  if (platformRegistrationLiffId && platformChannelId) return { liffId: platformRegistrationLiffId, channelId: platformChannelId, source: "platform-registration" };
+
   const tenantSetting = await tenantLineSettings(env, tenantId);
   const tenantLiffId = String(tenantSetting?.liff_id || "").trim();
   const tenantChannelId = String(tenantSetting?.channel_id || "").trim();
   if (tenantLiffId && tenantChannelId) return { liffId: tenantLiffId, channelId: tenantChannelId, source: "tenant" };
-  const platformSetting = await platformLineSettings(env);
-  return { liffId: String(platformSetting?.registration_liff_id || platformSetting?.login_liff_id || "").trim(), channelId: String(platformSetting?.channel_id || "").trim(), source: "platform" };
+
+  return { liffId: "", channelId: platformChannelId, source: "not-configured" };
 }
 
 async function customerLoginLiffId(env, tenantId) {
