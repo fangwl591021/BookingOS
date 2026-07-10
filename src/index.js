@@ -6,6 +6,7 @@ const jsonHeaders = {
 const PLATFORM_SESSION_COOKIE = "bookingos_platform_session";
 const MERCHANT_SESSION_COOKIE = "bookingos_merchant_session";
 const CUSTOMER_SESSION_COOKIE = "bookingos_customer_session";
+const CUSTOMER_REGISTRATION_COOKIE = "bookingos_customer_registration";
 const MERCHANT_SESSION_VERSION = 1;
 const CUSTOMER_SESSION_VERSION = 1;
 const MERCHANT_TENANT_SELECTION_VERSION = 1;
@@ -87,6 +88,12 @@ function customerSessionTtlSeconds(env) {
   const value = Number(envValue(env, "CUSTOMER_SESSION_TTL_SECONDS", "604800"));
   if (!Number.isFinite(value) || value < 300) return 604800;
   return Math.min(Math.floor(value), 2592000);
+}
+
+function customerRegistrationTtlSeconds(env) {
+  const value = Number(envValue(env, "CUSTOMER_REGISTRATION_TTL_SECONDS", "900"));
+  if (!Number.isFinite(value) || value < 120) return 900;
+  return Math.min(Math.floor(value), 1800);
 }
 
 function customerLiffIdentityLoginEnabled(env) {
@@ -234,6 +241,15 @@ export default {
     if (url.pathname === "/api/merchant/liff-login" && request.method === "POST") {
       return handleMerchantLiffLogin(request, env);
     }
+    if (url.pathname === "/member-entry") {
+      return handleMemberEntry(request, env, activeTenantId);
+    }
+    if (url.pathname === "/member-register") {
+      return html(await renderCustomerRegisterPage(request, env, activeTenantId, url.searchParams.get("error") || ""));
+    }
+    if (url.pathname === "/api/customer/register" && request.method === "POST") {
+      return handleCustomerRegister(request, env);
+    }
     if (url.pathname === "/member-login") {
       const liffId = await customerLoginLiffId(env, activeTenantId);
       return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
@@ -248,7 +264,7 @@ export default {
       return Response.json({ ok: true, success: true, authenticated: true, session: { tenant_id: session.tenantId, customer_id: session.customerId, role: "Customer" }, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
     if (url.pathname === "/customer-logout") {
-      return redirectWithCookie(`/member-login?tenant=${encodeURIComponent(activeTenantId)}`, clearCustomerSessionCookie());
+      return redirectWithCookie("/member-entry?tenant=" + encodeURIComponent(activeTenantId), clearCustomerSessionCookie());
     }
     if (url.pathname === "/merchant-select-tenant" && request.method === "POST") {
       return handleMerchantSelectTenant(request, env);
@@ -449,6 +465,28 @@ function redirectWithCookie(location, cookie) {
 }
 
 function isCustomerMemberNext(next = '') {   const path = String(next || '').trim().split('?')[0];   return path === '/member' || path === '/points' || path === '/history'; }  function customerMemberLoginUrl(request, tenantId = '', next = '/member', error = '') {   const url = new URL('/member-login', request.url);   if (tenantId) url.searchParams.set('tenant', tenantId);   url.searchParams.set('next', next || '/member');   if (error) url.searchParams.set('error', error);   return url; }
+async function handleMemberEntry(request, env, tenantId = TENANT_ID) {
+  const url = new URL(request.url);
+  const safeTenant = String(tenantId || url.searchParams.get("tenant") || defaultTenantId(env)).trim();
+  const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(safeTenant).first();
+  if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return new Response("Bad Request", { status: 400, headers: { "cache-control": "no-store" } });
+  const fallbackNext = "/member?tenant=" + encodeURIComponent(safeTenant);
+  const next = safeCustomerNext(url.searchParams.get("next") || fallbackNext, fallbackNext);
+  const session = await requireCustomerSession(request, env, safeTenant);
+  if (session.ok) {
+    const target = new URL(next, request.url);
+    if (!target.searchParams.get("tenant")) target.searchParams.set("tenant", safeTenant);
+    return Response.redirect(target, 302);
+  }
+  const loginUrl = new URL("/member-login", request.url);
+  loginUrl.searchParams.set("tenant", safeTenant);
+  loginUrl.searchParams.set("next", next);
+  const error = url.searchParams.get("error") || "";
+  if (error) loginUrl.searchParams.set("error", error);
+  return new Response(null, { status: 302, headers: { location: loginUrl.toString(), "cache-control": "no-store" } });
+}
+
+
 async function handlePlatformLogin(request, env) {
   const form = await request.formData();
   const account = String(form.get("account") || "").trim();
@@ -597,6 +635,57 @@ function customerJsonError(code, message, status = 400, data = {}) {
   return Response.json({ ok: false, success: false, error: { code, message }, data }, { status, headers: jsonHeaders });
 }
 
+async function createCustomerRegistrationToken(env, input) {
+  const identityId = String(input.identityId || "").trim();
+  const tenantId = String(input.tenantId || "").trim();
+  if (!identityId || !tenantId) throw new Error("Customer registration principal is incomplete");
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + customerRegistrationTtlSeconds(env);
+  const payload = { v: 1, purpose: "customer_registration", sub: identityId, tenant_id: tenantId, iat, exp, nonce: randomNonce() };
+  const payloadSegment = stringToBase64Url(JSON.stringify(payload));
+  const signatureSegment = await customerSessionHmac(env, payloadSegment);
+  return payloadSegment + "." + signatureSegment;
+}
+
+async function verifyCustomerRegistrationToken(env, token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_INVALID", "Customer registration token format is invalid");
+  let payload;
+  try {
+    const expectedSignature = await customerSessionHmac(env, parts[0]);
+    if (!(await secureCompare(parts[1], expectedSignature))) return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_INVALID", "Customer registration token signature is invalid");
+    payload = JSON.parse(base64UrlToString(parts[0]));
+  } catch (error) {
+    return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_INVALID", "Customer registration token cannot be decoded");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(payload.v) !== 1 || payload.purpose !== "customer_registration") return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_INVALID", "Customer registration token purpose is invalid");
+  if (!payload.sub || !payload.tenant_id || !payload.iat || !payload.exp || !payload.nonce) return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_INVALID", "Customer registration token is missing required fields");
+  if (Number(payload.iat) > now + 300) return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_INVALID", "Customer registration token issued_at is invalid");
+  if (Number(payload.exp) <= now) return customerAuthError("CUSTOMER_REGISTRATION_TOKEN_EXPIRED", "Customer registration token has expired");
+  return { ok: true, payload: { sub: String(payload.sub), tenant_id: String(payload.tenant_id), iat: Number(payload.iat), exp: Number(payload.exp), nonce: String(payload.nonce) } };
+}
+
+function setCustomerRegistrationCookie(env, token) {
+  return CUSTOMER_REGISTRATION_COOKIE + "=" + encodeURIComponent(token) + "; Path=/; Max-Age=" + customerRegistrationTtlSeconds(env) + "; HttpOnly; Secure; SameSite=Lax";
+}
+
+function clearCustomerRegistrationCookie() {
+  return CUSTOMER_REGISTRATION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
+}
+
+function customerIsRegistrationComplete(customer) {
+  return Boolean(String(customer?.name || "").trim() && String(customer?.phone || "").trim() && String(customer?.tenant_id || "").trim() && String(customer?.identity_id || "").trim() && String(customer?.status || "active") === "active");
+}
+
+function safeCustomerNext(value, fallback = "/member") {
+  const next = String(value || "").trim();
+  if (!next.startsWith("/") || next.startsWith("//")) return fallback;
+  const path = next.split("?")[0];
+  return isCustomerMemberNext(path) ? next : fallback;
+}
+
+
 async function createCustomerSession(env, input) {
   const identityId = String(input.identityId || "").trim();
   const tenantId = String(input.tenantId || "").trim();
@@ -683,9 +772,10 @@ function clearCustomerSessionCookie() {
 function customerAuthFailureResponse(request, auth, tenantId = "") {
   const status = auth.status || 401;
   if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
-  const url = new URL("/member-login", request.url);
+  const current = new URL(request.url);
+  const url = new URL("/member-entry", request.url);
   if (tenantId) url.searchParams.set("tenant", tenantId);
-  url.searchParams.set("next", new URL(request.url).pathname + new URL(request.url).search);
+  url.searchParams.set("next", current.pathname + current.search);
   url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
   return new Response(null, { status: 302, headers: { location: url.toString(), "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
 }
@@ -1380,23 +1470,16 @@ function makeCustomerNo() {
   return "C" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
 }
 
-async function resolveCustomerForIdentity(env, tenantId, identityId, verifiedLine) {
+async function resolveCustomerForIdentity(env, tenantId, identityId) {
   const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(tenantId).first();
   if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return customerAuthError("CUSTOMER_ACCESS_DENIED", "Tenant is not active", 403);
-  const rows = (await env.DB.prepare("SELECT id, tenant_id, identity_id, status FROM customers WHERE tenant_id = ? AND identity_id = ?").bind(tenantId, identityId).all()).results || [];
+  const rows = (await env.DB.prepare("SELECT id, tenant_id, identity_id, name, phone, email, status FROM customers WHERE tenant_id = ? AND identity_id = ?").bind(tenantId, identityId).all()).results || [];
   if (rows.length > 1) return customerAuthError("CUSTOMER_PROFILE_CONFLICT", "Customer profile is duplicated", 409);
-  if (rows.length === 1) {
-    if (String(rows[0].status || "active") !== "active") return customerAuthError("CUSTOMER_ACCESS_DENIED", "Customer is not active", 403);
-    return { ok: true, customerId: String(rows[0].id), created: false };
-  }
-  const customerId = crypto.randomUUID();
-  const displayName = String(verifiedLine?.profile?.displayName || "LINE 會員").trim() || "LINE 會員";
-  const lineUserId = String(verifiedLine?.lineUserId || "").trim() || null;
-  await env.DB.prepare(`
-    INSERT INTO customers (id, tenant_id, identity_id, customer_no, name, phone, line_user_id, line_display_name, referral_code, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'), datetime('now'))
-  `).bind(customerId, tenantId, identityId, makeCustomerNo(), displayName.slice(0, 80), lineUserId, displayName.slice(0, 80), makeReferralCode(identityId)).run();
-  return { ok: true, customerId, created: true };
+  if (rows.length === 0) return { ok: true, registrationRequired: true, reason: "missing" };
+  const customer = rows[0];
+  if (String(customer.status || "active") !== "active") return customerAuthError("CUSTOMER_ACCESS_DENIED", "Customer is not active", 403);
+  if (!customerIsRegistrationComplete(customer)) return { ok: true, registrationRequired: true, reason: "incomplete", customerId: String(customer.id) };
+  return { ok: true, registrationRequired: false, customerId: String(customer.id), customer };
 }
 
 async function handleCustomerLiffLogin(request, env) {
@@ -1413,12 +1496,58 @@ async function handleCustomerLiffLogin(request, env) {
   if (!verified.ok) return customerJsonError(verified.code || "CUSTOMER_LIFF_TOKEN_INVALID", verified.message || "LINE token is invalid", verified.status || 401);
   const identity = await resolveCustomerLineIdentityAuth(env, verified);
   if (!identity.ok) return customerJsonError(identity.code || "CUSTOMER_IDENTITY_INVALID", identity.message || "Identity is invalid", identity.status || 403);
-  const customer = await resolveCustomerForIdentity(env, tenantId, identity.identityId, verified);
+  const customer = await resolveCustomerForIdentity(env, tenantId, identity.identityId);
   if (!customer.ok) return customerJsonError(customer.code || "CUSTOMER_ACCESS_DENIED", customer.message || "Customer access denied", customer.status || 403);
+  if (customer.registrationRequired) {
+    const registrationToken = await createCustomerRegistrationToken(env, { identityId: identity.identityId, tenantId });
+    const redirect = "/member-register?tenant=" + encodeURIComponent(tenantId);
+    return Response.json({ ok: true, success: true, registration_required: true, redirect, data: { tenant_id: tenantId, registration_required: true, reason: customer.reason, redirect } }, { headers: { ...jsonHeaders, "set-cookie": setCustomerRegistrationCookie(env, registrationToken) } });
+  }
   const sessionCookie = await setCustomerSessionCookie(env, { identityId: identity.identityId, tenantId, customerId: customer.customerId });
-  const redirect = next.startsWith("/") ? next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId) : "/member?tenant=" + encodeURIComponent(tenantId);
-  return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customer.customerId, identity_created: !!identity.created, customer_created: !!customer.created, redirect } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
+  const safeNext = safeCustomerNext(next, "/member");
+  const redirect = safeNext + (safeNext.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId);
+  return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customer.customerId, identity_created: !!identity.created, customer_created: false, redirect } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
 }
+async function handleCustomerRegister(request, env) {
+  if (!env.DB) return customerJsonError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  if (!customerSessionSecret(env)) return customerJsonError("CUSTOMER_SESSION_CONFIG_INVALID", "Customer session secret is not configured", 503);
+  let payload;
+  try { payload = await request.json(); } catch (error) { return customerJsonError("CUSTOMER_REGISTER_INVALID", "Registration data is invalid", 400); }
+  const token = readCookie(request, CUSTOMER_REGISTRATION_COOKIE) || String(payload?.registration_token || "");
+  const verified = await verifyCustomerRegistrationToken(env, decodeURIComponent(token));
+  if (!verified.ok) return customerJsonError(verified.code || "CUSTOMER_REGISTRATION_TOKEN_INVALID", verified.message || "Registration token is invalid", verified.status || 401);
+  const tenantId = String(verified.payload.tenant_id || "");
+  const identityId = String(verified.payload.sub || "");
+  const name = String(payload?.name || "").trim();
+  const phone = String(payload?.phone || "").trim();
+  const email = String(payload?.email || "").trim();
+  const agree = payload?.agree === true || payload?.agree === "true" || payload?.agree === "on" || payload?.agree === "1";
+  if (!name || !phone) return customerJsonError("CUSTOMER_REGISTER_REQUIRED", "Name and phone are required", 400);
+  if (!agree) return customerJsonError("CUSTOMER_REGISTER_CONSENT_REQUIRED", "Consent is required", 400);
+  const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(tenantId).first();
+  if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return customerJsonError("CUSTOMER_ACCESS_DENIED", "Tenant is not active", 403);
+  const rows = (await env.DB.prepare("SELECT id, tenant_id, identity_id, status FROM customers WHERE tenant_id = ? AND identity_id = ?").bind(tenantId, identityId).all()).results || [];
+  if (rows.length > 1) return customerJsonError("CUSTOMER_PROFILE_CONFLICT", "Customer profile is duplicated", 409);
+  const phoneRows = (await env.DB.prepare("SELECT id, identity_id FROM customers WHERE tenant_id = ? AND phone = ?").bind(tenantId, phone).all()).results || [];
+  const currentId = rows[0]?.id ? String(rows[0].id) : "";
+  const phoneConflict = phoneRows.find((row) => String(row.id) !== currentId && String(row.identity_id || "") !== identityId);
+  if (phoneConflict) return customerJsonError("CUSTOMER_PHONE_CONFLICT", "Phone already belongs to another member", 409);
+  let customerId = currentId;
+  if (customerId) {
+    await env.DB.prepare("UPDATE customers SET name = ?, phone = ?, email = ?, identity_id = ?, status = 'active', updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(name.slice(0, 80), phone.slice(0, 40), email.slice(0, 120) || null, identityId, tenantId, customerId).run();
+  } else {
+    customerId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO customers (id, tenant_id, identity_id, customer_no, name, phone, email, referral_code, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))").bind(customerId, tenantId, identityId, makeCustomerNo(), name.slice(0, 80), phone.slice(0, 40), email.slice(0, 120) || null, makeReferralCode(identityId)).run();
+  }
+  const sessionCookie = await setCustomerSessionCookie(env, { identityId, tenantId, customerId });
+  const headers = new Headers(jsonHeaders);
+  headers.append("set-cookie", sessionCookie);
+  headers.append("set-cookie", clearCustomerRegistrationCookie());
+  const redirect = "/member?tenant=" + encodeURIComponent(tenantId);
+  return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customerId, redirect } }, { headers });
+}
+
+
 function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error = "", liffId = "") {
   const message = error ? `<div class="error">帳號或密碼錯誤</div>` : "";
   const safeTenant = escapeAttrValue(tenantId || "");
@@ -1716,7 +1845,7 @@ function customerLiffEntryUrl(liffId, tenantId, nextPath) {
   const safeLiffId = String(liffId || "").trim();
   const safeTenant = encodeURIComponent(tenantId || TENANT_ID);
   const safeNext = encodeURIComponent(nextPath || `/member?tenant=${safeTenant}`);
-  return safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${safeTenant}&next=${safeNext}` : `/member-login?tenant=${safeTenant}&next=${safeNext}`;
+  return safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${safeTenant}&next=${safeNext}` : "/member-entry?tenant=" + safeTenant + "&next=" + safeNext;
 }
 
 function compactInlineStore(storeData = store) {
@@ -1730,9 +1859,9 @@ function compactInlineStore(storeData = store) {
 function renderCustomerPage(data = { store, services, businessHours, staffMembers, resourceTypes }) {
   const tenantId = data.store?.tenantId || TENANT_ID;
 const payload = JSON.stringify({ tenantId, store: compactInlineStore(data.store || store), services: data.services || services, staffMembers: data.staffMembers || staffMembers, today: todayInTaipei() }).replace(/</g, "\\u003c");
-  const memberHref = `/member-login?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(`/member?tenant=${encodeURIComponent(tenantId)}`)}`;
-  const pointsHref = `/member-login?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(`/points?tenant=${encodeURIComponent(tenantId)}`)}`;
-  const historyHref = `/member-login?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(`/history?tenant=${encodeURIComponent(tenantId)}`)}`;
+  const memberHref = "/member-entry?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent("/member?tenant=" + encodeURIComponent(tenantId));
+  const pointsHref = "/member-entry?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent("/points?tenant=" + encodeURIComponent(tenantId));
+  const historyHref = "/member-entry?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent("/history?tenant=" + encodeURIComponent(tenantId));
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BookingOS Book</title><style>
   :root{--bg:#eef2ed;--surface:#fff;--soft:#f8faf6;--ink:#202124;--muted:#667067;--line:#dfe5dd;--brand:#176b5b;--brand2:#0f463e;--amber-soft:#f4e6db;--blue:#3d6f9f;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:92px}.hero{background:var(--brand2);color:white;padding:18px 16px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.mark{display:flex;align-items:center;gap:10px}.logo{width:38px;height:38px;border-radius:8px;background:white;color:var(--brand2);display:grid;place-items:center;font-weight:900;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}.product{font-size:15px;font-weight:900}.version{color:rgba(255,255,255,.7);font-size:12px;margin-top:2px}.mode{white-space:nowrap;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.1);border-radius:999px;padding:7px 10px;font-size:12px;font-weight:850}h1,h2,p{margin:0}h1{font-size:25px;line-height:1.2}.store-meta{margin-top:7px;color:rgba(255,255,255,.76);font-size:13px;line-height:1.45}.content{padding:14px}section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 10px 24px rgba(32,33,36,.055)}.step-bar{display:flex;align-items:center;gap:10px;background:var(--brand2);color:white;border-radius:8px;padding:12px 13px;margin-bottom:12px}.step-bar span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:5px 8px;font-size:12px;font-weight:950}.step-bar strong{font-size:20px}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}input,select{width:100%;min-height:44px;border-radius:8px;border:1px solid var(--line);background:white;color:var(--ink);padding:9px 10px}.service-select{color:#1f5f9b;font-weight:900}.price-row,.staff-row{display:flex;gap:7px;overflow-x:auto;padding-top:10px;scrollbar-width:none}.choice{flex:0 0 auto;border-radius:999px;background:white;color:var(--ink);border:1px solid var(--line);min-height:36px;padding:7px 10px;font-weight:900}.choice.active{background:var(--brand);border-color:var(--brand);color:white}.price{flex:0 0 auto;border-radius:999px;background:var(--amber-soft);color:#7b3e20;padding:6px 9px;font-size:12px;font-weight:850}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.slot{min-height:42px;border-radius:8px;background:#f2faf6;border:1px solid #cddbd4;color:var(--brand2);display:grid;place-items:center;font-weight:900}.slot.active{background:var(--brand);border-color:var(--brand);color:white}.empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);text-align:center;font-size:13px}.notice{border-radius:8px;background:var(--ok);color:var(--brand2);padding:11px;font-size:13px;font-weight:850;line-height:1.45}.pay-card{border:1px solid var(--line);border-radius:8px;background:var(--soft);padding:12px;display:grid;gap:10px}.money-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.money{border:1px solid var(--line);border-radius:8px;background:white;padding:10px}.money span{display:block;color:var(--muted);font-size:12px}.money b{display:block;margin-top:5px;font-size:18px}.submit{width:100%;min-height:52px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:white;font-weight:950}.submit:disabled{opacity:.45}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line);backdrop-filter:blur(14px)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand2)}@media(min-width:760px){body{padding:18px 0}.page{min-height:calc(100vh - 36px);border:1px solid var(--line);border-radius:8px;overflow:hidden}.bottom-nav{border:1px solid var(--line);border-bottom:0;border-top-left-radius:8px;border-top-right-radius:8px}}
   </style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="mark"><div class="logo" id="logo-box">B</div><div><div class="product">BookingOS Book</div><div class="version">客戶預約端 V0.1</div></div></div><div class="mode">預約中</div></div><h1 id="store-name"></h1><p class="store-meta" id="store-meta"></p></section><div class="content"><section><div class="step-bar"><span>STEP 1</span><strong>選擇服務</strong></div><label class="field">服務項目<select id="service" class="service-select"></select></label><div class="price-row" id="price-row"></div></section><section><div class="step-bar"><span>STEP 2</span><strong>選擇日期與時長</strong></div><div class="grid"><label class="field">日期<input id="date" type="date"></label><label class="field">時長<select id="duration"></select></label></div></section><section><div class="step-bar"><span>STEP 3</span><strong>選擇服務人員</strong></div><div class="staff-row" id="staff-row"></div><div class="slots" id="slots"><div class="empty">請先選擇服務與日期</div></div></section><section><h2 style="margin-bottom:12px">送出預約</h2><div class="grid"><label class="field">姓名<input id="customer-name" autocomplete="name"></label><label class="field">手機<input id="customer-phone" autocomplete="tel"></label></div><div class="pay-card" style="margin-top:12px"><div class="notice" id="pay-note">選擇時間後會顯示金額與可折抵點數。</div><label class="field">使用點數折抵<input id="redeem" type="number" min="0" value="0"></label><div class="money-grid"><div class="money"><span>原價</span><b id="original-price">NT$0</b></div><div class="money"><span>應付金額</span><b id="payable-price">NT$0</b></div></div></div><div class="notice" id="status" style="margin-top:12px">請依序選擇服務、日期、服務人員與時間。</div><button class="submit" id="submit" type="button" disabled>送出預約</button></section></div></main><nav class="bottom-nav"><a class="nav-item active" href="/book?tenant=${encodeURIComponent(tenantId)}">預約</a><a class="nav-item" href="${escapeAttrValue(memberHref)}">會員</a><a class="nav-item" href="${escapeAttrValue(pointsHref)}">點數</a><a class="nav-item" href="${escapeAttrValue(historyHref)}">紀錄</a></nav><script>
@@ -1783,6 +1912,24 @@ window.addEventListener("load",async()=>{try{if(!shouldInitLiff)return;await ini
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} &#26371;&#21729;&#30331;&#20837;</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 6px}h2{font-size:17px;margin:0 0 6px}p{color:var(--muted);line-height:1.55}.login-box{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:12px;background:#fbfdfb}.login-box.register{background:#f2faf6}.line{width:100%;min-height:48px;border:0;border-radius:8px;background:#06c755;color:#062216;font-weight:950;font-size:17px}.line.secondary-line{background:var(--blue);color:white}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p style="margin:2px 0 0">&#26371;&#21729;&#30331;&#20837;</p></div></div>${errorBox}<section class="login-box"><h2>&#24050;&#26159;&#26371;&#21729;</h2><p>&#20351;&#29992;&#24050;&#32129;&#23450;&#30340; LINE &#30331;&#20837;&#26371;&#21729;&#36039;&#26009;&#12289;&#40670;&#25976;&#33287;&#38928;&#32004;&#32000;&#37636;&#12290;</p><button class="line" id="line-login" type="button">${lineActionText}</button></section><section class="login-box register"><h2>&#23578;&#26410;&#35387;&#20874;</h2><p>&#31532;&#19968;&#27425;&#20351;&#29992;&#35531;&#29992; LINE &#35387;&#20874;&#65292;&#31995;&#32113;&#26371;&#24314;&#31435;&#36889;&#23478;&#24215;&#30340;&#26371;&#21729;&#36039;&#26009;&#12290;</p><button class="line secondary-line" id="line-register" type="button">${lineActionText}</button></section><div class="status" id="login-status"></div><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">&#20808;&#22238;&#38928;&#32004;&#38913;</a></main>${liffScript}</body></html>`;
 }
 
+async function renderCustomerRegisterPage(request, env, tenantId = TENANT_ID, error = "") {
+  const token = readCookie(request, CUSTOMER_REGISTRATION_COOKIE);
+  const verified = await verifyCustomerRegistrationToken(env, decodeURIComponent(token));
+  const storeData = await loadStore(env, tenantId);
+  const storeName = storeData?.name || "BookingOS";
+  const safeTenant = escapeAttrValue(tenantId);
+  const tokenValue = verified.ok ? escapeAttrValue(token) : "";
+  const errorText = error || (!verified.ok ? (verified.message || "請重新使用 LINE 登入 / 註冊") : "");
+  const errorBox = errorText ? "<div class=\"error\">" + escapeHtmlValue(errorText) + "</div>" : "";
+  const page = [];
+  page.push("<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + escapeHtmlValue(storeName) + " 會員註冊</title>");
+  page.push("<style>:root{--bg:#eef2ed;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 6px}p{color:var(--muted);line-height:1.55}.field{display:grid;gap:6px;margin-top:12px;color:var(--muted);font-weight:850}.field input{width:100%;min-height:48px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}.check{display:flex;gap:8px;align-items:flex-start;margin:14px 0;color:var(--muted);line-height:1.45}.submit{width:100%;min-height:50px;border:0;border-radius:8px;background:var(--blue);color:white;font-weight:950;font-size:17px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}</style></head><body>");
+  page.push("<main class=\"card\"><div class=\"brand\"><div class=\"mark\">B</div><div><h1>" + escapeHtmlValue(storeName) + "</h1><p style=\"margin:2px 0 0\">會員註冊</p></div></div>" + errorBox);
+  page.push("<form id=\"register-form\"><input type=\"hidden\" name=\"registration_token\" value=\"" + tokenValue + "\"><label class=\"field\">姓名<input name=\"name\" autocomplete=\"name\" required></label><label class=\"field\">手機<input name=\"phone\" autocomplete=\"tel\" required></label><label class=\"field\">Email（可不填）<input name=\"email\" autocomplete=\"email\"></label><label class=\"check\"><input name=\"agree\" type=\"checkbox\" required><span>我同意建立 " + escapeHtmlValue(storeName) + " 的會員資料，供預約、點數與消費紀錄使用。</span></label><button class=\"submit\" type=\"submit\">完成註冊</button><div class=\"status\" id=\"register-status\"></div></form><a class=\"secondary\" href=\"/member-entry?tenant=" + safeTenant + "\">返回會員登入</a></main>");
+  page.push("<script>const form=document.querySelector(\"#register-form\");const statusBox=document.querySelector(\"#register-status\");form.addEventListener(\"submit\",async(e)=>{e.preventDefault();statusBox.textContent=\"送出中...\";const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.agree=form.elements.agree.checked;try{const res=await fetch(\"/api/customer/register\",{method:\"POST\",headers:{\"content-type\":\"application/json\"},credentials:\"same-origin\",body:JSON.stringify(payload)});const data=await res.json();if(!res.ok||!data.ok){statusBox.textContent=data?.error?.message||\"註冊失敗\";return;}location.href=data.redirect||\"/member?tenant=" + encodeURIComponent(tenantId) + "\";}catch(error){statusBox.textContent=\"註冊失敗，請稍後再試\";}});</script></body></html>");
+  return page.join("");
+}
+
 function renderMemberPage(data = { store }, active = "member") {
   const title = active === "points" ? "會員點數" : active === "history" ? "預約紀錄" : "會員資料";
   const tenantId = data.store?.tenantId || TENANT_ID;
@@ -1796,7 +1943,7 @@ async function api(path,options={}){const res=await fetch(path+(path.includes("?
 function profileView(profile){const c=profile.customer||{};content.innerHTML='<form id="profile-form" class="item-list"><div class="member-grid"><label class="field">姓名<input name="name" value="'+esc(c.name||'')+'"></label><label class="field">手機<input name="phone" value="'+esc(c.phone||'')+'"></label><label class="field">Email<input name="email" value="'+esc(c.email||'')+'"></label><label class="field">生日<input name="birthday" type="date" value="'+esc(c.birthday||'')+'"></label><label class="field">性別<input name="gender" value="'+esc(c.gender||'')+'"></label><label class="field">聯絡偏好<select name="contactPreference"><option value="phone">電話</option><option value="line">LINE</option><option value="email">Email</option></select></label></div><label class="field">地址<input name="address" value="'+esc(c.address||'')+'"></label><label class="field">偏好服務<input name="preferredService" value="'+esc(c.preferred_service||'')+'"></label><label class="field">過敏或提醒<input name="allergyNote" value="'+esc(c.allergy_note||'')+'"></label><button class="save-btn" type="submit">儲存會員資料</button><div class="muted-small" id="save-status">點數餘額：'+Number(c.points_balance||0)+' 點</div></form>';const pref=content.querySelector('[name="contactPreference"]');if(pref)pref.value=c.contact_preference||'phone';document.querySelector('#profile-form').addEventListener('submit',async(e)=>{e.preventDefault();const fd=new FormData(e.target);document.querySelector('#save-status').textContent='儲存中...';try{await api('/api/member',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(fd.entries()))});document.querySelector('#save-status').textContent='已儲存';}catch(err){document.querySelector('#save-status').textContent='儲存失敗：'+err.message;}});}
 function pointsView(profile){const c=profile.customer||{};const rows=(profile.points||[]).map(p=>'<div class="item-row"><b>'+Number(p.points||0)+' 點</b><div class="muted-small">'+esc(p.type||'')+' · '+esc(p.reason||'')+'</div><div class="muted-small">'+esc(p.created_at||'')+'</div></div>').join('');content.innerHTML='<div class="item-list"><div class="item-row"><b>可用點數 '+Number(c.points_balance||0)+' 點</b><div class="muted-small">累積取得 '+Number(c.total_points_earned||0)+'，累積使用 '+Number(c.total_points_used||0)+'</div></div>'+(rows||'<div class="item-row">尚無點數紀錄</div>')+'</div>';}
 function historyView(profile){const rows=(profile.bookings||[]).map(b=>'<div class="item-row"><b>'+esc(b.service_name||'預約')+'</b><div class="muted-small">'+esc(b.booking_date||'')+' '+esc(b.start_time||'')+' · '+Number(b.duration_minutes||0)+' 分鐘 · '+money(b.price||0)+'</div><div class="muted-small">狀態：'+esc(b.status||'')+'</div>'+(b.status==='cancelled'?'':'<button class="danger-btn" data-cancel="'+esc(b.id)+'" type="button">取消預約</button>')+'</div>').join('');content.innerHTML='<div class="item-list">'+(rows||'<div class="item-row">尚無預約紀錄</div>')+'</div>';content.querySelectorAll('[data-cancel]').forEach(btn=>btn.onclick=async()=>{btn.disabled=true;try{await api('/api/bookings/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({bookingId:btn.dataset.cancel})});await load();}catch(err){btn.textContent='取消失敗';}});}
-async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-login?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
+async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-entry?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
 load();
 </script>`;
   return customerMemberShell(title, body, active === "points" ? "points" : active === "history" ? "history" : "member", tenantId);
