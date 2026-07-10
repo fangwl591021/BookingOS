@@ -464,7 +464,18 @@ function redirectWithCookie(location, cookie) {
   return new Response(null, { status: 302, headers: { location, "set-cookie": cookie, "cache-control": "no-store" } });
 }
 
-function isCustomerMemberNext(next = '') {   const path = String(next || '').trim().split('?')[0];   return path === '/member' || path === '/points' || path === '/history'; }  function customerMemberLoginUrl(request, tenantId = '', next = '/member', error = '') {   const url = new URL('/member-login', request.url);   if (tenantId) url.searchParams.set('tenant', tenantId);   url.searchParams.set('next', next || '/member');   if (error) url.searchParams.set('error', error);   return url; }
+function isCustomerMemberNext(next = "") {
+  const path = String(next || "").trim().split("?")[0];
+  return path === "/member" || path === "/points" || path === "/history";
+}
+
+function customerMemberLoginUrl(request, tenantId = "", next = "/member", error = "") {
+  const url = new URL("/member-login", request.url);
+  if (tenantId) url.searchParams.set("tenant", tenantId);
+  url.searchParams.set("next", safeCustomerNext(next || "/member", "/member"));
+  if (error) url.searchParams.set("error", error);
+  return url;
+}
 async function handleMemberEntry(request, env, tenantId = TENANT_ID) {
   const url = new URL(request.url);
   const safeTenant = String(tenantId || url.searchParams.get("tenant") || defaultTenantId(env)).trim();
@@ -1904,7 +1915,7 @@ const statusBox=document.querySelector("#login-status");
 let liffReady=null;
 function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
 async function initLiff(){await loadLiffSdk();if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
-async function login(){try{setStatus("Opening LINE login...");if(!shouldInitLiff){try{await initLiff();}catch(e){if(liffEntryUrl){location.href=liffEntryUrl;return;}throw e;}}else{await initLiff();}setStatus("Checking LINE identity...");if(!liff.isLoggedIn()){if(liffEntryUrl){location.href=liffEntryUrl;return;}setStatus("Open from LINE member link");return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
+async function login(){try{setStatus("Opening LINE login...");if(!shouldInitLiff){if(liffEntryUrl){location.href=liffEntryUrl;return;}setStatus("Open from LINE App member link");return;}await initLiff();setStatus("Checking LINE identity...");if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
 document.querySelector("#line-login")?.addEventListener("click",login);
 document.querySelector("#line-register")?.addEventListener("click",login);
 window.addEventListener("load",async()=>{try{if(!shouldInitLiff)return;await initLiff();if(liff.isLoggedIn())await login();else setStatus("Tap LINE login / register");}catch(error){setStatus("Open from LINE App member link");}});
