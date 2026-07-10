@@ -1,4 +1,4 @@
-# PROJECT_STATUS.md
+﻿# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -16,7 +16,8 @@
 
 | 項目 | 狀態 | 驗證方式 |
 | ---- | ---- | ---- |
-| Worker 語法檢查 | 已通過 | `node --check src/index.js` |
+| Worker 語法檢查 | 已通過 |
+ode --check src/index.js` |
 | Git whitespace 檢查 | 已通過 | `git diff --check` |
 | Cloudflare Worker dry-run | 已通過 | `wrangler deploy --dry-run` |
 | 線上健康檢查 | 已通過 | `GET /api/health` |
@@ -60,7 +61,9 @@
 - 未改動任何預約業務流程。
 - 已正式部署至 Cloudflare Workers，Version ID：`ce4b22a4-c3f1-4df5-9b2f-39f0a62c0c61`。
 - 未將任何模組搬到 AIWE Dev System。
-- `npm run check` 因本機 sandbox ACL 問題未完成，但等價的 `node --check src/index.js` 已成功。
+-
+pm run check` 因本機 sandbox ACL 問題未完成，但等價的
+ode --check src/index.js` 已成功。
 ## Task 002 Tenant 隔離驗證
 
 - 已修正 `/api/customer-profile`、`/api/member`、`/api/bookings/cancel` 使用目前網址 tenant。
@@ -89,3 +92,10 @@
 - 已產生 `docs/IDENTITY_MIGRATION_PLAN.md`：目前 schema 對照、需新增/修改/廢棄項目、立即與延後 migration。
 - 已新增 ADR-005《Identity 與 Customer 分離》，原 ADR-005 單一 Worker 順延為 ADR-006。
 - 本輪尚未修改程式或資料庫；migration 需在模型確認後分階段執行。
+## BookingOS V1 Schema Freeze 2026-07-10
+
+- 已採納 Identity 修正版：V1 只有 `identities`、`identity_auth`、`customers.identity_id`、`tenant_admins.identity_id`。
+- V1 不建立 `identity_profiles`、新 `admins` table、`sessions` table。
+- Session 只凍結 Interface，儲存方式待後續選擇。
+- 已新增 `docs/SCHEMA_FREEZE.md` 與 `docs/MIGRATION_CHECKLIST.md`。
+- 本輪仍未修改程式、資料庫、migration 或部署。

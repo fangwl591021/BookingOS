@@ -1,4 +1,4 @@
-# DECISIONS.md
+﻿# DECISIONS.md
 
 ## ADR-001: 產品獨立部署
 
@@ -44,13 +44,14 @@
 ## ADR-005: Identity 與 Customer 分離
 
 - 日期：2026-07-10
-- 決策：BookingOS V1 將平台身份 Identity 與店家會員 Customer 分離。Identity 只代表「我是誰」，Customer 代表「我在這家店是什麼會員」。
-- 背景：SaaS 會遇到同一個人同時管理多家店、在不同店擔任不同角色、或同時是某店客戶與另一店員工的情境。若以 tenant 或 phone/LINE UID 直接當主身份，登入、選店、權限與資料隱私會混在一起。
+- 決策：BookingOS V1 將平台身份 Identity 與店家會員 Customer 分離。Identity 只代表「我是誰」，IdentityAuth 代表「我如何證明我是誰」，Customer 代表「我在這家店是什麼會員」。
+- 背景：SaaS 會遇到同一個人同時管理多家店、在不同店擔任不同角色、或同時是某店客戶與另一店員工的情境。若以 tenant、phone 或 LINE UID 直接當主身份，登入、選店、權限與資料隱私會混在一起。
 - 選擇原因：Identity 必須先於 Tenant；登入流程應為 `Identity -> Tenant -> Permission -> Data`。平台不應存放店家 Customer 的 CRM、生日、地址、點數、消費、看診/髮色/美甲備註等資料。
-- 放棄方案：使用 `tenant_admins` 或 `customers.line_user_id` 作為主身份；用 LINE UID 當主鍵；登入時用 `LIMIT 1` 自動選店；把姓名、生日、CRM 備註放進平台 Identity。
-- 目標模型：新增 `identities`、`identity_credentials`、`admins`、`sessions`；`customers` 保留店家會員資料並新增 `identity_id`；`staff_members.identity_id` 可為 nullable；`bookings`、點數、券、CRM 全部指向 `customer_id`，不指向 `identity_id`。
-- 影響：後續登入、Session、權限與多店切換都必須依 Identity Model 設計；現有 `tenant_admins` 暫時保留為過渡表，不立即刪除。
-- 是否可逆：概念上不建議逆轉。可分階段 migration，且在未切換登入前保持相容。
+- V1 Freeze：新增 `identities`、`identity_auth`；在 `customers` 新增 `identity_id` 與 `customer_no`；在既有 `tenant_admins` 新增 `identity_id`。
+- 明確不做：V1 不新增 `identity_profiles`；V1 不新增新的 `admins` 表；V1 不新增 `sessions` 表，只凍結 Session Interface。
+- 放棄方案：使用 `customers.line_user_id` 作為主身份；用 LINE UID 當主鍵；登入時用 `LIMIT 1` 自動選店；把姓名、生日、CRM 備註放進平台 Identity；把 provider display profile 拆成過早的 `identity_profiles`；用新 `admins` 表製造雙表 migration。
+- 影響：後續登入、Session Interface、權限與多店切換都必須依 Identity Model 設計；`tenant_admins` 是 V1 的 tenant role table，先加 `identity_id`，不另建 `admins`。
+- 是否可逆：概念上不建議逆轉。可分階段 additive migration，且在未切換登入前保持相容。
 
 ## ADR-006: 第一版維持單一 Worker
 

@@ -1,3 +1,10 @@
+﻿## 2026-07-10 - Identity Schema Freeze
+
+- 更新 `docs/IDENTITY_MODEL_V1.md`：採納 V1 Freeze，移除 `identity_profiles`、新 `admins` 表與 `sessions` 表。
+- 更新 `docs/IDENTITY_MIGRATION_PLAN.md`：改為新增 `identity_auth`、`customers.identity_id`、`tenant_admins.identity_id`，Session 僅凍結 Interface。
+- 新增 `docs/SCHEMA_FREEZE.md` 與 `docs/MIGRATION_CHECKLIST.md`，作為真正 migration 前的 gate。
+- 更新 ADR-005：BookingOS Architecture Rule，Identity 永遠不存商業資料，商業資料全部屬於 Customer。
+
 # CHANGELOG.md
 
 ## Unreleased
