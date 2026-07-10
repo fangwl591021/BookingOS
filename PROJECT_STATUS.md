@@ -107,3 +107,17 @@
 - 遠端 D1 已套用 `0012_additive_identity.sql`，並只以 scoped LINE 回填 2 筆 `identities`、2 筆 `identity_auth`、2 筆 `platform_line_contacts.identity_id`。
 - 遠端 audit 仍有 1 組 duplicated/cross-tenant phone hash，已保留為人工審查，不做自動合併。
 - 注意：遠端 D1 migration history 尚未與 repo 對齊，後續不可直接跑整批 `wrangler d1 migrations apply --remote`，需先 reconcile。
+
+## Task 006 D1 Migration History Reconcile 2026-07-10
+
+- 已完成遠端 D1 schema 與 `d1_migrations` tracking table 盤點。
+- 已確認 Wrangler 版本：`4.110.0`。
+- 已確認 production D1 `database_id`：`86120cac-4bf0-4a76-8dea-eacd3287cd15`。
+- 已在正式操作前備份：`.local-backups/bookingos-db-pre-history-reconcile-20260710.sql`，不提交 Git。
+- 採用方案 B：安全補記 Migration History。
+- 已補記 `0002_customer_profile_fields.sql` 到 `0012_additive_identity.sql` 共 11 筆到 `d1_migrations`。
+- `wrangler d1 migrations list bookingos-db --remote` 已回報 `No migrations to apply`。
+- 正式資料筆數不變：tenants 3、bookings 4、customers 2、tenant_admins 3、identities 2、identity_auth 2。
+- `/api/health` 正常。
+- 已新增 `docs/D1_MIGRATION_BASELINE.md` 與 README D1 migration SOP。
+- 本輪未修改登入、Session、LIFF、預約、CRM 或 Identity backfill。

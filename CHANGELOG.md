@@ -1,4 +1,25 @@
+## 2026-07-10 - Task 006 D1 Migration History Reconcile
 
+### Added
+
+- 新增 `docs/D1_MIGRATION_BASELINE.md`，記錄 production D1 migration history baseline、schema 對照、操作紀錄、回復方式與未來 migration SOP。
+- README 新增 D1 migration 基本流程與禁止事項。
+
+### Changed
+
+- 遠端 D1 `d1_migrations` 已安全補記 `0002` 到 `0012`，避免 Wrangler 將已存在 schema 誤判為 pending。
+- 更新 `PROJECT_STATUS.md`、`KNOWN_ISSUES.md`、`docs/MIGRATION_CHECKLIST.md` 與 `docs/SCHEMA_FREEZE.md`。
+
+### Verified
+
+- `wrangler d1 migrations list bookingos-db --remote` 回報 no migrations to apply。
+- `wrangler d1 migrations apply bookingos-db --local` 回報 no migrations to apply。
+- 正式資料筆數不變：tenants 3、bookings 4、customers 2、tenant_admins 3、identities 2、identity_auth 2。
+- `GET https://bookingos.fangwl591021.workers.dev/api/health` 正常。
+
+### Not Changed
+
+- 未修改登入、Session、LIFF、預約、CRM 或 Identity backfill。
 ## 2026-07-10 - Task 005 Additive Identity Migration
 
 ### Added

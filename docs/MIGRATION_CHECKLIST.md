@@ -84,3 +84,18 @@
 - [ ] Consider staff identity after merchant/customer identity is stable.
 - [ ] Consider Customer CRM split tables later.
 - [ ] Consider Session storage table only if Signed Cookie/KV/DO/JWT are insufficient.
+
+## Gate 8: D1 Migration History Reconcile
+
+- [x] 全部 legacy migration 已盤點。
+- [x] 遠端實際 Schema 已盤點。
+- [x] `d1_migrations` tracking table 已確認。
+- [x] 每份 migration 已判定 Applied / Pending / Conflict。
+- [x] Reconcile SQL 已先在 local D1 驗證。
+- [x] 正式操作前已備份遠端 D1。
+- [x] 遠端 migration history 已安全補記 `0002` 到 `0012`。
+- [x] `wrangler d1 migrations list bookingos-db --remote` 已回報 no migrations to apply。
+- [x] 正式資料筆數不變。
+- [x] `/api/health` 正常。
+- [x] 未修改登入、Session、LIFF、預約或 CRM 行為。
+- [x] 未來 migration SOP 已建立於 `docs/D1_MIGRATION_BASELINE.md`。

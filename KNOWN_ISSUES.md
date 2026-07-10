@@ -49,12 +49,11 @@
 - 風險：前端錯誤處理與跨專案共用工具較難一致。
 - 建議：新 API 先使用標準格式；舊 API 在不破壞前端下逐步調整。
 
-## P0: 遠端 D1 migration history 尚未與 repo 對齊
+## Resolved 2026-07-10: 遠端 D1 migration history 尚未與 repo 對齊
 
-- 現象：`wrangler d1 migrations list --remote` 仍顯示 `0002` 到 `0012` pending，但 production schema 已有多個舊欄位與表。
-- 風險：若直接執行整批 `wrangler d1 migrations apply --remote`，可能重跑舊 migration 或造成不可預期 schema 衝突。
-- 現況：Task 005 已在備份後只用 direct SQL 套用 `0012_additive_identity.sql`。
-- 建議：下一次 D1 migration 前，先建立 migration history reconcile 策略，不要直接套整批 remote migrations。
+- 狀態：已採用安全補記 Migration History 方案，將 `0002` 到 `0012` 寫入 `d1_migrations`。
+- 驗證：`wrangler d1 migrations list bookingos-db --remote` 已回報 `No migrations to apply`。
+- 注意：未來仍禁止未檢查 pending 清單就直接執行 remote apply；詳見 `docs/D1_MIGRATION_BASELINE.md`。
 
 ## P1: PHONE / EMAIL identity backfill 尚不可自動執行
 

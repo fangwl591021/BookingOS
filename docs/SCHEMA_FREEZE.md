@@ -1,7 +1,7 @@
-﻿# BookingOS Schema Freeze
+# BookingOS Schema Freeze
 
 日期：2026-07-10
-狀態：Frozen for review。尚未建立 migration，尚未修改資料庫，尚未修改程式。
+狀態：Frozen and migrated additively in Task 005。Task 006 已完成 D1 migration history reconcile。
 
 ## Freeze Scope
 
@@ -12,7 +12,8 @@ BookingOS V1 Identity Schema 只凍結以下項目：
 3. `customers.identity_id`
 4. `customers.customer_no`
 5. `tenant_admins.identity_id`
-6. Session Interface
+6. `platform_line_contacts.identity_id`
+7. Session Interface
 
 ## Architecture Rule
 
@@ -94,6 +95,12 @@ ALTER TABLE customers ADD COLUMN customer_no TEXT;
 ALTER TABLE tenant_admins ADD COLUMN identity_id TEXT;
 ```
 
+### platform_line_contacts
+
+```sql
+ALTER TABLE platform_line_contacts ADD COLUMN identity_id TEXT;
+```
+
 ## Frozen Indexes
 
 ```sql
@@ -113,11 +120,13 @@ ON identity_auth(provider, normalized_email)
 WHERE provider = 'EMAIL' AND normalized_email IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_tenant_admins_identity
-ON tenant_admins(identity_id, status);
+ON tenant_admins(identity_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_tenant_identity
-ON customers(tenant_id, identity_id)
-WHERE identity_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_customers_identity
+ON customers(identity_id);
+
+CREATE INDEX IF NOT EXISTS idx_platform_line_contacts_identity
+ON platform_line_contacts(identity_id);
 ```
 
 ## Explicitly Not Frozen
