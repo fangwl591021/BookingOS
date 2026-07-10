@@ -1,4 +1,4 @@
-# KNOWN_ISSUES.md
+﻿# KNOWN_ISSUES.md
 
 ## Resolved 2026-07-10: 平台與店家登入設定硬編碼
 
@@ -61,3 +61,11 @@
 - 風險：若用 phone 自動合併 identity，可能把不同店家的不同 Customer 或 Admin 誤合併。
 - 現況：Task 005 僅使用 scoped LINE 回填，PHONE/EMAIL 只做 audit，不建立 auth。
 - 建議：建立 verified phone/email 來源後，再分批建立 PHONE/EMAIL auth。
+
+## Resolved 2026-07-10: 店家帳密登入全域 LIMIT 1 與 CRM 權限混用
+
+- 狀態：POST /merchant-login 已改為只以 tenant_admins 作為店家權限來源。
+- 無 tenant 登入只用 normalized phone/email；多店命中會回 TENANT_SELECTION_REQUIRED，不再自動選第一家。
+- 指定 tenant 登入只查該 tenant；同店多筆重複 admin 會回 MERCHANT_ACCOUNT_CONFLICT。
+- platform_line_contacts 不再作為店家帳密登入來源。
+- 注意：LIFF Login 尚未納入 Task 007，後續需另開 Task 處理多店選店。

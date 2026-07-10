@@ -1,4 +1,4 @@
-# Identity Migration Plan
+﻿# Identity Migration Plan
 
 日期：2026-07-10
 狀態：Task 005 Additive Identity Migration 已完成。Schema 已加入本機與遠端 D1；尚未切換登入、Session、LIFF、預約或 CRM 行為。
@@ -159,3 +159,14 @@ Status: not started.
 - Remote D1 historical migration table is not aligned: `wrangler d1 migrations list --remote` still shows old migrations pending.
 - To avoid applying old migrations unexpectedly, Task 005 applied only `migrations/0012_additive_identity.sql` by direct `wrangler d1 execute --file` after backup.
 - Before any future `wrangler d1 migrations apply --remote`, reconcile D1 migration history.
+
+## Task 007 Update: Merchant Login Read Path
+
+狀態：已開始切換 Merchant Login read path，但仍維持 V1 merchant cookie。
+
+- POST /merchant-login 已改為 dual-read：先讀 legacy tenant_admins.phone/email/name，再解析/建立 identity_id。
+- 不以 identity_auth 作為 merchant password source；MERCHANT_ADMIN_PASSWORD 仍是 V1 過渡密碼。
+- 不用 phone/email 建立 identity_auth 或自動合併 identity。
+- platform_line_contacts 不再作為店家帳密登入權限來源。
+- 無 tenant 多店命中會回 TENANT_SELECTION_REQUIRED；不再全域 LIMIT 1 選店。
+- Session Interface 尚未切換；Merchant Cookie 格式未改。

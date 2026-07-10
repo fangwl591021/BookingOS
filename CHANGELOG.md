@@ -1,4 +1,4 @@
-## 2026-07-10 - Task 006 D1 Migration History Reconcile
+﻿## 2026-07-10 - Task 006 D1 Migration History Reconcile
 
 ### Added
 
@@ -110,3 +110,21 @@
 
 - 本輪未完整測試客戶預約端到端流程。
 - `npm run check` 因本機 sandbox ACL 問題未完成，但等價語法檢查已通過。
+
+## 2026-07-10 - Task 007 Merchant Login Dual-Read Identity Resolution
+
+### Security
+
+- 店家帳密登入改為只依 tenant_admins 判斷店家權限，不再使用 platform_line_contacts 作為登入來源。
+- 無 tenant 登入時移除全域 LIMIT 1 自動選店；多店命中會要求選店且不發 cookie。
+- 密碼先驗證再做 tenant/admin matching，降低帳號枚舉風險。
+- identity create/link 僅在找到唯一 active tenant_admins 後執行，且不使用 phone/email 自動合併。
+
+### Added
+
+- 新增 MERCHANT_IDENTITY_RESOLUTION_ENABLED feature flag。
+- 新增 docs/MERCHANT_IDENTITY_LOGIN.md。
+
+### Not Changed
+
+- 未修改 Platform Login、LIFF Login、Customer Login、Booking、CRM、Points、Merchant Cookie 格式或 Session storage。

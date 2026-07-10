@@ -41,6 +41,11 @@ function platformSessionValue(env) {
 function merchantAdminPassword(env) {
   return envValue(env, "MERCHANT_ADMIN_PASSWORD");
 }
+
+function merchantIdentityResolutionEnabled(env) {
+  return envValue(env, "MERCHANT_IDENTITY_RESOLUTION_ENABLED", "true").toLowerCase() !== "false";
+}
+
 async function secureCompare(actual, expected) {
   const left = new TextEncoder().encode(String(actual || ""));
   const right = new TextEncoder().encode(String(expected || ""));
@@ -174,7 +179,7 @@ export default {
     if (url.pathname === "/merchant-login") {
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
-      return html(renderMerchantLoginPage(activeTenantId, url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
+      return html(renderMerchantLoginPage(url.searchParams.has("tenant") ? activeTenantId : "", url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
     }
     if (url.pathname === "/api/merchant/liff-login" && request.method === "POST") {
       return handleMerchantLiffLogin(request, env);
@@ -384,39 +389,210 @@ function isMerchantAuthenticated(request, tenantId, env) {
   return cookie.split(";").map((part) => part.trim()).includes(`${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(tenantId)}`);
 }
 
+function normalizeMerchantPhone(value) {
+  const digits = String(value || "").trim().replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("886") && digits.length >= 11) return `0${digits.slice(3)}`;
+  if (digits.length === 9 && digits.startsWith("9")) return `0${digits}`;
+  return digits;
+}
+
+function normalizeMerchantEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
+}
+
+function normalizeMerchantAccount(value) {
+  const raw = String(value || "").trim();
+  return {
+    raw,
+    phone: normalizeMerchantPhone(raw),
+    email: normalizeMerchantEmail(raw),
+    name: raw.replace(/\s+/g, " ")
+  };
+}
+
+function isAllowedMerchantRole(role) {
+  return ["owner", "admin", "manager", "staff", "viewer"].includes(String(role || "admin").trim().toLowerCase());
+}
+
+function merchantLoginFailureUrl(request, { tenantId = "", explicitTenant = false, next = "/merchant", error = "1" } = {}) {
+  const url = new URL("/merchant-login", request.url);
+  if (explicitTenant && tenantId) url.searchParams.set("tenant", tenantId);
+  if (next) url.searchParams.set("next", next);
+  if (error) url.searchParams.set("error", error);
+  return url;
+}
+
+function merchantLoginJsonError(code, message, status = 400, data = {}) {
+  return Response.json({ ok: false, success: false, error: { code, message }, data }, { status, headers: jsonHeaders });
+}
+
+async function shortHash(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
+}
+
+async function merchantLoginLog(event, fields = {}) {
+  const safe = { event, at: new Date().toISOString() };
+  for (const [key, value] of Object.entries(fields || {})) {
+    if (value === undefined || value === null || value === "") continue;
+    if (["account", "phone", "email", "line_user_id", "password", "cookie"].includes(key)) safe[`${key}_hash`] = await shortHash(value);
+    else safe[key] = value;
+  }
+  console.log(JSON.stringify({ scope: "merchant_login", ...safe }));
+}
+
+function merchantAdminMatchesAccount(admin, account, { allowName = false } = {}) {
+  if (account.phone && normalizeMerchantPhone(admin.phone) === account.phone) return true;
+  if (account.email && normalizeMerchantEmail(admin.email) === account.email) return true;
+  if (allowName && account.name && String(admin.name || "").trim().replace(/\s+/g, " ") === account.name) return true;
+  return false;
+}
+
+async function findMerchantAdminMatches(env, account, explicitTenantId = "") {
+  if (!env.DB) return [];
+  const allowName = Boolean(explicitTenantId);
+  if (!explicitTenantId && !account.phone && !account.email) return [];
+  const sql = `
+    SELECT a.id, a.tenant_id, a.name, a.phone, a.email, a.line_user_id, a.role, a.status, a.identity_id, t.name AS tenant_name
+    FROM tenant_admins a
+    LEFT JOIN tenants t ON t.id = a.tenant_id
+    WHERE (a.status IS NULL OR a.status = 'active') ${explicitTenantId ? "AND a.tenant_id = ?" : ""}
+  `;
+  const query = explicitTenantId ? env.DB.prepare(sql).bind(explicitTenantId) : env.DB.prepare(sql);
+  const rows = (await query.all()).results || [];
+  return rows.filter((admin) => merchantAdminMatchesAccount(admin, account, { allowName }));
+}
+
+function classifyMerchantAdminMatches(matches) {
+  const byTenant = new Map();
+  for (const match of matches) {
+    const tenantId = String(match.tenant_id || "").trim();
+    if (!tenantId) continue;
+    if (!byTenant.has(tenantId)) byTenant.set(tenantId, []);
+    byTenant.get(tenantId).push(match);
+  }
+  const tenants = Array.from(byTenant.entries()).map(([tenantId, rows]) => ({ tenantId, rows }));
+  const conflict = tenants.find((entry) => entry.rows.length > 1);
+  if (conflict) return { status: "conflict", tenantId: conflict.tenantId, rows: conflict.rows };
+  if (tenants.length === 0) return { status: "none", rows: [] };
+  if (tenants.length > 1) return { status: "tenant_selection", tenants };
+  return { status: "single", admin: tenants[0].rows[0] };
+}
+
+async function findScopedLineIdentity(env, admin) {
+  const lineUserId = String(admin.line_user_id || "").trim();
+  const tenantId = String(admin.tenant_id || "").trim();
+  if (!lineUserId || !tenantId) return null;
+  const providerUid = `tenant:${tenantId}:${lineUserId}`;
+  const row = await env.DB.prepare(`
+    SELECT ia.identity_id, i.status
+    FROM identity_auth ia
+    JOIN identities i ON i.id = ia.identity_id
+    WHERE ia.provider = 'LINE' AND ia.provider_uid = ?
+  `).bind(providerUid).first();
+  if (!row?.identity_id || String(row.status || "active") !== "active") return null;
+  return String(row.identity_id || "").trim() || null;
+}
+
+async function resolveMerchantIdentity(env, admin) {
+  const adminId = String(admin.id || "").trim();
+  const role = String(admin.role || "admin").trim().toLowerCase() || "admin";
+  if (!adminId) return { ok: false, code: "MERCHANT_ADMIN_INVALID", message: "店家管理員資料不完整，請聯絡平台管理員。" };
+  if (!isAllowedMerchantRole(role)) return { ok: false, code: "MERCHANT_ROLE_INVALID", message: "店家管理員角色設定錯誤，請聯絡平台管理員。" };
+  if (String(admin.status || "active") !== "active") return { ok: false, code: "MERCHANT_ADMIN_DISABLED", message: "店家管理員已停用。" };
+
+  const existingIdentityId = String(admin.identity_id || "").trim();
+  if (existingIdentityId) {
+    const identity = await env.DB.prepare("SELECT id, status FROM identities WHERE id = ?").bind(existingIdentityId).first();
+    if (!identity?.id || String(identity.status || "active") !== "active") {
+      await merchantLoginLog("broken_identity_reference", { tenant_id: admin.tenant_id, admin_id: adminId, identity_id: existingIdentityId });
+      return { ok: false, code: "BROKEN_IDENTITY_REFERENCE", message: "店家身份設定異常，請聯絡平台管理員。" };
+    }
+    return { ok: true, identityId: existingIdentityId, created: false, linked: false };
+  }
+
+  const scopedLineIdentity = await findScopedLineIdentity(env, admin);
+  if (scopedLineIdentity) {
+    await env.DB.prepare("UPDATE tenant_admins SET identity_id = ?, updated_at = datetime('now') WHERE id = ? AND identity_id IS NULL").bind(scopedLineIdentity, adminId).run();
+    const linked = await env.DB.prepare("SELECT identity_id FROM tenant_admins WHERE id = ?").bind(adminId).first();
+    const identityId = String(linked?.identity_id || "").trim();
+    if (identityId) {
+      await merchantLoginLog("identity_linked", { tenant_id: admin.tenant_id, admin_id: adminId, identity_id: identityId });
+      return { ok: true, identityId, created: false, linked: true };
+    }
+  }
+
+  const suffix = await shortHash(`tenant_admin:${adminId}`);
+  const identityId = `idn_admin_${suffix}`;
+  const insertIdentity = env.DB.prepare("INSERT OR IGNORE INTO identities (id, status, created_at, updated_at) VALUES (?, 'active', datetime('now'), datetime('now'))").bind(identityId);
+  const linkAdmin = env.DB.prepare("UPDATE tenant_admins SET identity_id = ?, updated_at = datetime('now') WHERE id = ? AND identity_id IS NULL").bind(identityId, adminId);
+  if (typeof env.DB.batch === "function") await env.DB.batch([insertIdentity, linkAdmin]);
+  else {
+    await insertIdentity.run();
+    await linkAdmin.run();
+  }
+  const verified = await env.DB.prepare("SELECT a.identity_id, i.status FROM tenant_admins a LEFT JOIN identities i ON i.id = a.identity_id WHERE a.id = ?").bind(adminId).first();
+  const finalIdentityId = String(verified?.identity_id || "").trim();
+  if (!finalIdentityId || String(verified?.status || "") !== "active") {
+    await merchantLoginLog("identity_create_failed", { tenant_id: admin.tenant_id, admin_id: adminId, identity_id: identityId });
+    return { ok: false, code: "IDENTITY_RESOLUTION_FAILED", message: "店家身份建立失敗，請稍後再試。" };
+  }
+  await merchantLoginLog(finalIdentityId === identityId ? "identity_created" : "identity_race_reused", { tenant_id: admin.tenant_id, admin_id: adminId, identity_id: finalIdentityId });
+  return { ok: true, identityId: finalIdentityId, created: finalIdentityId === identityId, linked: false };
+}
+
 async function handleMerchantLogin(request, env) {
   const form = await request.formData();
-  const requestedTenantId = String(form.get("tenant") || TENANT_ID).trim() || TENANT_ID;
+  const explicitTenantId = String(form.get("tenant") || "").trim();
+  const hasExplicitTenant = Boolean(explicitTenantId);
+  const requestedTenantId = explicitTenantId || defaultTenantId(env);
   const next = String(form.get("next") || "/merchant").trim() || "/merchant";
-  const account = String(form.get("account") || "").trim();
-  const accountDigits = account.replace(/\D/g, "");
+  const account = normalizeMerchantAccount(form.get("account"));
   const password = String(form.get("password") || "").trim();
-  if (platformAdminUser(env) && platformAdminPassword(env) && await secureCompare(account, platformAdminUser(env)) && await secureCompare(password, platformAdminPassword(env))) {
-    const redirectTarget = next.startsWith("/") ? `${next}${next.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(requestedTenantId)}` : `/merchant?tenant=${encodeURIComponent(requestedTenantId)}`;
-    return redirectWithCookie(redirectTarget, `${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(requestedTenantId)}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax`);
-  }
+  const failUrl = () => merchantLoginFailureUrl(request, { tenantId: requestedTenantId, explicitTenant: hasExplicitTenant, next, error: "1" });
+
   const expectedMerchantPassword = merchantAdminPassword(env);
-  if (!env.DB || !expectedMerchantPassword || !(await secureCompare(password, expectedMerchantPassword)) || !account) {
-    return Response.redirect(new URL(`/merchant-login?tenant=${encodeURIComponent(requestedTenantId)}&next=${encodeURIComponent(next)}&error=1`, request.url), 302);
+  if (!env.DB || !expectedMerchantPassword || !account.raw || !(await secureCompare(password, expectedMerchantPassword))) {
+    await merchantLoginLog("login_failed", { reason: "invalid_credentials", tenant_id: hasExplicitTenant ? requestedTenantId : "", account: account.raw });
+    return Response.redirect(failUrl(), 302);
   }
-  const adminSql = "SELECT tenant_id FROM tenant_admins WHERE (status IS NULL OR status = 'active') AND (phone = ? OR REPLACE(REPLACE(phone, '-', ''), ' ', '') = ? OR email = ? OR name = ?)";
-  let loginTenantId = "";
-  const admin = await env.DB.prepare(`${adminSql} AND tenant_id = ? LIMIT 1`).bind(account, accountDigits, account, account, requestedTenantId).first();
-  if (admin?.tenant_id) loginTenantId = String(admin.tenant_id || "").trim();
-  if (!loginTenantId) {
-    const boundContact = await env.DB.prepare("SELECT tenant_id FROM platform_line_contacts WHERE tenant_id = ? AND (display_name = ? OR phone = ? OR REPLACE(REPLACE(phone, '-', ''), ' ', '') = ? OR email = ?) LIMIT 1").bind(requestedTenantId, account, account, accountDigits, account).first();
-    if (boundContact?.tenant_id) loginTenantId = String(boundContact.tenant_id || "").trim();
+
+  await ensurePlatformSchema(env);
+  const matches = await findMerchantAdminMatches(env, account, hasExplicitTenant ? requestedTenantId : "");
+  const classified = classifyMerchantAdminMatches(matches);
+
+  if (classified.status === "none") {
+    await merchantLoginLog("login_failed", { reason: "no_admin_match", tenant_id: hasExplicitTenant ? requestedTenantId : "", account: account.raw });
+    return Response.redirect(failUrl(), 302);
   }
-  if (!loginTenantId) {
-    const globalAdmin = await env.DB.prepare(`${adminSql} LIMIT 1`).bind(account, accountDigits, account, account).first();
-    if (globalAdmin?.tenant_id) loginTenantId = String(globalAdmin.tenant_id || "").trim();
+
+  if (classified.status === "conflict") {
+    await merchantLoginLog("merchant_account_conflict", { tenant_id: classified.tenantId, account: account.raw, count: classified.rows.length });
+    return merchantLoginJsonError("MERCHANT_ACCOUNT_CONFLICT", "此店家中存在重複管理者帳號，請聯絡平台管理員。", 409);
   }
-  if (!loginTenantId) {
-    const globalContact = await env.DB.prepare("SELECT tenant_id FROM platform_line_contacts WHERE tenant_id IS NOT NULL AND (display_name = ? OR phone = ? OR REPLACE(REPLACE(phone, '-', ''), ' ', '') = ? OR email = ?) LIMIT 1").bind(account, account, accountDigits, account).first();
-    if (globalContact?.tenant_id) loginTenantId = String(globalContact.tenant_id || "").trim();
+
+  if (classified.status === "tenant_selection") {
+    const tenants = classified.tenants.map((entry) => {
+      const admin = entry.rows[0];
+      return { tenant_id: entry.tenantId, tenant_name: String(admin.tenant_name || entry.tenantId), role: String(admin.role || "admin") };
+    });
+    await merchantLoginLog("tenant_selection_required", { account: account.raw, count: tenants.length });
+    return merchantLoginJsonError("TENANT_SELECTION_REQUIRED", "此帳號可管理多家店，請選擇要進入的店家。", 409, { tenants });
   }
-  if (!loginTenantId) return Response.redirect(new URL(`/merchant-login?tenant=${encodeURIComponent(requestedTenantId)}&next=${encodeURIComponent(next)}&error=1`, request.url), 302);
+
+  const admin = classified.admin;
+  let identityResult = { ok: true, identityId: String(admin.identity_id || "").trim(), disabled: true };
+  if (merchantIdentityResolutionEnabled(env)) identityResult = await resolveMerchantIdentity(env, admin);
+  if (!identityResult.ok) {
+    await merchantLoginLog("login_failed", { reason: identityResult.code, tenant_id: admin.tenant_id, admin_id: admin.id });
+    return merchantLoginJsonError(identityResult.code, identityResult.message, 500);
+  }
+
+  const loginTenantId = String(admin.tenant_id || "").trim();
   const redirectTarget = next.startsWith("/") ? `${next}${next.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(loginTenantId)}` : `/merchant?tenant=${encodeURIComponent(loginTenantId)}`;
+  await merchantLoginLog("login_success", { tenant_id: loginTenantId, admin_id: admin.id, identity_id: identityResult.identityId || "", identity_mode: identityResult.disabled ? "disabled" : identityResult.created ? "created" : identityResult.linked ? "linked" : "existing" });
   return redirectWithCookie(redirectTarget, `${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(loginTenantId)}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax`);
 }
 async function merchantLoginLiffId(env) {
@@ -457,7 +633,7 @@ async function handleMerchantLiffLogin(request, env) {
 }
 function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error = "", liffId = "") {
   const message = error ? `<div class="error">帳號或密碼錯誤</div>` : "";
-  const safeTenant = escapeAttrValue(tenantId || TENANT_ID);
+  const safeTenant = escapeAttrValue(tenantId || "");
   const safeNext = escapeAttrValue(next || "/merchant");
   const safeLiffId = String(liffId || "").trim();
   const lineLoginBlock = safeLiffId ? `<button class="line-login" type="button" id="line-login">使用 LINE 綁定登入</button><div class="divider">或使用帳密登入</div><div class="line-status" id="line-status"></div>` : "";
@@ -482,7 +658,7 @@ async function completeLineLogin(){
 document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});
 window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await completeLineLogin();}catch(e){setLineStatus("");}});
 </script>` : "";
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><div class="hint">帳密登入可使用店家 Admin 手機、Email、姓名，或已綁定 CRM 的 LINE 名稱；密碼由平台安全設定管理</div></main>${liffScript}</body></html>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><div class="hint">帳密登入可使用店家 Admin 手機、Email；指定店家登入時可相容姓名登入。密碼為 V1 全域店家後台密碼，由平台安全設定管理</div></main>${liffScript}</body></html>`;
 }
 function html(body) {
   return new Response(body, {
@@ -875,6 +1051,37 @@ async function ensurePlatformSchema(env) {
     )
   `).run();
   await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tenant_admins_tenant ON tenant_admins(tenant_id, status)").run();
+  try { await env.DB.prepare("ALTER TABLE tenant_admins ADD COLUMN identity_id TEXT").run(); } catch (error) {}
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS identities (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `).run();
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS identity_auth (
+      id TEXT PRIMARY KEY,
+      identity_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_uid TEXT,
+      normalized_phone TEXT,
+      normalized_email TEXT,
+      verified INTEGER NOT NULL DEFAULT 0,
+      verified_at TEXT,
+      last_login_at TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (identity_id) REFERENCES identities(id)
+    )
+  `).run();
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_identity_auth_identity ON identity_auth(identity_id)").run();
+  await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_auth_provider_uid ON identity_auth(provider, provider_uid) WHERE provider_uid IS NOT NULL").run();
+  await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_auth_phone ON identity_auth(provider, normalized_phone) WHERE provider = 'PHONE' AND normalized_phone IS NOT NULL").run();
+  await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_identity_auth_email ON identity_auth(provider, normalized_email) WHERE provider = 'EMAIL' AND normalized_email IS NOT NULL").run();
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_tenant_admins_identity ON tenant_admins(identity_id)").run();
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS tenant_applications (
       id TEXT PRIMARY KEY,
@@ -988,6 +1195,8 @@ async function ensurePlatformSchema(env) {
     )
   `).run();
   try { await env.DB.prepare("ALTER TABLE platform_line_contacts ADD COLUMN referrer_line_user_id TEXT").run(); } catch (error) {}
+  try { await env.DB.prepare("ALTER TABLE platform_line_contacts ADD COLUMN identity_id TEXT").run(); } catch (error) {}
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_platform_line_contacts_identity ON platform_line_contacts(identity_id)").run();
   await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_platform_line_contacts_status ON platform_line_contacts(lead_status, last_interaction_at)").run();
   try { await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_platform_line_contacts_referrer ON platform_line_contacts(referrer_line_user_id)").run(); } catch (error) {}
   await env.DB.prepare(`
@@ -1037,6 +1246,8 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenant_applications ADD COLUMN extra_staff_annual_price INTEGER").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE tenant_applications ADD COLUMN owner_line_user_id TEXT").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE platform_line_contacts ADD COLUMN referrer_line_user_id TEXT").run(); } catch (error) {}
+  try { await env.DB.prepare("ALTER TABLE platform_line_contacts ADD COLUMN identity_id TEXT").run(); } catch (error) {}
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_platform_line_contacts_identity ON platform_line_contacts(identity_id)").run();
   await env.DB.prepare(`
     INSERT INTO tenant_admins (id, tenant_id, name, phone, role, status, created_at, updated_at)
     SELECT 'demo-owner', ?, '平台示範店主', ?, 'owner', 'active', datetime('now'), datetime('now')

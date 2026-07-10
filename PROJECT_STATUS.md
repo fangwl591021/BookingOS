@@ -1,4 +1,4 @@
-# PROJECT_STATUS.md
+﻿# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -121,3 +121,17 @@
 - `/api/health` 正常。
 - 已新增 `docs/D1_MIGRATION_BASELINE.md` 與 README D1 migration SOP。
 - 本輪未修改登入、Session、LIFF、預約、CRM 或 Identity backfill。
+
+## Task 007 Merchant Login Dual-Read Identity Resolution 2026-07-10
+
+- 已重寫 POST /merchant-login 的店家帳密登入解析，不再用平台好友 CRM platform_line_contacts 作為店家權限來源。
+- 店家權限唯一來源為 tenant_admins；密碼仍使用 V1 MERCHANT_ADMIN_PASSWORD。
+- 無 tenant 登入時只用 normalized phone/email 比對；多店命中回 TENANT_SELECTION_REQUIRED，不發 cookie。
+- 指定 tenant 登入時只查該 tenant；多筆 admin 衝突回 MERCHANT_ACCOUNT_CONFLICT。
+- 已移除店家帳密登入的全域 LIMIT 1 自動選店行為。
+- 已加入 MERCHANT_IDENTITY_RESOLUTION_ENABLED，只控制 identity create/link，不會恢復舊登入安全風險。
+- 本輪未修改 Platform Login、LIFF Login、Customer Login、Booking、CRM、Points 或 Merchant Cookie 格式。
+- 已部署 Cloudflare Workers Version ID：f7084943-b95e-41d3-9a0c-a74880dbee57。
+- 部署前已確認 remote D1 migrations 無 pending，並備份至 .local-backups/bookingos-db-pre-merchant-identity-login-20260710.sql。
+- 線上 smoke test：/api/health 正常；錯誤密碼不發 cookie；指定 tenant 與無 tenant 單店帳密登入皆成功。
+- 本輪登入測試建立 1 筆 tenant_admin identity；部署後筆數：tenants 3、bookings 4、customers 2、tenant_admins 3、identities 3、identity_auth 2。

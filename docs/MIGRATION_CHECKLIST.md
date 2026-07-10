@@ -1,4 +1,4 @@
-# BookingOS Identity Migration Checklist
+﻿# BookingOS Identity Migration Checklist
 
 日期：2026-07-10
 狀態：Task 005 Additive Identity Migration 已完成。未切換登入、Session、LIFF、預約、CRM 行為。
@@ -99,3 +99,18 @@
 - [x] `/api/health` 正常。
 - [x] 未修改登入、Session、LIFF、預約或 CRM 行為。
 - [x] 未來 migration SOP 已建立於 `docs/D1_MIGRATION_BASELINE.md`。
+
+## Gate 3A: Task 007 Merchant Login Dual-Read
+
+- [x] Merchant password remains MERCHANT_ADMIN_PASSWORD during transition.
+- [x] Merchant login uses tenant_admins as the only permission source.
+- [x] platform_line_contacts is not used for merchant password login auth.
+- [x] Explicit tenant login is scoped to that tenant.
+- [x] No-tenant login matches only normalized phone/email.
+- [x] No-tenant multi-tenant match returns TENANT_SELECTION_REQUIRED without cookie.
+- [x] Same-tenant duplicate admin returns MERCHANT_ACCOUNT_CONFLICT without cookie.
+- [x] Identity resolution happens only after one active tenant_admin is found.
+- [x] Phone/email identity merge remains disabled.
+- [x] Merchant cookie format remains unchanged.
+- [ ] LIFF Login multi-tenant selection is not yet migrated.
+- [ ] Merchant Session Interface still pending.
