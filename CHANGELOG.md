@@ -16,6 +16,8 @@
 
 ### Security
 
+- 客戶、會員、取消預約、點數與匯出流程改為依目前 tenant 存取。
+- 客戶/預約/點數/介紹人 JOIN 補上 tenant 條件，避免跨店資料串接。
 - 平台帳密、店家預設密碼與 session secret 改為 Cloudflare env/secret。
 - `PUBLIC_BASE_URL` 與 `DEFAULT_TENANT_ID` 改為 Worker vars。
 - 平台 LINE token/secret 支援 env 覆蓋 D1 設定。
@@ -23,7 +25,7 @@
 - `/platform-line-webhook` 與 `/line-webhook` 新增 LINE signature 驗證。
 ### Changed
 
-- 本輪未修改業務功能與現有流程。
+- Task 002 已完成第一輪 tenant 隔離修補，業務功能不新增。
 
 ### Verified
 
@@ -32,9 +34,10 @@
 - `GET https://bookingos.fangwl591021.workers.dev/api/health`
 - `wrangler deploy --config wrangler.toml --dry-run`
 - D1 tenants/bookings/customers 基本查詢
+- 正式網址跨 tenant 客戶資料 smoke test：demo 可讀、兩家 trial 回 `profile:null`
+- 已正式部署至 Cloudflare Workers，Version ID：`5ba8a1ad-14ab-45f4-beb2-55f668569550`
 
 ### Not Verified
 
-- 已正式部署至 Cloudflare Workers，Version ID：`ce4b22a4-c3f1-4df5-9b2f-39f0a62c0c61`。
 - 本輪未完整測試客戶預約端到端流程。
 - `npm run check` 因本機 sandbox ACL 問題未完成，但等價語法檢查已通過。

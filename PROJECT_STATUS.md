@@ -26,7 +26,7 @@
 
 | 功能 | 狀態 | 備註 |
 | ---- | ---- | ---- |
-| 客戶預約頁 `/book` | 部分完成 | 已有服務、時段、人員、點數折抵流程，但需完整多租戶 E2E 驗證。 |
+| 客戶預約頁 `/book` | 部分完成 | 已有服務、時段、人員、點數折抵流程；客戶資料讀取已做 tenant 隔離，仍需完整 E2E 驗證。 |
 | 會員頁 `/member` `/points` `/history` | 部分完成 | 已有會員資料、點數、紀錄概念；需驗證 tenant 隔離與取消回補。 |
 | 店家後台 `/merchant` | 部分完成 | 可查看預約、CRM、店家資料；管理動作需補強。 |
 | 店家設定 `/settings` | 部分完成 | 可設定店家、服務、人員、資源；試用版方案限制需補強。 |
@@ -49,7 +49,7 @@
 | 等級 | 風險 | 說明 |
 | ---- | ---- | ---- |
 | Done | Task 001 安全部署 | Cloudflare Secrets 已設定，Worker 已正式部署。 |
-| P1 | Tenant 隔離不完全 | 部分函式仍使用 `TENANT_ID` 常數，可能讓非預設店資料混用。 |
+| Done | Task 002 Tenant 客戶流程隔離 | 客戶、會員、取消預約、點數與匯出已改用目前 tenant，並已用正式網址跨店驗證。 |
 | P1 | 方案限制未集中控管 | 試用版仍可能新增超額服務人員，需統一在 API 層阻擋。 |
 | P1 | 缺少端到端測試 | 預約、取消、點數、推薦與付款狀態需建立最小驗證清單。 |
 
@@ -61,3 +61,10 @@
 - 已正式部署至 Cloudflare Workers，Version ID：`ce4b22a4-c3f1-4df5-9b2f-39f0a62c0c61`。
 - 未將任何模組搬到 AIWE Dev System。
 - `npm run check` 因本機 sandbox ACL 問題未完成，但等價的 `node --check src/index.js` 已成功。
+## Task 002 Tenant 隔離驗證
+
+- 已修正 `/api/customer-profile`、`/api/member`、`/api/bookings/cancel` 使用目前網址 tenant。
+- 已修正會員更新、新增預約、取消預約、點數扣回/退回、客戶匯出使用目前 tenant。
+- 已修正客戶、預約、點數與介紹人 JOIN 條件，避免只靠 id 串到其他 tenant。
+- 正式網址 smoke test：`demo-tenant` 查 `0927136847` 可回會員與 31 點；`trial-mrd14uce`、`trial-mrdj8djy` 同手機皆回 `profile:null`。
+- 已部署 Cloudflare Workers Version ID：`5ba8a1ad-14ab-45f4-beb2-55f668569550`。

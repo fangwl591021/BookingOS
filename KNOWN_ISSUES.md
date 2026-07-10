@@ -12,12 +12,12 @@
 - 店家 webhook 使用 tenant scoped env、`LINE_CHANNEL_SECRET` 或 D1 `line_oa_settings.channel_secret`。
 - 缺 secret 回 503，簽章錯誤回 401。
 
-## P1: 多租戶資料隔離仍有舊常數
+## Resolved 2026-07-10: 多租戶客戶流程隔離舊常數
 
-- 位置：`cancelBooking()`、`loadCustomerProfile()`、部分會員/點數查詢。
-- 現象：部分查詢仍綁定 `TENANT_ID`，不是使用目前網址或登入來源的 tenant。
-- 風險：非 `demo-tenant` 店家可能讀不到自己的資料，或取消/點數異動落在錯誤 tenant。
-- 建議：所有客戶、預約、點數、CRM API 都必須明確傳入 tenant。
+- 狀態：`/api/customer-profile`、`/api/member`、`/api/bookings/cancel`、預約建立、客戶匯出已改為使用目前 tenant。
+- 客戶、預約、點數與介紹人 JOIN 皆加入 tenant 條件。
+- 已用正式網址驗證：`demo-tenant` 可讀 `0927136847`，`trial-mrd14uce` 與 `trial-mrdj8djy` 同手機回 `profile:null`。
+- 注意：後續新增 API 時仍必須明確傳入 tenant，不可直接使用全域預設 tenant。
 
 ## P1: 試用與付費方案限制尚未集中控管
 

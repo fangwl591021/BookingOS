@@ -158,7 +158,7 @@ const billingPlans = [
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const activeTenantId = tenantIdFromUrl(url);
+    const activeTenantId = tenantIdFromUrl(url, env);
 
     if (url.pathname === "/platform-login") {
       if (request.method === "POST") return handlePlatformLogin(request, env);
@@ -279,16 +279,16 @@ export default {
     }
 
     if (url.pathname === "/api/customer-profile") {
-      return Response.json({ ok: true, profile: await loadCustomerProfile(env, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
+      return Response.json({ ok: true, profile: await loadCustomerProfile(env, activeTenantId, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/member") {
-      if (request.method === "POST") return saveMemberProfile(request, env);
-      return Response.json({ ok: true, profile: await loadCustomerProfile(env, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
+      if (request.method === "POST") return saveMemberProfile(request, env, activeTenantId);
+      return Response.json({ ok: true, profile: await loadCustomerProfile(env, activeTenantId, url.searchParams.get("phone") || "") }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/bookings/cancel" && request.method === "POST") {
-      return cancelBooking(request, env);
+      return cancelBooking(request, env, activeTenantId);
     }
 
     if (url.pathname === "/api/bookings" && request.method === "POST") {
@@ -490,8 +490,8 @@ function html(body) {
   });
 }
 
-function tenantIdFromUrl(url) {
-  return String(url.searchParams.get("tenant") || TENANT_ID).trim() || TENANT_ID;
+function tenantIdFromUrl(url, env = {}) {
+  return String(url.searchParams.get("tenant") || defaultTenantId(env)).trim() || defaultTenantId(env);
 }
 function availabilityResponse(url, data = { businessHours, bookings, staffMembers, services, resourceTypes }) {
   const duration = Number(url.searchParams.get("duration") || "90");
@@ -1850,7 +1850,7 @@ async function loadBookings(env, date, tenantId) {
   }));
 }
 
-async function saveMemberProfile(request, env) {
+async function saveMemberProfile(request, env, tenantId) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
     const payload = await request.json();
@@ -1868,16 +1868,16 @@ async function saveMemberProfile(request, env) {
         UPDATE customers SET
           name = ?, email = ?, gender = ?, address = ?, birthday = ?, note = ?, preferred_service = ?, allergy_note = ?, contact_preference = ?, marketing_opt_in = ?,
           referred_by_customer_id = COALESCE(referred_by_customer_id, ?), referred_by_code = COALESCE(referred_by_code, ?), updated_at = datetime('now')
-        WHERE id = ?
-      `).bind(name, clean(payload.email), clean(payload.gender), clean(payload.address), clean(payload.birthday), clean(payload.note), clean(payload.preferredService), clean(payload.allergyNote), clean(payload.contactPreference) || "phone", payload.marketingOptIn ? 1 : 0, referrer?.id || null, referredByCode, customerId).run();
+        WHERE tenant_id = ? AND id = ?
+      `).bind(name, clean(payload.email), clean(payload.gender), clean(payload.address), clean(payload.birthday), clean(payload.note), clean(payload.preferredService), clean(payload.allergyNote), clean(payload.contactPreference) || "phone", payload.marketingOptIn ? 1 : 0, referrer?.id || null, referredByCode, tenantId, customerId).run();
     } else {
       await env.DB.prepare(`
         INSERT INTO customers (id, tenant_id, name, phone, email, gender, address, birthday, note, preferred_service, allergy_note, contact_preference, marketing_opt_in, referral_code, referred_by_customer_id, referred_by_code, referred_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, datetime('now'), datetime('now'))
-      `).bind(customerId, TENANT_ID, name, phone, clean(payload.email), clean(payload.gender), clean(payload.address), clean(payload.birthday), clean(payload.note), clean(payload.preferredService), clean(payload.allergyNote), clean(payload.contactPreference) || "phone", payload.marketingOptIn ? 1 : 0, makeReferralCode(phone), referrer?.id || null, referredByCode, referredByCode).run();
+      `).bind(customerId, tenantId, name, phone, clean(payload.email), clean(payload.gender), clean(payload.address), clean(payload.birthday), clean(payload.note), clean(payload.preferredService), clean(payload.allergyNote), clean(payload.contactPreference) || "phone", payload.marketingOptIn ? 1 : 0, makeReferralCode(phone), referrer?.id || null, referredByCode, referredByCode).run();
     }
 
-    return Response.json({ ok: true, profile: await loadCustomerProfile(env, phone) }, { headers: jsonHeaders });
+    return Response.json({ ok: true, profile: await loadCustomerProfile(env, tenantId, phone) }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
@@ -1920,19 +1920,19 @@ function excelWorkbook(sheets = []) {
 
 async function exportCustomerWorkbook(request, env, tenantId = TENANT_ID) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
-  const exportTenantId = tenantIdFromUrl(new URL(request.url));
+  const exportTenantId = tenantId || tenantIdFromUrl(new URL(request.url), env);
   const [contacts, history, points] = await Promise.all([
     env.DB.prepare(`
       SELECT c.id, c.name, c.phone, c.email, c.gender, c.birthday, c.address, c.preferred_service, c.contact_preference, c.marketing_opt_in, c.points_balance, c.total_points_earned, c.total_points_used, c.referral_code, c.referred_by_code, r.name AS referrer_name, c.total_bookings, c.last_booking_at, c.note, c.created_at
       FROM customers c
-      LEFT JOIN customers r ON r.id = c.referred_by_customer_id
+      LEFT JOIN customers r ON r.id = c.referred_by_customer_id AND r.tenant_id = c.tenant_id
       WHERE c.tenant_id = ?
       ORDER BY c.updated_at DESC, c.created_at DESC
     `).bind(exportTenantId).all(),
     env.DB.prepare(`
       SELECT b.id, b.booking_date, b.start_time, b.end_time, b.customer_name, b.customer_phone, c.name AS member_name, b.service_name, b.duration_minutes, b.price, b.status, b.source, sm.name AS staff_name, b.note
       FROM bookings b
-      LEFT JOIN customers c ON c.id = b.customer_id
+      LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id
       LEFT JOIN staff_members sm ON sm.id = b.staff_id AND sm.tenant_id = b.tenant_id
       WHERE b.tenant_id = ?
       ORDER BY b.booking_date DESC, b.start_time DESC
@@ -1940,7 +1940,7 @@ async function exportCustomerWorkbook(request, env, tenantId = TENANT_ID) {
     env.DB.prepare(`
       SELECT pt.created_at, c.name AS customer_name, c.phone AS customer_phone, pt.type, pt.points, pt.reason, pt.booking_id, pt.expires_at
       FROM point_transactions pt
-      LEFT JOIN customers c ON c.id = pt.customer_id
+      LEFT JOIN customers c ON c.id = pt.customer_id AND c.tenant_id = pt.tenant_id
       WHERE pt.tenant_id = ?
       ORDER BY pt.created_at DESC
     `).bind(exportTenantId).all()
@@ -1970,12 +1970,12 @@ async function exportCustomerWorkbook(request, env, tenantId = TENANT_ID) {
     }
   });
 }
-async function loadCustomerProfile(env, phone) {
+async function loadCustomerProfile(env, tenantId, phone) {
   if (!env.DB || !phone) return null;
   const customer = await env.DB.prepare(`
     SELECT c.id, c.name, c.phone, c.email, c.gender, c.address, c.birthday, c.note, c.marketing_opt_in, c.preferred_service, c.allergy_note, c.contact_preference, c.points_balance, c.total_points_earned, c.total_points_used, c.referral_code, c.referred_by_code, r.name AS referrer_name, c.total_bookings, c.last_booking_at, c.created_at
     FROM customers c
-    LEFT JOIN customers r ON r.id = c.referred_by_customer_id
+    LEFT JOIN customers r ON r.id = c.referred_by_customer_id AND r.tenant_id = c.tenant_id
     WHERE c.tenant_id = ? AND c.phone = ?
   `).bind(tenantId, phone).first();
   if (!customer) return null;
@@ -1987,14 +1987,14 @@ async function loadCustomerProfile(env, phone) {
       WHERE tenant_id = ? AND customer_id = ?
       ORDER BY created_at DESC
       LIMIT 30
-    `).bind(TENANT_ID, customer.id).all(),
+    `).bind(tenantId, customer.id).all(),
     env.DB.prepare(`
       SELECT id, booking_date, start_time, end_time, service_name, duration_minutes, price, status
       FROM bookings
       WHERE tenant_id = ? AND customer_id = ?
       ORDER BY booking_date DESC, start_time DESC
       LIMIT 30
-    `).bind(TENANT_ID, customer.id).all()
+    `).bind(tenantId, customer.id).all()
   ]);
 
   return { customer, points: points.results || [], bookings: bookingRows.results || [] };
@@ -2005,7 +2005,7 @@ async function loadCustomers(env, tenantId = TENANT_ID) {
     const rows = await env.DB.prepare(`
       SELECT c.id, c.name, c.phone, c.points_balance, c.referral_code, c.referred_by_code, r.name AS referrer_name, c.total_bookings, c.last_booking_at
       FROM customers c
-      LEFT JOIN customers r ON r.id = c.referred_by_customer_id
+      LEFT JOIN customers r ON r.id = c.referred_by_customer_id AND r.tenant_id = c.tenant_id
       WHERE c.tenant_id = ?
       ORDER BY c.updated_at DESC
       LIMIT 50
@@ -2137,41 +2137,41 @@ async function saveSettings(request, env, tenantId = TENANT_ID) {
   }
 }
 
-async function cancelBooking(request, env) {
+async function cancelBooking(request, env, tenantId) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
     const payload = await request.json();
     const bookingId = String(payload.bookingId || "").trim();
     const phone = String(payload.phone || "").trim();
     if (!bookingId || !phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
-    const booking = await env.DB.prepare("SELECT b.id, b.customer_id, b.customer_phone, b.status, c.phone AS member_phone FROM bookings b LEFT JOIN customers c ON c.id = b.customer_id WHERE b.tenant_id = ? AND b.id = ?").bind(TENANT_ID, bookingId).first();
+    const booking = await env.DB.prepare("SELECT b.id, b.customer_id, b.customer_phone, b.status, c.phone AS member_phone FROM bookings b LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.id = ?").bind(tenantId, bookingId).first();
     if (!booking) return Response.json({ ok: false, error: "booking not found" }, { status: 404, headers: jsonHeaders });
     if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
     if (booking.status !== "cancelled") {
-      await env.DB.prepare("UPDATE bookings SET status = 'cancelled', updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(TENANT_ID, bookingId).run();
+      await env.DB.prepare("UPDATE bookings SET status = 'cancelled', updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, bookingId).run();
       if (booking.customer_id) {
-        const earned = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'earn'").bind(TENANT_ID, booking.customer_id, bookingId).first();
+        const earned = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'earn'").bind(tenantId, booking.customer_id, bookingId).first();
         const revokePoints = Math.max(0, Number(earned?.points || 0));
-        await env.DB.prepare("UPDATE customers SET total_bookings = CASE WHEN total_bookings > 0 THEN total_bookings - 1 ELSE 0 END, updated_at = datetime('now') WHERE id = ?").bind(booking.customer_id).run();
+        await env.DB.prepare("UPDATE customers SET total_bookings = CASE WHEN total_bookings > 0 THEN total_bookings - 1 ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, booking.customer_id).run();
         if (revokePoints > 0) {
           await env.DB.prepare(`
             INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
             VALUES (?, ?, ?, ?, 'revoke', ?, '取消預約扣回贈點', datetime('now'))
-          `).bind(crypto.randomUUID(), TENANT_ID, booking.customer_id, bookingId, -revokePoints).run();
-          await env.DB.prepare("UPDATE customers SET points_balance = points_balance - ?, total_points_earned = CASE WHEN total_points_earned >= ? THEN total_points_earned - ? ELSE 0 END, updated_at = datetime('now') WHERE id = ?").bind(revokePoints, revokePoints, revokePoints, booking.customer_id).run();
+          `).bind(crypto.randomUUID(), tenantId, booking.customer_id, bookingId, -revokePoints).run();
+          await env.DB.prepare("UPDATE customers SET points_balance = points_balance - ?, total_points_earned = CASE WHEN total_points_earned >= ? THEN total_points_earned - ? ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(revokePoints, revokePoints, revokePoints, tenantId, booking.customer_id).run();
         }
-        const redeemed = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'redeem'").bind(TENANT_ID, booking.customer_id, bookingId).first();
+        const redeemed = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'redeem'").bind(tenantId, booking.customer_id, bookingId).first();
         const refundPoints = Math.max(0, Math.abs(Number(redeemed?.points || 0)));
         if (refundPoints > 0) {
           await env.DB.prepare(`
             INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
             VALUES (?, ?, ?, ?, 'refund', ?, '取消預約退回折抵點數', datetime('now'))
-          `).bind(crypto.randomUUID(), TENANT_ID, booking.customer_id, bookingId, refundPoints).run();
-          await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_used = CASE WHEN total_points_used >= ? THEN total_points_used - ? ELSE 0 END, updated_at = datetime('now') WHERE id = ?").bind(refundPoints, refundPoints, refundPoints, booking.customer_id).run();
+          `).bind(crypto.randomUUID(), tenantId, booking.customer_id, bookingId, refundPoints).run();
+          await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_used = CASE WHEN total_points_used >= ? THEN total_points_used - ? ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(refundPoints, refundPoints, refundPoints, tenantId, booking.customer_id).run();
         }
       }
     }
-    return Response.json({ ok: true, profile: await loadCustomerProfile(env, phone) }, { headers: jsonHeaders });
+    return Response.json({ ok: true, profile: await loadCustomerProfile(env, tenantId, phone) }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
@@ -2224,10 +2224,10 @@ async function createBooking(request, env, data) {
       VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, datetime('now'), datetime('now'))
     `).bind(customerId, tenantId, name, phone, makeReferralCode(phone), referrer?.id || null, referredByCode, referredByCode).run();
   } else {
-    await env.DB.prepare("UPDATE customers SET name = ?, referred_by_code = COALESCE(referred_by_code, ?), updated_at = datetime('now') WHERE id = ?").bind(name, referredByCode, customerId).run();
+    await env.DB.prepare("UPDATE customers SET name = ?, referred_by_code = COALESCE(referred_by_code, ?), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(name, referredByCode, tenantId, customerId).run();
   }
 
-  const currentCustomer = await env.DB.prepare("SELECT points_balance FROM customers WHERE id = ?").bind(customerId).first();
+  const currentCustomer = await env.DB.prepare("SELECT points_balance FROM customers WHERE tenant_id = ? AND id = ?").bind(tenantId, customerId).first();
   const originalPrice = Math.max(0, Number(selectedPrice.price || 0));
   const requestedRedeemPoints = Math.max(0, Math.floor(Number(payload.redeemPoints || 0)));
   const serviceRedeemLimit = Math.max(0, Number(freshService.pointRedeemLimit || 0));
@@ -2242,14 +2242,14 @@ async function createBooking(request, env, data) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)
   `).bind(bookingId, tenantId, customerId, selectedStaffId, selectedService.id, selectedService.name, duration, payableAmount, date, start, end, name, rawPhone || '現場未留', source, payload.note || null).run();
 
-  await env.DB.prepare("UPDATE customers SET total_bookings = total_bookings + 1, last_booking_at = ?, updated_at = datetime('now') WHERE id = ?").bind(`${date} ${start}`, customerId).run();
+  await env.DB.prepare("UPDATE customers SET total_bookings = total_bookings + 1, last_booking_at = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(`${date} ${start}`, tenantId, customerId).run();
 
   if (redeemedPoints > 0) {
     await env.DB.prepare(`
       INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
       VALUES (?, ?, ?, ?, 'redeem', ?, ?, datetime('now'))
     `).bind(crypto.randomUUID(), tenantId, customerId, bookingId, -redeemedPoints, `預約點數折抵：${selectedService.name}`).run();
-    await env.DB.prepare("UPDATE customers SET points_balance = points_balance - ?, total_points_used = total_points_used + ?, updated_at = datetime('now') WHERE id = ?").bind(redeemedPoints, redeemedPoints, customerId).run();
+    await env.DB.prepare("UPDATE customers SET points_balance = points_balance - ?, total_points_used = total_points_used + ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(redeemedPoints, redeemedPoints, tenantId, customerId).run();
   }
 
   const earnedPoints = calculateRewardPoints(payableAmount, freshData.businessHours.pointReward);
@@ -2258,7 +2258,7 @@ async function createBooking(request, env, data) {
       INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
       VALUES (?, ?, ?, ?, 'earn', ?, ?, datetime('now'))
     `).bind(crypto.randomUUID(), tenantId, customerId, bookingId, earnedPoints, `預約消費贈點：${selectedService.name}`).run();
-    await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_earned = total_points_earned + ?, updated_at = datetime('now') WHERE id = ?").bind(earnedPoints, earnedPoints, customerId).run();
+    await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_earned = total_points_earned + ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(earnedPoints, earnedPoints, tenantId, customerId).run();
   }
 
   if (referrer?.id && referrer.id !== customerId) {
