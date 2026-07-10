@@ -237,8 +237,7 @@ export default {
       if (customerIntent.ok) {
         const loginNext = customerIntent.next || url.searchParams.get("next") || "/member";
         const loginError = url.searchParams.get("error") || "";
-        const liffId = await customerLoginLiffId(env, activeTenantId);
-        return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, loginNext, loginError, liffId, true));
+        return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, loginNext, loginError));
       }
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
@@ -256,9 +255,14 @@ export default {
     if (url.pathname === "/api/customer/register" && request.method === "POST") {
       return handleCustomerRegister(request, env);
     }
+    if (url.pathname === "/api/customer/phone-login" && request.method === "POST") {
+      return handleCustomerPhoneLogin(request, env, activeTenantId);
+    }
+    if (url.pathname === "/api/customer/phone-register" && request.method === "POST") {
+      return handleCustomerPhoneRegister(request, env, activeTenantId);
+    }
     if (url.pathname === "/member-login") {
-      const liffId = await customerLoginLiffId(env, activeTenantId);
-      return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
+      return html(renderCustomerLoginPage({ store: await loadStore(env, activeTenantId) }, url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || ""));
     }
     if (url.pathname === "/api/customer/liff-login" && request.method === "POST") {
       return handleCustomerLiffLogin(request, env);
@@ -270,7 +274,7 @@ export default {
       return Response.json({ ok: true, success: true, authenticated: true, session: { tenant_id: session.tenantId, customer_id: session.customerId, role: "Customer" }, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
     if (url.pathname === "/customer-logout") {
-      return redirectWithCookie("/member-entry?tenant=" + encodeURIComponent(activeTenantId), clearCustomerSessionCookie());
+      return redirectWithCookie("/member-login?tenant=" + encodeURIComponent(activeTenantId), clearCustomerSessionCookie());
     }
     if (url.pathname === "/merchant-select-tenant" && request.method === "POST") {
       return handleMerchantSelectTenant(request, env);
@@ -428,7 +432,6 @@ export default {
     }
     if (url.pathname === "/book") {
       const data = await dashboardData(env, todayInTaipei(), activeTenantId);
-      data.customerLoginLiffId = await customerLoginLiffId(env, activeTenantId) || envValue(env, "CUSTOMER_LIFF_ID");
       return html(renderCustomerPage(data));
     }
 
@@ -530,8 +533,7 @@ async function handleMemberEntry(request, env, tenantId = TENANT_ID) {
     return Response.redirect(target, 302);
   }
   const error = url.searchParams.get("error") || "";
-  const liffId = await customerLoginLiffId(env, safeTenant);
-  return html(renderCustomerLoginPage({ store: await loadStore(env, safeTenant) }, next, error, liffId, false));
+  return html(renderCustomerLoginPage({ store: await loadStore(env, safeTenant) }, next, error));
 }
 
 
@@ -821,7 +823,7 @@ function customerAuthFailureResponse(request, auth, tenantId = "") {
   const status = auth.status || 401;
   if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
   const current = new URL(request.url);
-  const url = new URL("/member-entry", request.url);
+  const url = new URL("/member-login", request.url);
   if (tenantId) url.searchParams.set("tenant", tenantId);
   url.searchParams.set("next", current.pathname + current.search);
   url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
@@ -1000,6 +1002,25 @@ function normalizeMerchantAccount(value) {
   };
 }
 
+function normalizeCustomerPhone(value) {
+  return normalizeMerchantPhone(value);
+}
+
+function normalizeCustomerBirthdayCredential(value) {
+  const digits = String(value || "").trim().replace(/\D/g, "");
+  if (digits.length !== 8) return "";
+  const year = Number(digits.slice(0, 4));
+  const month = Number(digits.slice(4, 6));
+  const day = Number(digits.slice(6, 8));
+  if (year < 1900 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return "";
+  return digits;
+}
+
+function customerBirthdayMatches(stored, input) {
+  const left = normalizeCustomerBirthdayCredential(stored);
+  const right = normalizeCustomerBirthdayCredential(input);
+  return Boolean(left && right && left === right);
+}
 function isAllowedMerchantRole(role) {
   return ["owner", "admin", "manager", "staff", "viewer"].includes(String(role || "admin").trim().toLowerCase());
 }
@@ -1530,7 +1551,109 @@ async function resolveCustomerForIdentity(env, tenantId, identityId) {
   return { ok: true, registrationRequired: false, customerId: String(customer.id), customer };
 }
 
+async function ensureCustomerPhoneIdentity(env, phone) {
+  const normalizedPhone = normalizeCustomerPhone(phone);
+  if (!normalizedPhone) return customerAuthError("CUSTOMER_PHONE_INVALID", "請輸入正確手機號碼", 400);
+  await ensurePlatformSchema(env);
+  const existing = await env.DB.prepare("SELECT a.identity_id, i.status FROM identity_auth a JOIN identities i ON i.id = a.identity_id WHERE a.provider = 'PHONE' AND a.normalized_phone = ?").bind(normalizedPhone).first();
+  if (existing?.identity_id) {
+    if (String(existing.status || "active") !== "active") return customerAuthError("CUSTOMER_IDENTITY_INVALID", "會員身份已停用", 403);
+    await env.DB.prepare("UPDATE identity_auth SET verified = 1, verified_at = COALESCE(verified_at, datetime('now')), last_login_at = datetime('now'), updated_at = datetime('now') WHERE provider = 'PHONE' AND normalized_phone = ?").bind(normalizedPhone).run();
+    return { ok: true, identityId: String(existing.identity_id), normalizedPhone, created: false };
+  }
+  const identityId = `idn_phone_${await shortHash("PHONE:" + normalizedPhone)}`;
+  const authId = `auth_phone_${await shortHash("PHONE:" + normalizedPhone)}`;
+  await env.DB.prepare("INSERT OR IGNORE INTO identities (id, status, created_at, updated_at) VALUES (?, 'active', datetime('now'), datetime('now'))").bind(identityId).run();
+  const identity = await env.DB.prepare("SELECT id, status FROM identities WHERE id = ?").bind(identityId).first();
+  if (!identity?.id || String(identity.status || "active") !== "active") return customerAuthError("CUSTOMER_IDENTITY_INVALID", "會員身份已停用", 403);
+  await env.DB.prepare("INSERT OR IGNORE INTO identity_auth (id, identity_id, provider, normalized_phone, verified, verified_at, last_login_at, metadata_json, created_at, updated_at) VALUES (?, ?, 'PHONE', ?, 1, datetime('now'), datetime('now'), '{}', datetime('now'), datetime('now'))").bind(authId, identityId, normalizedPhone).run();
+  return { ok: true, identityId, normalizedPhone, created: true };
+}
+
+async function findPhoneIdentity(env, phone) {
+  const normalizedPhone = normalizeCustomerPhone(phone);
+  if (!normalizedPhone) return customerAuthError("CUSTOMER_PHONE_INVALID", "請輸入正確手機號碼", 400);
+  await ensurePlatformSchema(env);
+  const row = await env.DB.prepare("SELECT a.identity_id, i.status FROM identity_auth a JOIN identities i ON i.id = a.identity_id WHERE a.provider = 'PHONE' AND a.normalized_phone = ?").bind(normalizedPhone).first();
+  if (!row?.identity_id) return customerAuthError("CUSTOMER_NOT_REGISTERED", "尚未註冊，請先建立會員", 404);
+  if (String(row.status || "active") !== "active") return customerAuthError("CUSTOMER_IDENTITY_INVALID", "會員身份已停用", 403);
+  await env.DB.prepare("UPDATE identity_auth SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE provider = 'PHONE' AND normalized_phone = ?").bind(normalizedPhone).run();
+  return { ok: true, identityId: String(row.identity_id), normalizedPhone };
+}
+
+async function resolveCustomerByPhoneCredential(env, tenantId, identityId, normalizedPhone, birthday) {
+  const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(tenantId).first();
+  if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return customerAuthError("CUSTOMER_ACCESS_DENIED", "店家目前無法登入會員", 403);
+  const rows = (await env.DB.prepare("SELECT id, tenant_id, identity_id, name, phone, birthday, status FROM customers WHERE tenant_id = ? AND identity_id = ?").bind(tenantId, identityId).all()).results || [];
+  if (rows.length > 1) return customerAuthError("CUSTOMER_PROFILE_CONFLICT", "會員資料重複，請洽店家", 409);
+  let customer = rows[0] || null;
+  if (!customer) {
+    const legacyRows = (await env.DB.prepare("SELECT id, tenant_id, identity_id, name, phone, birthday, status FROM customers WHERE tenant_id = ? AND phone = ?").bind(tenantId, normalizedPhone).all()).results || [];
+    if (legacyRows.length > 1) return customerAuthError("CUSTOMER_PROFILE_CONFLICT", "手機會員資料重複，請洽店家", 409);
+    const legacy = legacyRows[0] || null;
+    if (legacy && !String(legacy.identity_id || "").trim() && customerBirthdayMatches(legacy.birthday, birthday)) {
+      await env.DB.prepare("UPDATE customers SET identity_id = ?, phone = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ? AND identity_id IS NULL").bind(identityId, normalizedPhone, tenantId, legacy.id).run();
+      customer = { ...legacy, identity_id: identityId, phone: normalizedPhone };
+    }
+  }
+  if (!customer) return customerAuthError("CUSTOMER_NOT_REGISTERED", "這家店尚未建立會員，請先註冊", 404);
+  if (String(customer.status || "active") !== "active") return customerAuthError("CUSTOMER_ACCESS_DENIED", "會員資料已停用", 403);
+  if (!customerBirthdayMatches(customer.birthday, birthday)) return customerAuthError("CUSTOMER_BIRTHDAY_INVALID", "生日不符合", 401);
+  return { ok: true, customerId: String(customer.id), customer };
+}
+
+async function handleCustomerPhoneLogin(request, env, tenantId = TENANT_ID) {
+  if (!env.DB) return customerJsonError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  if (!customerSessionSecret(env)) return customerJsonError("CUSTOMER_SESSION_CONFIG_INVALID", "Customer session secret is not configured", 503);
+  let payload;
+  try { payload = await request.json(); } catch (error) { return customerJsonError("CUSTOMER_LOGIN_INVALID", "登入資料格式錯誤", 400); }
+  const phone = normalizeCustomerPhone(payload?.phone);
+  const birthday = normalizeCustomerBirthdayCredential(payload?.birthday);
+  const next = safeCustomerNext(payload?.next || "/member", "/member");
+  if (!phone || !birthday) return customerJsonError("CUSTOMER_LOGIN_REQUIRED", "請輸入手機與生日 YYYYMMDD", 400);
+  const identity = await findPhoneIdentity(env, phone);
+  if (!identity.ok) return customerJsonError(identity.code, identity.message, identity.status || 401);
+  const customer = await resolveCustomerByPhoneCredential(env, tenantId, identity.identityId, phone, birthday);
+  if (!customer.ok) return customerJsonError(customer.code, customer.message, customer.status || 401);
+  const sessionCookie = await setCustomerSessionCookie(env, { identityId: identity.identityId, tenantId, customerId: customer.customerId });
+  const redirect = next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId);
+  return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customer.customerId, redirect } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
+}
+
+async function handleCustomerPhoneRegister(request, env, tenantId = TENANT_ID) {
+  if (!env.DB) return customerJsonError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  if (!customerSessionSecret(env)) return customerJsonError("CUSTOMER_SESSION_CONFIG_INVALID", "Customer session secret is not configured", 503);
+  let payload;
+  try { payload = await request.json(); } catch (error) { return customerJsonError("CUSTOMER_REGISTER_INVALID", "註冊資料格式錯誤", 400); }
+  const name = limitText(payload?.name, 80);
+  const phone = normalizeCustomerPhone(payload?.phone);
+  const birthday = normalizeCustomerBirthdayCredential(payload?.birthday);
+  const email = limitText(payload?.email, 120);
+  const next = safeCustomerNext(payload?.next || "/member", "/member");
+  if (!name || !phone || !birthday) return customerJsonError("CUSTOMER_REGISTER_REQUIRED", "請輸入姓名、手機與生日 YYYYMMDD", 400);
+  const tenant = await env.DB.prepare("SELECT id, status FROM tenants WHERE id = ?").bind(tenantId).first();
+  if (!tenant?.id || !isActiveTenantStatus(tenant.status)) return customerJsonError("CUSTOMER_ACCESS_DENIED", "店家目前無法註冊會員", 403);
+  const identity = await ensureCustomerPhoneIdentity(env, phone);
+  if (!identity.ok) return customerJsonError(identity.code, identity.message, identity.status || 400);
+  const rows = (await env.DB.prepare("SELECT id, identity_id FROM customers WHERE tenant_id = ? AND identity_id = ?").bind(tenantId, identity.identityId).all()).results || [];
+  if (rows.length > 1) return customerJsonError("CUSTOMER_PROFILE_CONFLICT", "會員資料重複，請洽店家", 409);
+  const phoneRows = (await env.DB.prepare("SELECT id, identity_id FROM customers WHERE tenant_id = ? AND phone = ?").bind(tenantId, phone).all()).results || [];
+  const currentId = rows[0]?.id ? String(rows[0].id) : "";
+  const phoneConflict = phoneRows.find((row) => String(row.id) !== currentId && String(row.identity_id || "") && String(row.identity_id || "") !== identity.identityId);
+  if (phoneConflict) return customerJsonError("CUSTOMER_PHONE_CONFLICT", "此手機已被其他會員使用", 409);
+  let customerId = currentId || String(phoneRows.find((row) => !String(row.identity_id || "").trim())?.id || "");
+  if (customerId) {
+    await env.DB.prepare("UPDATE customers SET identity_id = ?, name = ?, phone = ?, birthday = ?, email = COALESCE(NULLIF(?, ''), email), status = 'active', updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(identity.identityId, name, phone, birthday, email || "", tenantId, customerId).run();
+  } else {
+    customerId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO customers (id, tenant_id, identity_id, customer_no, name, phone, birthday, email, referral_code, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))").bind(customerId, tenantId, identity.identityId, makeCustomerNo(), name, phone, birthday, email || null, makeReferralCode(phone)).run();
+  }
+  const sessionCookie = await setCustomerSessionCookie(env, { identityId: identity.identityId, tenantId, customerId });
+  const redirect = next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId);
+  return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customerId, redirect } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
+}
 async function handleCustomerLiffLogin(request, env) {
+  return customerJsonError("CUSTOMER_LIFF_LOGIN_DISABLED", "顧客 LINE 登入已暫停，請改用手機與生日登入", 503);
   if (!env.DB) return customerJsonError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
   if (!customerLiffIdentityLoginEnabled(env)) return customerJsonError("CUSTOMER_LIFF_LOGIN_DISABLED", "Customer LINE login is temporarily disabled", 503);
   if (!customerSessionSecret(env)) return customerJsonError("CUSTOMER_SESSION_CONFIG_INVALID", "Customer session secret is not configured", 503);
@@ -1913,17 +2036,12 @@ function compactInlineStore(storeData = store) {
 function renderCustomerPage(data = { store, services, businessHours, staffMembers, resourceTypes }) {
   const tenantId = data.store?.tenantId || TENANT_ID;
 const payload = JSON.stringify({ tenantId, store: compactInlineStore(data.store || store), services: data.services || services, staffMembers: data.staffMembers || staffMembers, today: todayInTaipei() }).replace(/</g, "\\u003c");
-  const customerLiffId = String(data.customerLoginLiffId || "").trim();
   const memberNext = "/member?tenant=" + encodeURIComponent(tenantId);
   const pointsNext = "/points?tenant=" + encodeURIComponent(tenantId);
   const historyNext = "/history?tenant=" + encodeURIComponent(tenantId);
-  const customerLiffHref = (next) => customerLiffId
-    ? "https://liff.line.me/" + encodeURIComponent(customerLiffId) + "?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent(next)
-    : "/member-entry?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent(next);
-  const memberHref = customerLiffHref(memberNext);
-  const pointsHref = customerLiffHref(pointsNext);
-  const historyHref = customerLiffHref(historyNext);
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BookingOS Book</title><style>
+  const memberHref = "/member-login?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent(memberNext);
+  const pointsHref = "/member-login?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent(pointsNext);
+  const historyHref = "/member-login?tenant=" + encodeURIComponent(tenantId) + "&next=" + encodeURIComponent(historyNext);  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BookingOS Book</title><style>
   :root{--bg:#eef2ed;--surface:#fff;--soft:#f8faf6;--ink:#202124;--muted:#667067;--line:#dfe5dd;--brand:#176b5b;--brand2:#0f463e;--amber-soft:#f4e6db;--blue:#3d6f9f;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:92px}.hero{background:var(--brand2);color:white;padding:18px 16px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.mark{display:flex;align-items:center;gap:10px}.logo{width:38px;height:38px;border-radius:8px;background:white;color:var(--brand2);display:grid;place-items:center;font-weight:900;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}.product{font-size:15px;font-weight:900}.version{color:rgba(255,255,255,.7);font-size:12px;margin-top:2px}.mode{white-space:nowrap;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.1);border-radius:999px;padding:7px 10px;font-size:12px;font-weight:850}h1,h2,p{margin:0}h1{font-size:25px;line-height:1.2}.store-meta{margin-top:7px;color:rgba(255,255,255,.76);font-size:13px;line-height:1.45}.content{padding:14px}section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 10px 24px rgba(32,33,36,.055)}.step-bar{display:flex;align-items:center;gap:10px;background:var(--brand2);color:white;border-radius:8px;padding:12px 13px;margin-bottom:12px}.step-bar span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:5px 8px;font-size:12px;font-weight:950}.step-bar strong{font-size:20px}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}input,select{width:100%;min-height:44px;border-radius:8px;border:1px solid var(--line);background:white;color:var(--ink);padding:9px 10px}.service-select{color:#1f5f9b;font-weight:900}.price-row,.staff-row{display:flex;gap:7px;overflow-x:auto;padding-top:10px;scrollbar-width:none}.choice{flex:0 0 auto;border-radius:999px;background:white;color:var(--ink);border:1px solid var(--line);min-height:36px;padding:7px 10px;font-weight:900}.choice.active{background:var(--brand);border-color:var(--brand);color:white}.price{flex:0 0 auto;border-radius:999px;background:var(--amber-soft);color:#7b3e20;padding:6px 9px;font-size:12px;font-weight:850}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.slot{min-height:42px;border-radius:8px;background:#f2faf6;border:1px solid #cddbd4;color:var(--brand2);display:grid;place-items:center;font-weight:900}.slot.active{background:var(--brand);border-color:var(--brand);color:white}.empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);text-align:center;font-size:13px}.notice{border-radius:8px;background:var(--ok);color:var(--brand2);padding:11px;font-size:13px;font-weight:850;line-height:1.45}.pay-card{border:1px solid var(--line);border-radius:8px;background:var(--soft);padding:12px;display:grid;gap:10px}.money-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.money{border:1px solid var(--line);border-radius:8px;background:white;padding:10px}.money span{display:block;color:var(--muted);font-size:12px}.money b{display:block;margin-top:5px;font-size:18px}.submit{width:100%;min-height:52px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:white;font-weight:950}.submit:disabled{opacity:.45}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line);backdrop-filter:blur(14px)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand2)}@media(min-width:760px){body{padding:18px 0}.page{min-height:calc(100vh - 36px);border:1px solid var(--line);border-radius:8px;overflow:hidden}.bottom-nav{border:1px solid var(--line);border-bottom:0;border-top-left-radius:8px;border-top-right-radius:8px}}
   </style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="mark"><div class="logo" id="logo-box">B</div><div><div class="product">BookingOS Book</div><div class="version">客戶預約端 V0.1</div></div></div><div class="mode">預約中</div></div><h1 id="store-name"></h1><p class="store-meta" id="store-meta"></p></section><div class="content"><section><div class="step-bar"><span>STEP 1</span><strong>選擇服務</strong></div><label class="field">服務項目<select id="service" class="service-select"></select></label><div class="price-row" id="price-row"></div></section><section><div class="step-bar"><span>STEP 2</span><strong>選擇日期與時長</strong></div><div class="grid"><label class="field">日期<input id="date" type="date"></label><label class="field">時長<select id="duration"></select></label></div></section><section><div class="step-bar"><span>STEP 3</span><strong>選擇服務人員</strong></div><div class="staff-row" id="staff-row"></div><div class="slots" id="slots"><div class="empty">請先選擇服務與日期</div></div></section><section><h2 style="margin-bottom:12px">送出預約</h2><div class="grid"><label class="field">姓名<input id="customer-name" autocomplete="name"></label><label class="field">手機<input id="customer-phone" autocomplete="tel"></label></div><div class="pay-card" style="margin-top:12px"><div class="notice" id="pay-note">選擇時間後會顯示金額與可折抵點數。</div><label class="field">使用點數折抵<input id="redeem" type="number" min="0" value="0"></label><div class="money-grid"><div class="money"><span>原價</span><b id="original-price">NT$0</b></div><div class="money"><span>應付金額</span><b id="payable-price">NT$0</b></div></div></div><div class="notice" id="status" style="margin-top:12px">請依序選擇服務、日期、服務人員與時間。</div><button class="submit" id="submit" type="button" disabled>送出預約</button></section></div></main><nav class="bottom-nav"><a class="nav-item active" href="/book?tenant=${encodeURIComponent(tenantId)}">預約</a><a class="nav-item" href="${escapeAttrValue(memberHref)}">會員</a><a class="nav-item" href="${escapeAttrValue(pointsHref)}">點數</a><a class="nav-item" href="${escapeAttrValue(historyHref)}">紀錄</a></nav><script>
   const state=${payload}; let selectedServiceId=""; let selectedDuration=0; let selectedStaffId="any"; let selectedTime=""; let selectedPrice=0; let maxRedeem=0; let memberPoints=0;
@@ -1943,39 +2061,13 @@ const payload = JSON.stringify({ tenantId, store: compactInlineStore(data.store 
   </script></body></html>`;
 }
 
-function renderCustomerLoginPage(data = { store }, next = "/member", error = "", liffId = "", isLiffEntry = false) {
+function renderCustomerLoginPage(data = { store }, next = "/member", error = "") {
   const tenantId = data.store?.tenantId || TENANT_ID;
   const storeName = data.store?.name || "BookingOS";
-  const safeLiffId = String(liffId || "").trim();
   const safeNext = next && String(next).startsWith("/") ? String(next) : "/member";
-  const errorBox = error ? `<div class="error">登入失敗：${escapeHtmlValue(error)}</div>` : "";
-  const lineActionText = "&#29992; LINE &#30331;&#20837; / &#35387;&#20874;";
-  const liffEntryUrl = safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(safeNext)}` : "";
-  const shouldInitLiff = Boolean(isLiffEntry);
-  const liffScript = safeLiffId ? `<script>
-const liffId=${JSON.stringify(safeLiffId)};
-const liffEntryUrl=${JSON.stringify(liffEntryUrl)};
-const initialIntent=new URLSearchParams(location.search).get("intent")||"login";
-const shouldInitLiff=${JSON.stringify(shouldInitLiff)};
-const shouldRunLiff=shouldInitLiff||/Line/i.test(navigator.userAgent||"");
-const liffSdkUrl="https://static.line-scdn.net/liff/edge/2/sdk.js";
-let liffSdkReady=null;
-function loadLiffSdk(){if(window.liff)return Promise.resolve();if(!liffSdkReady){liffSdkReady=new Promise((resolve,reject)=>{const script=document.createElement("script");script.src=liffSdkUrl;script.async=true;script.onload=resolve;script.onerror=reject;document.head.appendChild(script);});}return liffSdkReady;}
-const tenant=${JSON.stringify(tenantId)};
-const next=${JSON.stringify(safeNext)};
-const statusBox=document.querySelector("#login-status");
-let liffReady=null;
-function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
-async function initLiff(){await loadLiffSdk();if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
-function urlWithIntent(url,mode){try{const target=new URL(url,location.href);target.searchParams.set("intent",mode);return target.toString();}catch(error){return url;}}
-async function login(mode=initialIntent){mode=mode==="register"?"register":"login";try{setStatus(mode==="register"?"Opening LINE register...":"Opening LINE login...");if(!shouldRunLiff){if(liffEntryUrl){location.href=urlWithIntent(liffEntryUrl,mode);return;}setStatus("Open from LINE App member link");return;}await initLiff();setStatus("Checking LINE identity...");if(!liff.isLoggedIn()){liff.login({redirectUri:urlWithIntent(location.href,mode)});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next,mode})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
-document.querySelector("#line-login")?.addEventListener("click",()=>login("login"));
-document.querySelector("#line-register")?.addEventListener("click",()=>login("register"));
-window.addEventListener("load",async()=>{try{if(!shouldRunLiff)return;await initLiff();if(liff.isLoggedIn())await login(initialIntent);else setStatus("請選擇 LINE 登入或 LINE 註冊");}catch(error){setStatus("Open from LINE App member link");}});
-</script>` : `<script>window.addEventListener("load",()=>{document.querySelector("#login-status").textContent="此店尚未設定會員 LIFF，請先使用公開預約。";});</script>`;
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} &#26371;&#21729;&#30331;&#20837;</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 6px}h2{font-size:17px;margin:0 0 6px}p{color:var(--muted);line-height:1.55}.login-box{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:12px;background:#fbfdfb}.login-box.register{background:#f2faf6}.line{width:100%;min-height:48px;border:0;border-radius:8px;background:#06c755;color:#062216;font-weight:950;font-size:17px}.line.secondary-line{background:var(--blue);color:white}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p style="margin:2px 0 0">&#26371;&#21729;&#30331;&#20837;</p></div></div>${errorBox}<section class="login-box"><h2>&#24050;&#26159;&#26371;&#21729;</h2><p>&#20351;&#29992;&#24050;&#32129;&#23450;&#30340; LINE &#30331;&#20837;&#26371;&#21729;&#36039;&#26009;&#12289;&#40670;&#25976;&#33287;&#38928;&#32004;&#32000;&#37636;&#12290;</p><button class="line" id="line-login" type="button">用 LINE 登入</button></section><section class="login-box register"><h2>&#23578;&#26410;&#35387;&#20874;</h2><p>&#31532;&#19968;&#27425;&#20351;&#29992;&#35531;&#29992; LINE &#35387;&#20874;&#65292;&#31995;&#32113;&#26371;&#24314;&#31435;&#36889;&#23478;&#24215;&#30340;&#26371;&#21729;&#36039;&#26009;&#12290;</p><button class="line secondary-line" id="line-register" type="button">用 LINE 註冊</button></section><div class="status" id="login-status"></div><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">&#20808;&#22238;&#38928;&#32004;&#38913;</a></main>${liffScript}</body></html>`;
+  const errorBox = error ? `<div class="error">登入失效，請重新登入</div>` : "";
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} 會員登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad;--soft:#f2faf6}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 4px}p{color:var(--muted);line-height:1.55;margin:0}.mode{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:18px 0 14px}.mode button{min-height:42px;border:1px solid var(--line);border-radius:8px;background:white;font-weight:950}.mode button.active{background:var(--green);border-color:var(--green);color:white}.field{display:grid;gap:6px;margin-top:12px;color:var(--muted);font-weight:850}.field input{width:100%;min-height:48px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}.hint{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}.submit{width:100%;min-height:50px;border:0;border-radius:8px;background:var(--blue);color:white;font-weight:950;font-size:17px;margin-top:14px}.submit.login{background:var(--green);color:white}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}.register-only{display:none}.is-register .register-only{display:grid}.notice{border-radius:8px;background:var(--soft);border:1px solid var(--line);padding:11px;margin-top:12px;color:var(--muted);line-height:1.5}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p>會員登入</p></div></div>${errorBox}<div class="mode"><button class="active" id="mode-login" type="button">登入</button><button id="mode-register" type="button">註冊</button></div><form id="phone-member-form"><input type="hidden" name="tenant" value="${escapeAttrValue(tenantId)}"><input type="hidden" name="next" value="${escapeAttrValue(safeNext)}"><label class="field register-only">姓名<input name="name" autocomplete="name" placeholder="首次註冊必填"></label><label class="field">手機<input name="phone" autocomplete="tel" inputmode="tel" placeholder="0912345678" required></label><label class="field">生日<input name="birthday" inputmode="numeric" placeholder="YYYYMMDD" maxlength="8" required></label><div class="hint">第一版會員登入使用手機作為帳號，生日 YYYYMMDD 作為登入憑證。LINE 綁定稍後再開。</div><button class="submit login" id="submit-member" type="submit">登入</button><div class="status" id="login-status"></div></form><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">先回預約頁</a></main><script>let mode="login";const form=document.querySelector("#phone-member-form");const card=document.querySelector(".card");const statusBox=document.querySelector("#login-status");const submit=document.querySelector("#submit-member");const loginBtn=document.querySelector("#mode-login");const registerBtn=document.querySelector("#mode-register");function setMode(next){mode=next==="register"?"register":"login";card.classList.toggle("is-register",mode==="register");loginBtn.classList.toggle("active",mode==="login");registerBtn.classList.toggle("active",mode==="register");submit.textContent=mode==="register"?"建立會員並登入":"登入";submit.classList.toggle("login",mode==="login");statusBox.textContent="";}loginBtn.onclick=()=>setMode("login");registerBtn.onclick=()=>setMode("register");form.addEventListener("submit",async(e)=>{e.preventDefault();statusBox.textContent=mode==="register"?"建立會員中...":"登入中...";const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.next=${JSON.stringify(safeNext)};const endpoint=mode==="register"?"/api/customer/phone-register":"/api/customer/phone-login";try{const res=await fetch(endpoint+"?tenant="+encodeURIComponent(payload.tenant),{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify(payload)});const data=await res.json();if(!res.ok||!data.ok){statusBox.textContent=data?.error?.message||"操作失敗";return;}location.href=data.redirect||payload.next;}catch(error){statusBox.textContent="操作失敗，請稍後再試";}});</script></body></html>`;
 }
-
 async function renderCustomerRegisterPage(request, env, tenantId = TENANT_ID, error = "") {
   const token = readCookie(request, CUSTOMER_REGISTRATION_COOKIE);
   const verified = await verifyCustomerRegistrationToken(env, decodeURIComponent(token));
@@ -2004,10 +2096,10 @@ const content=document.querySelector("#member-content");
 const esc=(v)=>String(v==null?"":v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 function money(n){return "NT$"+Number(n||0).toLocaleString("zh-TW");}
 async function api(path,options={}){const res=await fetch(path+(path.includes("?")?"&":"?")+"tenant="+encodeURIComponent(memberState.tenantId),{credentials:"same-origin",...options});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!res.ok||!data.ok)throw new Error(data?.error?.message||data?.error||"讀取失敗");return data;}
-function profileView(profile){const c=profile.customer||{};content.innerHTML='<form id="profile-form" class="item-list"><div class="member-grid"><label class="field">姓名<input name="name" value="'+esc(c.name||'')+'"></label><label class="field">手機<input name="phone" value="'+esc(c.phone||'')+'"></label><label class="field">Email<input name="email" value="'+esc(c.email||'')+'"></label><label class="field">生日<input name="birthday" type="date" value="'+esc(c.birthday||'')+'"></label><label class="field">性別<input name="gender" value="'+esc(c.gender||'')+'"></label><label class="field">聯絡偏好<select name="contactPreference"><option value="phone">電話</option><option value="line">LINE</option><option value="email">Email</option></select></label></div><label class="field">地址<input name="address" value="'+esc(c.address||'')+'"></label><label class="field">偏好服務<input name="preferredService" value="'+esc(c.preferred_service||'')+'"></label><label class="field">過敏或提醒<input name="allergyNote" value="'+esc(c.allergy_note||'')+'"></label><button class="save-btn" type="submit">儲存會員資料</button><div class="muted-small" id="save-status">點數餘額：'+Number(c.points_balance||0)+' 點</div></form>';const pref=content.querySelector('[name="contactPreference"]');if(pref)pref.value=c.contact_preference||'phone';document.querySelector('#profile-form').addEventListener('submit',async(e)=>{e.preventDefault();const fd=new FormData(e.target);document.querySelector('#save-status').textContent='儲存中...';try{await api('/api/member',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(fd.entries()))});document.querySelector('#save-status').textContent='已儲存';}catch(err){document.querySelector('#save-status').textContent='儲存失敗：'+err.message;}});}
+function profileView(profile){const c=profile.customer||{};content.innerHTML='<form id="profile-form" class="item-list"><div class="member-grid"><label class="field">姓名<input name="name" value="'+esc(c.name||'')+'"></label><label class="field">手機<input name="phone" value="'+esc(c.phone||'')+'"></label><label class="field">Email<input name="email" value="'+esc(c.email||'')+'"></label><label class="field">生日<input name="birthday" inputmode="numeric" maxlength="8" placeholder="YYYYMMDD" value="'+esc(c.birthday||'')+'"></label><label class="field">性別<input name="gender" value="'+esc(c.gender||'')+'"></label><label class="field">聯絡偏好<select name="contactPreference"><option value="phone">電話</option><option value="line">LINE</option><option value="email">Email</option></select></label></div><label class="field">地址<input name="address" value="'+esc(c.address||'')+'"></label><label class="field">偏好服務<input name="preferredService" value="'+esc(c.preferred_service||'')+'"></label><label class="field">過敏或提醒<input name="allergyNote" value="'+esc(c.allergy_note||'')+'"></label><button class="save-btn" type="submit">儲存會員資料</button><div class="muted-small" id="save-status">點數餘額：'+Number(c.points_balance||0)+' 點</div></form>';const pref=content.querySelector('[name="contactPreference"]');if(pref)pref.value=c.contact_preference||'phone';document.querySelector('#profile-form').addEventListener('submit',async(e)=>{e.preventDefault();const fd=new FormData(e.target);document.querySelector('#save-status').textContent='儲存中...';try{await api('/api/member',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.fromEntries(fd.entries()))});document.querySelector('#save-status').textContent='已儲存';}catch(err){document.querySelector('#save-status').textContent='儲存失敗：'+err.message;}});}
 function pointsView(profile){const c=profile.customer||{};const rows=(profile.points||[]).map(p=>'<div class="item-row"><b>'+Number(p.points||0)+' 點</b><div class="muted-small">'+esc(p.type||'')+' · '+esc(p.reason||'')+'</div><div class="muted-small">'+esc(p.created_at||'')+'</div></div>').join('');content.innerHTML='<div class="item-list"><div class="item-row"><b>可用點數 '+Number(c.points_balance||0)+' 點</b><div class="muted-small">累積取得 '+Number(c.total_points_earned||0)+'，累積使用 '+Number(c.total_points_used||0)+'</div></div>'+(rows||'<div class="item-row">尚無點數紀錄</div>')+'</div>';}
 function historyView(profile){const rows=(profile.bookings||[]).map(b=>'<div class="item-row"><b>'+esc(b.service_name||'預約')+'</b><div class="muted-small">'+esc(b.booking_date||'')+' '+esc(b.start_time||'')+' · '+Number(b.duration_minutes||0)+' 分鐘 · '+money(b.price||0)+'</div><div class="muted-small">狀態：'+esc(b.status||'')+'</div>'+(b.status==='cancelled'?'':'<button class="danger-btn" data-cancel="'+esc(b.id)+'" type="button">取消預約</button>')+'</div>').join('');content.innerHTML='<div class="item-list">'+(rows||'<div class="item-row">尚無預約紀錄</div>')+'</div>';content.querySelectorAll('[data-cancel]').forEach(btn=>btn.onclick=async()=>{btn.disabled=true;try{await api('/api/bookings/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({bookingId:btn.dataset.cancel})});await load();}catch(err){btn.textContent='取消失敗';}});}
-async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-entry?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
+async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-login?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
 load();
 </script>`;
   return customerMemberShell(title, body, active === "points" ? "points" : active === "history" ? "history" : "member", tenantId);
@@ -3234,7 +3326,7 @@ async function saveMemberProfile(request, env, tenantId, session = null) {
       limitText(payload.email, 120) || null,
       limitText(payload.gender, 24) || null,
       limitText(payload.address, 180) || null,
-      limitText(payload.birthday, 20) || null,
+      normalizeCustomerBirthdayCredential(payload.birthday) || null,
       limitText(payload.preferredService || payload.preferred_service, 120) || null,
       limitText(payload.allergyNote || payload.allergy_note, 180) || null,
       limitText(payload.contactPreference || payload.contact_preference, 32) || "phone",
