@@ -228,7 +228,8 @@ export default {
     if (url.pathname === "/merchant-login") {
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
-      return html(renderMerchantLoginPage(url.searchParams.has("tenant") ? activeTenantId : "", url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
+      const hasTenantContext = url.searchParams.has("tenant") || Boolean(liffStateParams.get("tenant"));
+      return html(renderMerchantLoginPage(hasTenantContext ? activeTenantId : "", url.searchParams.get("next") || liffStateParams.get("next") || "/merchant", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId));
     }
     if (url.pathname === "/api/merchant/liff-login" && request.method === "POST") {
       return handleMerchantLiffLogin(request, env);
@@ -682,14 +683,11 @@ async function customerAuthFailureResponse(request, env, auth, tenantId = "") {
   if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
   const requestUrl = new URL(request.url);
   const nextPath = requestUrl.pathname + requestUrl.search;
-  const liffId = tenantId ? await customerLoginLiffId(env, tenantId) : "";
-  const location = liffId ? customerLiffEntryUrl(liffId, tenantId, nextPath) : (() => {
-    const url = new URL("/member-login", request.url);
-    if (tenantId) url.searchParams.set("tenant", tenantId);
-    url.searchParams.set("next", nextPath);
-    url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
-    return url.toString();
-  })();
+  const url = new URL("/member-login", request.url);
+  if (tenantId) url.searchParams.set("tenant", tenantId);
+  url.searchParams.set("next", nextPath);
+  url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
+  const location = url.toString();
   return new Response(null, { status: 302, headers: { location, "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
 }
 function normalizeMerchantRole(role) {
@@ -1486,6 +1484,7 @@ const next=${JSON.stringify(next || "/merchant")};
 const statusBox=document.querySelector("#line-status");
 let liffReady=null;
 function setLineStatus(text){if(statusBox)statusBox.textContent=text||"";}
+function cleanLoginRedirect(){const url=new URL(location.pathname,location.origin);const tenant=document.querySelector("input[name=tenant]")?.value||"";if(tenant)url.searchParams.set("tenant",tenant);if(next)url.searchParams.set("next",next);return url.toString();}
 async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
 async function completeLineLogin(){
   setLineStatus("正在確認 LINE 身分...");
@@ -1501,7 +1500,7 @@ async function completeLineLogin(){
   location.href=data.redirect||data.data?.redirect||"/merchant";
   return true;
 }
-document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});
+document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:cleanLoginRedirect()});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});
 window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await completeLineLogin();}catch(e){setLineStatus("");}});
 </script>` : "";
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}.tenant-picker{display:grid;gap:12px}.tenant-picker[hidden]{display:none}.tenant-option{border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;justify-content:space-between;gap:12px;align-items:center}.tenant-option b{display:block;font-size:16px}.tenant-option small{display:block;color:var(--muted);margin-top:4px}.tenant-option button{min-height:40px;padding:0 12px;background:var(--green);white-space:nowrap}.picker-actions{display:flex;gap:8px}.secondary{background:white;color:var(--ink);border:1px solid var(--line)}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login" id="merchant-login-form"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><section class="tenant-picker" id="tenant-picker" hidden><h2>Select store</h2><p>Choose the store to manage. You do not need to re-enter your password.</p><div id="tenant-picker-list"></div><div class="line-status" id="tenant-picker-status"></div><div class="picker-actions"><button type="button" class="secondary" id="tenant-picker-back">Back to login</button></div></section><div class="hint">帳密登入可使用店家 Admin 手機、Email；指定店家登入時可相容姓名登入。密碼為 V1 全域店家後台密碼，由平台安全設定管理</div></main>${liffScript}${tenantPickerScript}</body></html>`;
@@ -1733,8 +1732,9 @@ const next=${JSON.stringify(safeNext)};
 const statusBox=document.querySelector("#login-status");
 let liffReady=null;
 function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
+function cleanLoginRedirect(){const url=new URL(location.pathname,location.origin);if(tenant)url.searchParams.set("tenant",tenant);if(next)url.searchParams.set("next",next);return url.toString();}
 async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
-async function login(){try{setStatus("正在確認 LINE 身分...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE 登入憑證取得失敗，請重新開啟");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"會員登入失敗");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("請由 LINE App 開啟會員入口");}}
+async function login(){try{setStatus("正在確認 LINE 身分...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:cleanLoginRedirect()});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE 登入憑證取得失敗，請重新開啟");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"會員登入失敗");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("請由 LINE App 開啟會員入口");}}
 document.querySelector("#line-login")?.addEventListener("click",login);
 window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await login();}catch(error){setStatus("請由 LINE App 開啟會員入口");}});
 </script>` : `<script>window.addEventListener("load",()=>{document.querySelector("#login-status").textContent="此店尚未設定會員 LIFF，請先使用公開預約。";});</script>`;
