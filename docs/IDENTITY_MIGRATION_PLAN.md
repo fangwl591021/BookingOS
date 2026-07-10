@@ -170,3 +170,14 @@ Status: not started.
 - platform_line_contacts 不再作為店家帳密登入權限來源。
 - 無 tenant 多店命中會回 TENANT_SELECTION_REQUIRED；不再全域 LIMIT 1 選店。
 - Session Interface 尚未切換；Merchant Cookie 格式未改。
+
+## Task 008 Update: Merchant Session Interface
+
+狀態：程式面已切換 Merchant protected routes 與帳密登入 cookie；尚未部署。
+
+- Merchant Cookie 改為 signed stateless session，不新增 `sessions` table。
+- Payload 使用 `sub` 表示 `identity_id`，並保存 `tenant_id`、`role`、`iat`、`exp`、`v`。
+- Protected route 每次請求都從 DB 重新驗證 `tenant_admins.identity_id`、`identities.status`、`tenants.status`。
+- DB role 與 cookie role 不一致時要求重新登入。
+- Legacy tenant-only cookie 僅相容辨識，不可授權，不自動升級。
+- LIFF Login 尚未納入本 Task，後續需另行切換。

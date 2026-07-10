@@ -1,4 +1,4 @@
-﻿# BookingOS Identity Migration Checklist
+# BookingOS Identity Migration Checklist
 
 日期：2026-07-10
 狀態：Task 005 Additive Identity Migration 已完成。未切換登入、Session、LIFF、預約、CRM 行為。
@@ -114,3 +114,19 @@
 - [x] Merchant cookie format remains unchanged.
 - [ ] LIFF Login multi-tenant selection is not yet migrated.
 - [ ] Merchant Session Interface still pending.
+
+## Gate 4A: Task 008 Merchant Signed Session Interface
+
+- [x] Merchant session interface returns identity_id through payload `sub`.
+- [x] Merchant session interface returns tenant_id.
+- [x] Merchant session interface returns role.
+- [x] Merchant session interface returns permissions from role helper.
+- [x] Merchant session interface returns expires_at through payload `exp`.
+- [x] Merchant session is signed with `MERCHANT_SESSION_SECRET`.
+- [x] Merchant protected routes DB revalidate `identities`, `tenant_admins`, `tenants`.
+- [x] Legacy tenant-only cookie no longer grants merchant auth.
+- [x] No `sessions` table created.
+- [x] Production `MERCHANT_SESSION_SECRET` set.
+- [x] D1 backup completed before deploy.
+- [x] Task 008 deployed and smoke tested.
+- [ ] LIFF Login migrated to signed merchant session.

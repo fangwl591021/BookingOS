@@ -69,3 +69,16 @@
 - 指定 tenant 登入只查該 tenant；同店多筆重複 admin 會回 MERCHANT_ACCOUNT_CONFLICT。
 - platform_line_contacts 不再作為店家帳密登入來源。
 - 注意：LIFF Login 尚未納入 Task 007，後續需另開 Task 處理多店選店。
+
+## P0 Gate: Production MERCHANT_SESSION_SECRET must be set before Task 008 deploy
+
+- 現象：Task 008 signed merchant session 需要 `MERCHANT_SESSION_SECRET`。
+- 目前策略：缺 secret 時 `/merchant-login` 回 `SESSION_CONFIG_INVALID`，不發 cookie，不 fallback 到舊 tenant-only session。
+- 部署要求：正式部署前必須先設定 Cloudflare Secret，並確認 D1 migration list 無 pending 與完成 D1 備份。
+
+## P1: LIFF Merchant Login still needs signed session migration
+
+- 現象：Task 008 未修改 LIFF Login；既有 LIFF endpoint 仍可能產生 legacy tenant-only cookie。
+- 風險：使用者從 LIFF 入口會被 protected route 要求重新登入，不能直接進後台。
+- 安全狀態：legacy tenant-only cookie 已不能取得後台 API 權限，不會自動升級。
+- 建議：另開 Task 將 LIFF Login 接到 Identity Resolution、Tenant Selection 與 signed session。

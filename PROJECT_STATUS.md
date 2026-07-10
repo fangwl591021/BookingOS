@@ -1,4 +1,4 @@
-﻿# PROJECT_STATUS.md
+# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -135,3 +135,19 @@
 - 部署前已確認 remote D1 migrations 無 pending，並備份至 .local-backups/bookingos-db-pre-merchant-identity-login-20260710.sql。
 - 線上 smoke test：/api/health 正常；錯誤密碼不發 cookie；指定 tenant 與無 tenant 單店帳密登入皆成功。
 - 本輪登入測試建立 1 筆 tenant_admin identity；部署後筆數：tenants 3、bookings 4、customers 2、tenant_admins 3、identities 3、identity_auth 2。
+
+## Task 008 Merchant Signed Session Interface 2026-07-10
+
+- 已將店家帳密登入成功 cookie 改為 HMAC-SHA256 signed session。
+- Session payload 包含 identity、tenant、role、iat、exp、version；不建立 sessions table。
+- 店家受保護頁面/API 會拒絕 legacy tenant-only cookie，並每次 DB revalidate `identities`、`tenant_admins`、`tenants`。
+- Protected route 會以 session tenant 為準；request query/body tenant 不一致會回 `TENANT_SCOPE_MISMATCH`。
+- 已新增 `docs/MERCHANT_SESSION_INTERFACE.md` 與環境變數範本。
+- 尚未部署：正式環境目前缺少 `MERCHANT_SESSION_SECRET`，部署前必須先設定 Secret 並備份 D1。
+
+## Task 008 Deployment Result 2026-07-10
+
+- 已設定 Cloudflare Secret：`MERCHANT_SESSION_SECRET`。
+- 已備份正式 D1：`.local-backups/bookingos-db-pre-merchant-session-20260710.sql`，不提交 Git。
+- 已部署 Cloudflare Workers Version ID：`e8bc0de6-3a65-4f4e-8c9c-a1aa3af045b5`。
+- Smoke test：無 cookie 401、legacy cookie 401、signed cookie 同店 200、tampered cookie 401、tenant mismatch 403、logout 後 401。

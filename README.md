@@ -36,3 +36,11 @@ Set MERCHANT_ADMIN_PASSWORD as a Cloudflare Secret. MERCHANT_IDENTITY_RESOLUTION
 No-tenant login matches normalized phone/email only. If the same account can manage multiple tenants, the Worker returns TENANT_SELECTION_REQUIRED and does not issue a merchant cookie.
 
 See docs/MERCHANT_IDENTITY_LOGIN.md for the full transition rules and rollback notes.
+
+## Merchant Signed Session Interface
+
+店家帳密登入已切換為 signed merchant cookie interface。Production 必須先設定 `MERCHANT_SESSION_SECRET`，否則 `/merchant-login` 會回 `SESSION_CONFIG_INVALID` 且不發 cookie。
+
+Session payload 解析後包含 `identity_id`、`tenant_id`、`role`、`issued_at`、`expires_at` 與 `session_version`；每次後台請求仍會重新查 `identities`、`tenant_admins`、`tenants`，DB role 才是權限真相來源。
+
+詳見 `docs/MERCHANT_SESSION_INTERFACE.md`。

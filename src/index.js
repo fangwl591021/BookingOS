@@ -5,6 +5,7 @@
 
 const PLATFORM_SESSION_COOKIE = "bookingos_platform_session";
 const MERCHANT_SESSION_COOKIE = "bookingos_merchant_session";
+const MERCHANT_SESSION_VERSION = 1;
 const TENANT_ID = "demo-tenant";
 
 function envValue(env, key, fallback = "") {
@@ -44,6 +45,24 @@ function merchantAdminPassword(env) {
 
 function merchantIdentityResolutionEnabled(env) {
   return envValue(env, "MERCHANT_IDENTITY_RESOLUTION_ENABLED", "true").toLowerCase() !== "false";
+}
+
+function merchantSessionSecret(env) {
+  return envValue(env, "MERCHANT_SESSION_SECRET");
+}
+
+function merchantSessionTtlSeconds(env) {
+  const value = Number(envValue(env, "MERCHANT_SESSION_TTL_SECONDS", "43200"));
+  if (!Number.isFinite(value) || value < 300) return 43200;
+  return Math.min(Math.floor(value), 86400);
+}
+
+function merchantSignedSessionEnabled(env) {
+  return envValue(env, "MERCHANT_SIGNED_SESSION_ENABLED", "true").toLowerCase() !== "false";
+}
+
+function merchantLegacySessionCompatEnabled(env) {
+  return envValue(env, "MERCHANT_LEGACY_SESSION_COMPAT_ENABLED", "true").toLowerCase() !== "false";
 }
 
 async function secureCompare(actual, expected) {
@@ -163,7 +182,7 @@ const billingPlans = [
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    const activeTenantId = tenantIdFromUrl(url, env);
+    let activeTenantId = tenantIdFromUrl(url, env);
 
     if (url.pathname === "/platform-login") {
       if (request.method === "POST") return handlePlatformLogin(request, env);
@@ -185,11 +204,15 @@ export default {
       return handleMerchantLiffLogin(request, env);
     }
     if (url.pathname === "/merchant-logout") {
-      return redirectWithCookie(`/merchant-login?tenant=${encodeURIComponent(activeTenantId)}`, `${MERCHANT_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
+      return redirectWithCookie(`/merchant-login?tenant=${encodeURIComponent(activeTenantId)}`, clearMerchantSessionCookie());
     }
-    if (isMerchantProtectedPath(url.pathname) && !isMerchantAuthenticated(request, activeTenantId, env)) {
-      if (url.pathname.startsWith("/api/")) return Response.json({ ok: false, error: "merchant login required" }, { status: 401, headers: jsonHeaders });
-      return Response.redirect(new URL(`/merchant-login?tenant=${encodeURIComponent(activeTenantId)}&next=${encodeURIComponent(url.pathname + url.search)}`, request.url), 302);
+    if (isMerchantProtectedPath(url.pathname)) {
+      const auth = await requireMerchantSession(request, env);
+      if (!auth.ok) return merchantAuthFailureResponse(request, auth, url.searchParams.has("tenant") ? activeTenantId : "");
+      const permission = merchantRoutePermission(url.pathname, request.method);
+      const permissionCheck = permission ? requireMerchantPermission(auth, permission) : { ok: true };
+      if (!permissionCheck.ok) return merchantAuthFailureResponse(request, permissionCheck, auth.tenantId);
+      activeTenantId = auth.tenantId;
     }
 
     if (url.pathname === "/platform-line-webhook") {
@@ -379,6 +402,23 @@ function isMerchantProtectedPath(pathname) {
   return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/customers" || pathname === "/api/customers/export";
 }
 
+function merchantRoutePermission(pathname, method = "GET") {
+  const write = String(method || "GET").toUpperCase() !== "GET";
+  if (pathname === "/" || pathname === "/index.html" || pathname === "/merchant") return "tenant.read";
+  if (pathname === "/settings") return "tenant.settings.write";
+  if (pathname === "/schedule") return "schedule.write";
+  if (pathname === "/customers") return "crm.read";
+  if (pathname === "/api/dashboard") return "tenant.read";
+  if (pathname === "/api/store") return write ? "tenant.settings.write" : "tenant.read";
+  if (pathname === "/api/settings") return write ? "tenant.settings.write" : "tenant.read";
+  if (pathname === "/api/services") return write ? "service.write" : "tenant.read";
+  if (pathname === "/api/staff") return write ? "staff.write" : "tenant.read";
+  if (pathname === "/api/resources" || pathname.startsWith("/api/resources/")) return write ? "tenant.settings.write" : "tenant.read";
+  if (pathname === "/api/customers/export") return "crm.export";
+  if (pathname === "/api/customers") return "crm.read";
+  return "tenant.read";
+}
+
 function merchantSessionValue(tenantId) {
   return encodeURIComponent(String(tenantId || TENANT_ID));
 }
@@ -387,6 +427,190 @@ function isMerchantAuthenticated(request, tenantId, env) {
   if (isPlatformAuthenticated(request, env)) return true;
   const cookie = request.headers.get("cookie") || "";
   return cookie.split(";").map((part) => part.trim()).includes(`${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(tenantId)}`);
+}
+
+function readCookie(request, name) {
+  const cookie = request.headers.get("cookie") || "";
+  const prefix = String(name || "") + "=";
+  const match = cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  return match ? match.slice(prefix.length) : "";
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function stringToBase64Url(value) {
+  return bytesToBase64Url(new TextEncoder().encode(String(value || "")));
+}
+
+function base64UrlToString(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+async function merchantSessionHmac(env, payloadSegment) {
+  const secret = merchantSessionSecret(env);
+  if (!secret) throw new Error("MERCHANT_SESSION_SECRET is not configured");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payloadSegment));
+  return bytesToBase64Url(new Uint8Array(signature));
+}
+
+function normalizeMerchantRole(role) {
+  const raw = String(role || "").trim().toLowerCase();
+  if (raw === "tenantowner" || raw === "owner") return "TenantOwner";
+  if (raw === "tenantmanager" || raw === "manager" || raw === "admin") return "TenantManager";
+  if (raw === "staff" || raw === "viewer") return "Staff";
+  return "";
+}
+
+function isActiveTenantStatus(status) {
+  const value = String(status || "active").trim().toLowerCase();
+  return !value || value === "active" || value === "trial";
+}
+
+function merchantRolePermissions(role) {
+  const normalized = normalizeMerchantRole(role);
+  const owner = ["tenant.read", "tenant.settings.write", "service.write", "staff.write", "schedule.write", "booking.read", "booking.write", "crm.read", "crm.write", "crm.export", "line.settings.write"];
+  const manager = ["tenant.read", "tenant.settings.write", "service.write", "staff.write", "schedule.write", "booking.read", "booking.write", "crm.read", "crm.write", "crm.export", "line.settings.write"];
+  const staff = ["tenant.read", "booking.read", "booking.write", "schedule.write"];
+  if (normalized === "TenantOwner") return new Set(owner);
+  if (normalized === "TenantManager") return new Set(manager);
+  if (normalized === "Staff") return new Set(staff);
+  return new Set();
+}
+
+function hasMerchantPermission(role, permission) {
+  return merchantRolePermissions(role).has(permission);
+}
+
+function merchantAuthError(code, message, status = 401) {
+  return { ok: false, code, message, status };
+}
+
+async function createMerchantSession(env, input) {
+  if (!merchantSignedSessionEnabled(env)) throw new Error("Signed merchant session is disabled");
+  const identityId = String(input.identityId || "").trim();
+  const tenantId = String(input.tenantId || "").trim();
+  const normalizedRole = normalizeMerchantRole(input.role);
+  if (!identityId || !tenantId || !normalizedRole) throw new Error("Merchant session principal is incomplete");
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + merchantSessionTtlSeconds(env);
+  return { v: MERCHANT_SESSION_VERSION, sub: identityId, tenant_id: tenantId, role: normalizedRole, iat, exp };
+}
+
+async function signMerchantSession(env, payload) {
+  const payloadSegment = stringToBase64Url(JSON.stringify(payload));
+  const signatureSegment = await merchantSessionHmac(env, payloadSegment);
+  return payloadSegment + "." + signatureSegment;
+}
+
+async function verifyMerchantSession(env, token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return merchantAuthError("SESSION_INVALID", "Merchant session format is invalid");
+  let payload;
+  try {
+    const expectedSignature = await merchantSessionHmac(env, parts[0]);
+    if (!(await secureCompare(parts[1], expectedSignature))) return merchantAuthError("SESSION_INVALID", "Merchant session signature is invalid");
+    payload = JSON.parse(base64UrlToString(parts[0]));
+  } catch (error) {
+    return merchantAuthError("SESSION_INVALID", "Merchant session cannot be decoded");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(payload.v) !== MERCHANT_SESSION_VERSION) return merchantAuthError("SESSION_VERSION_UNSUPPORTED", "Merchant session version is unsupported");
+  if (!payload.sub || !payload.tenant_id || !payload.role || !payload.iat || !payload.exp) return merchantAuthError("SESSION_INVALID", "Merchant session is missing required fields");
+  if (Number(payload.iat) > now + 300) return merchantAuthError("SESSION_INVALID", "Merchant session issued_at is invalid");
+  if (Number(payload.exp) <= now) return merchantAuthError("SESSION_EXPIRED", "Merchant session has expired");
+  const role = normalizeMerchantRole(payload.role);
+  if (!role) return merchantAuthError("SESSION_INVALID", "Merchant session role is invalid");
+  return { ok: true, payload: { v: MERCHANT_SESSION_VERSION, sub: String(payload.sub), tenant_id: String(payload.tenant_id), role, iat: Number(payload.iat), exp: Number(payload.exp) } };
+}
+
+async function loadMerchantPrincipal(env, identityId, tenantId) {
+  if (!env.DB) return merchantAuthError("AUTH_REQUIRED", "Database is not configured", 503);
+  const sql = "SELECT a.id AS admin_id, a.identity_id, a.tenant_id, a.role, a.status AS admin_status, " +
+    "i.status AS identity_status, t.status AS tenant_status, t.name AS tenant_name " +
+    "FROM tenant_admins a JOIN identities i ON i.id = a.identity_id JOIN tenants t ON t.id = a.tenant_id " +
+    "WHERE a.identity_id = ? AND a.tenant_id = ?";
+  const rows = (await env.DB.prepare(sql).bind(identityId, tenantId).all()).results || [];
+  const activeRows = rows.filter((row) => String(row.admin_status || "active") === "active" && String(row.identity_status || "active") === "active" && isActiveTenantStatus(row.tenant_status));
+  if (activeRows.length !== 1) return merchantAuthError("SESSION_PRINCIPAL_INVALID", "Merchant principal is not active", 403);
+  const row = activeRows[0];
+  const role = normalizeMerchantRole(row.role);
+  if (!role) return merchantAuthError("SESSION_PRINCIPAL_INVALID", "Merchant role is invalid", 403);
+  return { ok: true, principal: { identityId, tenantId, role, adminId: row.admin_id, tenantName: row.tenant_name || tenantId, permissions: Array.from(merchantRolePermissions(role)) } };
+}
+
+async function readMerchantSession(request, env) {
+  const token = readCookie(request, MERCHANT_SESSION_COOKIE);
+  if (!token) return merchantAuthError("AUTH_REQUIRED", "Merchant session is required");
+  if (!token.includes(".")) {
+    if (merchantLegacySessionCompatEnabled(env)) return merchantAuthError("AUTH_REQUIRED", "Legacy merchant session requires re-login");
+    return merchantAuthError("SESSION_INVALID", "Legacy merchant session is not accepted");
+  }
+  const verified = await verifyMerchantSession(env, decodeURIComponent(token));
+  if (!verified.ok) return verified;
+  const principal = await loadMerchantPrincipal(env, verified.payload.sub, verified.payload.tenant_id);
+  if (!principal.ok) return principal;
+  if (verified.payload.role !== principal.principal.role) return merchantAuthError("SESSION_PRINCIPAL_INVALID", "Merchant role changed; please login again", 403);
+  return { ok: true, payload: verified.payload, principal: principal.principal, tenantId: principal.principal.tenantId, role: principal.principal.role };
+}
+
+async function requestTenantScopeMismatch(request, sessionTenantId) {
+  const url = new URL(request.url);
+  const queryTenant = String(url.searchParams.get("tenant") || url.searchParams.get("tenant_id") || "").trim();
+  if (queryTenant && queryTenant !== sessionTenantId) return true;
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return false;
+  const type = String(request.headers.get("content-type") || "").toLowerCase();
+  if (!type.includes("application/json")) return false;
+  try {
+    const payload = await request.clone().json();
+    const bodyTenant = String(payload?.tenantId || payload?.tenant_id || "").trim();
+    return Boolean(bodyTenant && bodyTenant !== sessionTenantId);
+  } catch (error) {
+    return false;
+  }
+}
+
+async function requireMerchantSession(request, env) {
+  const session = await readMerchantSession(request, env);
+  if (!session.ok) return session;
+  if (await requestTenantScopeMismatch(request, session.tenantId)) return merchantAuthError("TENANT_SCOPE_MISMATCH", "Request tenant does not match merchant session", 403);
+  return session;
+}
+
+function requireMerchantPermission(session, permission) {
+  if (!session?.ok) return merchantAuthError("AUTH_REQUIRED", "Merchant session is required");
+  if (!hasMerchantPermission(session.role, permission)) return merchantAuthError("PERMISSION_DENIED", "Merchant permission denied", 403);
+  return { ok: true };
+}
+
+async function setMerchantSessionCookie(env, principal) {
+  const payload = await createMerchantSession(env, principal);
+  const token = await signMerchantSession(env, payload);
+  const ttl = Math.max(1, Number(payload.exp || 0) - Math.floor(Date.now() / 1000));
+  return MERCHANT_SESSION_COOKIE + "=" + encodeURIComponent(token) + "; Path=/; Max-Age=" + ttl + "; HttpOnly; Secure; SameSite=Lax";
+}
+
+function clearMerchantSessionCookie() {
+  return MERCHANT_SESSION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
+}
+
+function merchantAuthFailureResponse(request, auth, tenantId = "") {
+  const status = auth.status || 401;
+  if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, error: auth.code || "AUTH_REQUIRED", message: auth.message || "merchant login required" }, { status, headers: jsonHeaders });
+  const url = new URL("/merchant-login", request.url);
+  if (tenantId) url.searchParams.set("tenant", tenantId);
+  url.searchParams.set("next", new URL(request.url).pathname + new URL(request.url).search);
+  url.searchParams.set("error", auth.code || "1");
+  return new Response(null, { status: 302, headers: { location: url.toString(), "set-cookie": clearMerchantSessionCookie(), "cache-control": "no-store" } });
 }
 
 function normalizeMerchantPhone(value) {
@@ -591,9 +815,16 @@ async function handleMerchantLogin(request, env) {
   }
 
   const loginTenantId = String(admin.tenant_id || "").trim();
-  const redirectTarget = next.startsWith("/") ? `${next}${next.includes("?") ? "&" : "?"}tenant=${encodeURIComponent(loginTenantId)}` : `/merchant?tenant=${encodeURIComponent(loginTenantId)}`;
+  if (!merchantSessionSecret(env)) return merchantLoginJsonError("SESSION_CONFIG_INVALID", "Merchant session secret is not configured.", 503);
+  const principal = await loadMerchantPrincipal(env, identityResult.identityId, loginTenantId);
+  if (!principal.ok) {
+    await merchantLoginLog("login_failed", { reason: principal.code, tenant_id: loginTenantId, admin_id: admin.id, identity_id: identityResult.identityId || "" });
+    return merchantLoginJsonError(principal.code, principal.message, principal.status || 500);
+  }
+  const redirectTarget = next.startsWith("/") ? next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(loginTenantId) : "/merchant?tenant=" + encodeURIComponent(loginTenantId);
   await merchantLoginLog("login_success", { tenant_id: loginTenantId, admin_id: admin.id, identity_id: identityResult.identityId || "", identity_mode: identityResult.disabled ? "disabled" : identityResult.created ? "created" : identityResult.linked ? "linked" : "existing" });
-  return redirectWithCookie(redirectTarget, `${MERCHANT_SESSION_COOKIE}=${merchantSessionValue(loginTenantId)}; Path=/; Max-Age=28800; HttpOnly; SameSite=Lax`);
+  const sessionCookie = await setMerchantSessionCookie(env, { identityId: identityResult.identityId, tenantId: loginTenantId, role: principal.principal.role });
+  return redirectWithCookie(redirectTarget, sessionCookie);
 }
 async function merchantLoginLiffId(env) {
   if (!env.DB) return "";

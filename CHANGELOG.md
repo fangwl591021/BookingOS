@@ -1,4 +1,4 @@
-﻿## 2026-07-10 - Task 006 D1 Migration History Reconcile
+## 2026-07-10 - Task 006 D1 Migration History Reconcile
 
 ### Added
 
@@ -128,3 +128,28 @@
 ### Not Changed
 
 - 未修改 Platform Login、LIFF Login、Customer Login、Booking、CRM、Points、Merchant Cookie 格式或 Session storage。
+
+## 2026-07-10 - Task 008 Merchant Signed Session Interface
+
+### Security
+
+- 店家帳密登入改發 HMAC-SHA256 signed merchant cookie。
+- Merchant Session payload 納入 identity、tenant、role、iat、exp 與 version。
+- 店家 protected routes 改為每次 DB revalidate `identities`、`tenant_admins`、`tenants`。
+- Legacy tenant-only cookie 不再授權後台，僅要求重新登入。
+- Request tenant 與 session tenant 不一致時回 `TENANT_SCOPE_MISMATCH`。
+
+### Added
+
+- 新增 `docs/MERCHANT_SESSION_INTERFACE.md`。
+- `.env.example` 新增 merchant signed session env。
+
+### Not Deployed
+
+- 尚未部署；production 需先設定 `MERCHANT_SESSION_SECRET` 並完成 D1 backup。
+
+### Deployed
+
+- Task 008 已部署至 Cloudflare Workers Version ID：`e8bc0de6-3a65-4f4e-8c9c-a1aa3af045b5`。
+- 已設定 `MERCHANT_SESSION_SECRET`，正式 D1 已先備份。
+- Live smoke test 通過：no cookie 401、legacy 401、signed 200、tampered 401、mismatch 403、logout 401。

@@ -57,3 +57,11 @@ Feature flag：MERCHANT_IDENTITY_RESOLUTION_ENABLED=true。
 1. Disable identity create/link with MERCHANT_IDENTITY_RESOLUTION_ENABLED=false only if identity creation is the problem.
 2. If tenant selection or login routing is broken, rollback Worker version.
 3. Do not remove identity tables or additive columns during incident response.
+
+## Task 008 Session Update
+
+POST /merchant-login 在唯一 active tenant_admin 與 identity 解析成功後，改發 signed merchant session cookie。
+
+Cookie 內 role 只是 snapshot；後台 request 仍以 `tenant_admins` 目前 role/status 重新驗證。若 role 被改動，既有 cookie 會失效並要求重新登入。
+
+舊 tenant-only cookie 已不能通過 protected route。LIFF Login 尚未切換，需另開 Task。
