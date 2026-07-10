@@ -150,3 +150,46 @@ A real LIFF smoke test requires a live LINE ID Token from the configured LIFF ap
 - Merchant dashboard with signed cookie returns 200.
 
 Real LIFF success-path smoke requires a live LINE ID Token from the configured LIFF app.
+
+## Live App Acceptance - 2026-07-10
+
+Status: Pass.
+
+Environment:
+
+- Production Worker: `https://bookingos.fangwl591021.workers.dev`
+- LIFF URL used in LINE App: `https://liff.line.me/2010657278-9wbTln1T`
+- LIFF Endpoint URL: `https://bookingos.fangwl591021.workers.dev/merchant-login?tenant=demo-tenant&next=%2Fmerchant`
+- Test account type: single tenant merchant admin
+- Expected tenant: `demo-tenant` / Anhe store
+
+Result:
+
+- LINE App opened the LIFF page after endpoint correction.
+- `liff.getIDToken()` reached the backend through `POST /api/merchant/liff-login`.
+- LINE verify endpoint accepted the token.
+- Audience matched the configured LINE Login Channel ID.
+- Scoped IdentityAuth provider `LINE:201***278` was hit.
+- `identity_auth.verified` and `last_login_at` updated for the scoped LINE auth row.
+- `tenant_admins.identity_id` matched the linked platform contact identity for `demo-tenant`.
+- Signed merchant session was created.
+- Merchant dashboard opened directly to the Anhe store.
+
+Data counts before/after live acceptance:
+
+| Table | Before | After |
+| --- | ---: | ---: |
+| identities | 3 | 3 |
+| identity_auth | 4 | 4 |
+| tenant_admins | 3 | 3 |
+| platform_line_contacts | 2 | 2 |
+
+Security notes:
+
+- No ID Token, access token, full LINE UID, Channel Secret, or cookie was stored in docs.
+- Provider UID is treated as sensitive and only inspected masked in operational checks.
+- The live login did not create duplicate Identity or IdentityAuth rows.
+
+Remaining note:
+
+- The LIFF App Endpoint URL must remain pointed at `/merchant-login`, not `/platform-line-webhook`.

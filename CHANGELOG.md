@@ -209,3 +209,15 @@
 - Remote D1 backup created at `.local-backups/bookingos-db-pre-merchant-liff-identity-20260710.sql`.
 - Remote migrations confirmed: No migrations to apply.
 - Live smoke passed for health, login page ID Token wiring, missing token rejection, invalid ID Token rejection, password merchant login regression, and merchant dashboard access.
+
+## 2026-07-10 - Task 010B Merchant LIFF Live Smoke
+
+### Verified
+
+- Verified real LINE App LIFF login for merchant admin after LIFF Endpoint URL correction.
+- Confirmed LINE verify -> scoped IdentityAuth -> tenant_admins.identity_id -> signed merchant session -> merchant dashboard.
+- Confirmed no duplicate Identity or IdentityAuth rows were created during live login.
+
+### Operational Note
+
+- LIFF Endpoint URL must point to `/merchant-login?tenant=demo-tenant&next=%2Fmerchant`; `/platform-line-webhook` is only for LINE OA Callback URL.

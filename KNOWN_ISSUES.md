@@ -92,3 +92,7 @@
 ## Task 010 Live LIFF Smoke
 
 - A real LIFF success-path smoke test requires a live LINE ID Token from the configured LIFF app. Non-token and invalid-token rejection can be tested without storing LINE credentials in Git.
+
+## LIFF Endpoint Operational Guard
+
+- If `https://liff.line.me/2010657278-9wbTln1T` shows JSON for `/platform-line-webhook`, the LIFF App Endpoint URL is misconfigured. It must point to `/merchant-login?tenant=demo-tenant&next=%2Fmerchant` for merchant login.

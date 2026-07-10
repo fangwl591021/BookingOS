@@ -190,3 +190,12 @@
 - `MERCHANT_LIFF_IDENTITY_LOGIN_ENABLED=true` is deployed as a Worker var.
 - Live smoke: `/api/health` 200, `/merchant-login` 200, login page sends `id_token`, missing token rejected, invalid ID Token rejected with `LIFF_TOKEN_INVALID`, password merchant login still creates signed cookie, dashboard 200.
 - Real LIFF success-path smoke requires a live LINE ID Token from the configured LIFF app.
+
+## Task 010B Merchant LIFF Live Smoke 2026-07-10
+
+- Live LINE App test passed after correcting the LIFF Endpoint URL to `/merchant-login?tenant=demo-tenant&next=%2Fmerchant`.
+- Tonyfang opened the LIFF App and entered `demo-tenant` / Anhe merchant dashboard directly.
+- Scoped IdentityAuth `LINE:201***278` was verified and `last_login_at` updated.
+- Counts stayed stable: identities 3 -> 3, identity_auth 4 -> 4, tenant_admins 3 -> 3, platform_line_contacts 2 -> 2.
+- Regression before acceptance: health 200, public booking page 200, invalid LINE webhook signature 401, platform login 200, merchant password login 200, cookie attributes valid, tampered cookie rejected, logout invalidated session.
+- Acceptance status: Merchant LIFF Login Pass.
