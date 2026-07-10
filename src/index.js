@@ -228,22 +228,21 @@ export default {
     if (url.pathname === "/merchant-login") {
       if (request.method === "POST") return handleMerchantLogin(request, env);
       const liffId = await merchantLoginLiffId(env);
-      const hasTenantContext = url.searchParams.has("tenant") || url.searchParams.has("liff.state") || Boolean(liffStateParams.get("tenant"));
-      return html(renderMerchantLoginPage(hasTenantContext ? activeTenantId : "", url.searchParams.get("next") || liffStateParams.get("next") || "/merchant", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
+      return html(renderMerchantLoginPage(url.searchParams.has("tenant") ? activeTenantId : "", url.searchParams.get("next") || "/merchant", url.searchParams.get("error") || "", liffId));
     }
     if (url.pathname === "/api/merchant/liff-login" && request.method === "POST") {
       return handleMerchantLiffLogin(request, env);
     }
     if (url.pathname === "/member-login") {
       const liffId = await customerLoginLiffId(env, activeTenantId);
-      return html(renderCustomerLoginPage(await dashboardData(env, todayInTaipei(), activeTenantId), url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
+      return html(renderCustomerLoginPage(await dashboardData(env, todayInTaipei(), activeTenantId), url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId));
     }
     if (url.pathname === "/api/customer/liff-login" && request.method === "POST") {
       return handleCustomerLiffLogin(request, env);
     }
     if (url.pathname === "/api/customer/session") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       return Response.json({ ok: true, success: true, session: { tenant_id: session.tenantId, customer_id: session.customerId, role: "Customer" }, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
     if (url.pathname === "/customer-logout") {
@@ -363,20 +362,20 @@ export default {
 
     if (url.pathname === "/api/member") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       if (request.method === "POST") return saveMemberProfile(request, env, activeTenantId, session);
       return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/customer-history") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       return Response.json({ ok: true, bookings: await loadCustomerBookings(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/customer-points") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       return Response.json({ ok: true, points: await loadCustomerPointTransactions(env, session.tenantId, session.customerId), profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
@@ -411,7 +410,7 @@ export default {
 
     if (url.pathname === "/member" || url.pathname === "/points" || url.pathname === "/history") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
       const active = url.pathname === "/points" ? "points" : url.pathname === "/history" ? "history" : "member";
       return html(renderMemberPage(await dashboardData(env, todayInTaipei(), activeTenantId), active));
     }
@@ -678,20 +677,14 @@ function clearCustomerSessionCookie() {
   return CUSTOMER_SESSION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
 }
 
-async function customerAuthFailureResponse(request, env, auth, tenantId = "") {
+function customerAuthFailureResponse(request, auth, tenantId = "") {
   const status = auth.status || 401;
   if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
-  const requestUrl = new URL(request.url);
-  const nextPath = requestUrl.pathname + requestUrl.search;
-  const liffId = tenantId ? await customerLoginLiffId(env, tenantId) : "";
-  const location = liffId ? customerLiffEntryUrl(liffId, tenantId, nextPath) : (() => {
-    const url = new URL("/member-login", request.url);
-    if (tenantId) url.searchParams.set("tenant", tenantId);
-    url.searchParams.set("next", nextPath);
-    url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
-    return url.toString();
-  })();
-  return new Response(null, { status: 302, headers: { location, "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
+  const url = new URL("/member-login", request.url);
+  if (tenantId) url.searchParams.set("tenant", tenantId);
+  url.searchParams.set("next", new URL(request.url).pathname + new URL(request.url).search);
+  url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
+  return new Response(null, { status: 302, headers: { location: url.toString(), "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
 }
 function normalizeMerchantRole(role) {
   const raw = String(role || "").trim().toLowerCase();
@@ -1321,9 +1314,7 @@ async function customerLiffConfig(env, tenantId) {
   const tenantChannelId = String(tenantSetting?.channel_id || "").trim();
   if (tenantLiffId && tenantChannelId) return { liffId: tenantLiffId, channelId: tenantChannelId, source: "tenant" };
   const platformSetting = await platformLineSettings(env);
-  const platformRegistrationLiffId = String(platformSetting?.registration_liff_id || "").trim();
-  const platformChannelId = String(platformSetting?.channel_id || "").trim();
-  return { liffId: platformRegistrationLiffId, channelId: platformChannelId, source: platformRegistrationLiffId ? "platform_registration" : "tenant" };
+  return { liffId: String(platformSetting?.registration_liff_id || platformSetting?.login_liff_id || "").trim(), channelId: String(platformSetting?.channel_id || "").trim(), source: "platform" };
 }
 
 async function customerLoginLiffId(env, tenantId) {
@@ -1411,12 +1402,11 @@ async function handleCustomerLiffLogin(request, env) {
   const redirect = next.startsWith("/") ? next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(tenantId) : "/member?tenant=" + encodeURIComponent(tenantId);
   return Response.json({ ok: true, success: true, redirect, data: { tenant_id: tenantId, customer_id: customer.customerId, identity_created: !!identity.created, customer_created: !!customer.created, redirect } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
 }
-function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error = "", liffId = "", isLiffEntry = false) {
+function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error = "", liffId = "") {
   const message = error ? `<div class="error">帳號或密碼錯誤</div>` : "";
   const safeTenant = escapeAttrValue(tenantId || "");
   const safeNext = escapeAttrValue(next || "/merchant");
   const safeLiffId = String(liffId || "").trim();
-  const liffEntryUrl = safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${encodeURIComponent(tenantId || "")}&next=${encodeURIComponent(next || "/merchant")}` : "";
   const lineLoginBlock = safeLiffId ? `<button class="line-login" type="button" id="line-login">使用 LINE 綁定登入</button><div class="divider">或使用帳密登入</div><div class="line-status" id="line-status"></div>` : "";
   const tenantPickerScript = `<script>
 (function(){
@@ -1485,8 +1475,6 @@ function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error
   const liffScript = safeLiffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
 const liffId=${JSON.stringify(safeLiffId)};
 const next=${JSON.stringify(next || "/merchant")};
-const liffEntryUrl=${JSON.stringify(liffEntryUrl)};
-const shouldInitLiff=${JSON.stringify(Boolean(isLiffEntry))};
 const statusBox=document.querySelector("#line-status");
 let liffReady=null;
 function setLineStatus(text){if(statusBox)statusBox.textContent=text||"";}
@@ -1496,18 +1484,17 @@ async function completeLineLogin(){
   await initLiff();
   if(!liff.isLoggedIn()){return false;}
   const idToken=liff.getIDToken();
-  const accessToken=liff.getAccessToken ? liff.getAccessToken() : "";
   const tenant=document.querySelector("input[name=tenant]")?.value||"";
-  if(!idToken&&!accessToken){setLineStatus("LINE 登入憑證取得失敗，請重新登入");return true;}
-  const res=await fetch("/api/merchant/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,access_token:accessToken,next,tenant})});
+  if(!idToken){setLineStatus("LINE 登入憑證取得失敗，請重新登入");return true;}
+  const res=await fetch("/api/merchant/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,next,tenant})});
   const data=await res.json();
   if(data?.error?.code==="TENANT_SELECTION_REQUIRED"&&window.bookingosRenderTenantPicker){window.bookingosRenderTenantPicker(data.data||{});setLineStatus("");return true;}
   if(!data.ok){setLineStatus(data?.error?.message||data.error||"LINE 尚未綁定店家");return true;}
   location.href=data.redirect||data.data?.redirect||"/merchant";
   return true;
 }
-document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");if(!shouldInitLiff&&liffEntryUrl){location.href=liffEntryUrl;return;}await initLiff();if(!liff.isLoggedIn()){if(liff.isInClient&&liff.isInClient()){setLineStatus("LINE 尚未完成授權，請關閉後重新從 LIFF 連結進入");return;}liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗："+(e?.message||"請改用帳密登入"));}});
-window.addEventListener("load",async()=>{try{if(!shouldInitLiff)return;setLineStatus("正在確認 LINE 授權...");await initLiff();if(liff.isLoggedIn()){await completeLineLogin();return;}setLineStatus("LINE 尚未完成授權，請關閉後重新從 LIFF 連結進入");}catch(e){setLineStatus("LINE 登入失敗："+(e?.message||"請重新開啟"));}});
+document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});
+window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await completeLineLogin();}catch(e){setLineStatus("");}});
 </script>` : "";
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}.tenant-picker{display:grid;gap:12px}.tenant-picker[hidden]{display:none}.tenant-option{border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;justify-content:space-between;gap:12px;align-items:center}.tenant-option b{display:block;font-size:16px}.tenant-option small{display:block;color:var(--muted);margin-top:4px}.tenant-option button{min-height:40px;padding:0 12px;background:var(--green);white-space:nowrap}.picker-actions{display:flex;gap:8px}.secondary{background:white;color:var(--ink);border:1px solid var(--line)}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login" id="merchant-login-form"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><section class="tenant-picker" id="tenant-picker" hidden><h2>Select store</h2><p>Choose the store to manage. You do not need to re-enter your password.</p><div id="tenant-picker-list"></div><div class="line-status" id="tenant-picker-status"></div><div class="picker-actions"><button type="button" class="secondary" id="tenant-picker-back">Back to login</button></div></section><div class="hint">帳密登入可使用店家 Admin 手機、Email；指定店家登入時可相容姓名登入。密碼為 V1 全域店家後台密碼，由平台安全設定管理</div></main>${liffScript}${tenantPickerScript}</body></html>`;
 }
@@ -1701,10 +1688,10 @@ function customerLiffEntryUrl(liffId, tenantId, nextPath) {
 
 function renderCustomerPage(data = { store, services, businessHours, staffMembers, resourceTypes }) {
   const tenantId = data.store?.tenantId || TENANT_ID;
-  const payload = JSON.stringify({ tenantId, store: data.store || store, services: data.services || services, staffMembers: data.staffMembers || staffMembers, today: todayInTaipei() }).replace(/</g, "\\u003c");
-  const memberHref = `/member?tenant=${encodeURIComponent(tenantId)}`;
-  const pointsHref = `/points?tenant=${encodeURIComponent(tenantId)}`;
-  const historyHref = `/history?tenant=${encodeURIComponent(tenantId)}`;
+const payload = JSON.stringify({ tenantId, store: data.store || store, services: data.services || services, staffMembers: data.staffMembers || staffMembers, today: todayInTaipei() }).replace(/</g, "\\u003c");
+  const memberHref = customerLiffEntryUrl(data.customerLoginLiffId, tenantId, `/member?tenant=${encodeURIComponent(tenantId)}`);
+  const pointsHref = customerLiffEntryUrl(data.customerLoginLiffId, tenantId, `/points?tenant=${encodeURIComponent(tenantId)}`);
+  const historyHref = customerLiffEntryUrl(data.customerLoginLiffId, tenantId, `/history?tenant=${encodeURIComponent(tenantId)}`);
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BookingOS Book</title><style>
   :root{--bg:#eef2ed;--surface:#fff;--soft:#f8faf6;--ink:#202124;--muted:#667067;--line:#dfe5dd;--brand:#176b5b;--brand2:#0f463e;--amber-soft:#f4e6db;--blue:#3d6f9f;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:92px}.hero{background:var(--brand2);color:white;padding:18px 16px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.mark{display:flex;align-items:center;gap:10px}.logo{width:38px;height:38px;border-radius:8px;background:white;color:var(--brand2);display:grid;place-items:center;font-weight:900;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}.product{font-size:15px;font-weight:900}.version{color:rgba(255,255,255,.7);font-size:12px;margin-top:2px}.mode{white-space:nowrap;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.1);border-radius:999px;padding:7px 10px;font-size:12px;font-weight:850}h1,h2,p{margin:0}h1{font-size:25px;line-height:1.2}.store-meta{margin-top:7px;color:rgba(255,255,255,.76);font-size:13px;line-height:1.45}.content{padding:14px}section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 10px 24px rgba(32,33,36,.055)}.step-bar{display:flex;align-items:center;gap:10px;background:var(--brand2);color:white;border-radius:8px;padding:12px 13px;margin-bottom:12px}.step-bar span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:5px 8px;font-size:12px;font-weight:950}.step-bar strong{font-size:20px}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}input,select{width:100%;min-height:44px;border-radius:8px;border:1px solid var(--line);background:white;color:var(--ink);padding:9px 10px}.service-select{color:#1f5f9b;font-weight:900}.price-row,.staff-row{display:flex;gap:7px;overflow-x:auto;padding-top:10px;scrollbar-width:none}.choice{flex:0 0 auto;border-radius:999px;background:white;color:var(--ink);border:1px solid var(--line);min-height:36px;padding:7px 10px;font-weight:900}.choice.active{background:var(--brand);border-color:var(--brand);color:white}.price{flex:0 0 auto;border-radius:999px;background:var(--amber-soft);color:#7b3e20;padding:6px 9px;font-size:12px;font-weight:850}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.slot{min-height:42px;border-radius:8px;background:#f2faf6;border:1px solid #cddbd4;color:var(--brand2);display:grid;place-items:center;font-weight:900}.slot.active{background:var(--brand);border-color:var(--brand);color:white}.empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);text-align:center;font-size:13px}.notice{border-radius:8px;background:var(--ok);color:var(--brand2);padding:11px;font-size:13px;font-weight:850;line-height:1.45}.pay-card{border:1px solid var(--line);border-radius:8px;background:var(--soft);padding:12px;display:grid;gap:10px}.money-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.money{border:1px solid var(--line);border-radius:8px;background:white;padding:10px}.money span{display:block;color:var(--muted);font-size:12px}.money b{display:block;margin-top:5px;font-size:18px}.submit{width:100%;min-height:52px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:white;font-weight:950}.submit:disabled{opacity:.45}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line);backdrop-filter:blur(14px)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand2)}@media(min-width:760px){body{padding:18px 0}.page{min-height:calc(100vh - 36px);border:1px solid var(--line);border-radius:8px;overflow:hidden}.bottom-nav{border:1px solid var(--line);border-bottom:0;border-top-left-radius:8px;border-top-right-radius:8px}}
   </style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="mark"><div class="logo" id="logo-box">B</div><div><div class="product">BookingOS Book</div><div class="version">客戶預約端 V0.1</div></div></div><div class="mode">預約中</div></div><h1 id="store-name"></h1><p class="store-meta" id="store-meta"></p></section><div class="content"><section><div class="step-bar"><span>STEP 1</span><strong>選擇服務</strong></div><label class="field">服務項目<select id="service" class="service-select"></select></label><div class="price-row" id="price-row"></div></section><section><div class="step-bar"><span>STEP 2</span><strong>選擇日期與時長</strong></div><div class="grid"><label class="field">日期<input id="date" type="date"></label><label class="field">時長<select id="duration"></select></label></div></section><section><div class="step-bar"><span>STEP 3</span><strong>選擇服務人員</strong></div><div class="staff-row" id="staff-row"></div><div class="slots" id="slots"><div class="empty">請先選擇服務與日期</div></div></section><section><h2 style="margin-bottom:12px">送出預約</h2><div class="grid"><label class="field">姓名<input id="customer-name" autocomplete="name"></label><label class="field">手機<input id="customer-phone" autocomplete="tel"></label></div><div class="pay-card" style="margin-top:12px"><div class="notice" id="pay-note">選擇時間後會顯示金額與可折抵點數。</div><label class="field">使用點數折抵<input id="redeem" type="number" min="0" value="0"></label><div class="money-grid"><div class="money"><span>原價</span><b id="original-price">NT$0</b></div><div class="money"><span>應付金額</span><b id="payable-price">NT$0</b></div></div></div><div class="notice" id="status" style="margin-top:12px">請依序選擇服務、日期、服務人員與時間。</div><button class="submit" id="submit" type="button" disabled>送出預約</button></section></div></main><nav class="bottom-nav"><a class="nav-item active" href="/book?tenant=${encodeURIComponent(tenantId)}">預約</a><a class="nav-item" href="${escapeAttrValue(memberHref)}">會員</a><a class="nav-item" href="${escapeAttrValue(pointsHref)}">點數</a><a class="nav-item" href="${escapeAttrValue(historyHref)}">紀錄</a></nav><script>
@@ -1725,26 +1712,23 @@ function renderCustomerPage(data = { store, services, businessHours, staffMember
   </script></body></html>`;
 }
 
-function renderCustomerLoginPage(data = { store }, next = "/member", error = "", liffId = "", isLiffEntry = false) {
+function renderCustomerLoginPage(data = { store }, next = "/member", error = "", liffId = "") {
   const tenantId = data.store?.tenantId || TENANT_ID;
   const storeName = data.store?.name || "BookingOS";
   const safeLiffId = String(liffId || "").trim();
-  const liffEntryUrl = safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(next || "/member")}` : "";
   const safeNext = next && String(next).startsWith("/") ? String(next) : "/member";
   const errorBox = error ? `<div class="error">登入失敗：${escapeHtmlValue(error)}</div>` : "";
   const liffScript = safeLiffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
 const liffId=${JSON.stringify(safeLiffId)};
 const tenant=${JSON.stringify(tenantId)};
 const next=${JSON.stringify(safeNext)};
-const liffEntryUrl=${JSON.stringify(liffEntryUrl)};
-const shouldInitLiff=${JSON.stringify(Boolean(isLiffEntry))};
 const statusBox=document.querySelector("#login-status");
 let liffReady=null;
 function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
 async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
-async function login(){try{setStatus("正在確認 LINE 身分...");if(!shouldInitLiff&&liffEntryUrl){location.href=liffEntryUrl;return;}await initLiff();if(!liff.isLoggedIn()){if(liff.isInClient&&liff.isInClient()){setStatus("LINE 尚未完成授權，請關閉後重新從 LIFF 連結進入");return;}liff.login({redirectUri:location.href});return;}const idToken=liff.getIDToken();const accessToken=liff.getAccessToken ? liff.getAccessToken() : "";if(!idToken&&!accessToken){setStatus("LINE 登入憑證取得失敗，請重新開啟");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,access_token:accessToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"會員登入失敗");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("LINE 登入失敗："+(error?.message||"請由 LINE App 開啟會員入口"));}}
+async function login(){try{setStatus("正在確認 LINE 身分...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE 登入憑證取得失敗，請重新開啟");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"會員登入失敗");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("請由 LINE App 開啟會員入口");}}
 document.querySelector("#line-login")?.addEventListener("click",login);
-window.addEventListener("load",async()=>{try{if(!shouldInitLiff)return;setStatus("正在確認 LINE 授權...");await initLiff();if(liff.isLoggedIn()){await login();return;}setStatus("LINE 尚未完成授權，請關閉後重新從 LIFF 連結進入");}catch(error){setStatus("LINE 登入失敗："+(error?.message||"請由 LINE App 開啟會員入口"));}});
+window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await login();}catch(error){setStatus("請由 LINE App 開啟會員入口");}});
 </script>` : `<script>window.addEventListener("load",()=>{document.querySelector("#login-status").textContent="此店尚未設定會員 LIFF，請先使用公開預約。";});</script>`;
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} 會員登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 6px}p{color:var(--muted);line-height:1.55}.line{width:100%;min-height:48px;border:0;border-radius:8px;background:#06c755;color:#062216;font-weight:950;font-size:17px}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p style="margin:2px 0 0">會員中心登入</p></div></div>${errorBox}<p>請使用 LINE 開啟並授權登入，系統只會建立這家店的會員 Session。</p><button class="line" id="line-login" type="button">使用 LINE 登入會員</button><div class="status" id="login-status"></div><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">先回預約頁</a></main>${liffScript}</body></html>`;
 }
@@ -2973,7 +2957,7 @@ async function loadBookings(env, date, tenantId) {
 
 async function saveMemberProfile(request, env, tenantId, session = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
-  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, env, customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required"), tenantId);
+  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required"), tenantId);
   try {
     const payload = await request.json();
     const name = limitText(payload.name, 80);
