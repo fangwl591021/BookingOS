@@ -181,3 +181,9 @@ Status: not started.
 - DB role 與 cookie role 不一致時要求重新登入。
 - Legacy tenant-only cookie 僅相容辨識，不可授權，不自動升級。
 - LIFF Login 尚未納入本 Task，後續需另行切換。
+
+## Task 009 Update: Tenant Picker
+
+Multi-tenant merchant login now requires a shared active `tenant_admins.identity_id` across all selectable tenants. This avoids automatically merging admin rows only because phone/email matched.
+
+Post-login tenant switching remains deferred.

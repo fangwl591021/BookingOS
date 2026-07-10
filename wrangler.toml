@@ -14,3 +14,4 @@ migrations_dir = "migrations"
 [vars]
 PUBLIC_BASE_URL = "https://bookingos.fangwl591021.workers.dev"
 DEFAULT_TENANT_ID = "demo-tenant"
+MERCHANT_TENANT_SELECTION_TTL_SECONDS = "300"

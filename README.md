@@ -44,3 +44,9 @@ See docs/MERCHANT_IDENTITY_LOGIN.md for the full transition rules and rollback n
 Session payload 解析後包含 `identity_id`、`tenant_id`、`role`、`issued_at`、`expires_at` 與 `session_version`；每次後台請求仍會重新查 `identities`、`tenant_admins`、`tenants`，DB role 才是權限真相來源。
 
 詳見 `docs/MERCHANT_SESSION_INTERFACE.md`。
+
+## Merchant Tenant Picker
+
+Multi-tenant merchant password login returns a short-lived signed selection token instead of choosing a store automatically. The login page renders a tenant picker and `POST /merchant-select-tenant` revalidates DB permission before issuing the real signed merchant session.
+
+See `docs/MERCHANT_TENANT_PICKER.md`.

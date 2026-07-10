@@ -82,3 +82,9 @@
 - 風險：使用者從 LIFF 入口會被 protected route 要求重新登入，不能直接進後台。
 - 安全狀態：legacy tenant-only cookie 已不能取得後台 API 權限，不會自動升級。
 - 建議：另開 Task 將 LIFF Login 接到 Identity Resolution、Tenant Selection 與 signed session。
+
+## P1: Tenant Picker token is not one-time-use in V1
+
+- Status: Task 009 uses short TTL, signed purpose-scoped token and DB revalidation.
+- Limitation: No server-side nonce store was added, so a valid selection token can theoretically be reused within the TTL.
+- Risk reduction: Token cannot become a merchant session, does not contain PII, expires quickly, and every selection revalidates DB permission.

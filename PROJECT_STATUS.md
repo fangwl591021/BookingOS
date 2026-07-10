@@ -151,3 +151,22 @@
 - 已備份正式 D1：`.local-backups/bookingos-db-pre-merchant-session-20260710.sql`，不提交 Git。
 - 已部署 Cloudflare Workers Version ID：`e8bc0de6-3a65-4f4e-8c9c-a1aa3af045b5`。
 - Smoke test：無 cookie 401、legacy cookie 401、signed cookie 同店 200、tampered cookie 401、tenant mismatch 403、logout 後 401。
+
+## Task 009 Merchant Tenant Picker 2026-07-10
+
+- Added short-lived HMAC signed merchant tenant selection token.
+- Added `POST /merchant-select-tenant` with DB revalidation against identities, tenant_admins and tenants.
+- Multi-tenant password login now returns `TENANT_SELECTION_REQUIRED` with `selection_token`; it does not issue the real merchant cookie.
+- Login page renders an in-page tenant picker without storing token in URL or Local Storage.
+- No migration and no session table were added.
+- LIFF Login, Customer Login and Booking flow were not changed.
+- Local D1 smoke passed: multi-login token, no pre-selection cookie, select tenant 200, mismatch 403, tampered 401, expired 401, wrong purpose 401, token-as-session 401.
+
+## Task 009 Deployment Result 2026-07-10
+
+- Deployed Cloudflare Workers Version ID: `99804da2-7c0f-432c-83e3-5f36e84dbd3c`.
+- Remote D1 backup: `.local-backups/bookingos-db-pre-tenant-picker-20260710.sql`.
+- Remote D1 migrations: No migrations to apply.
+- `MERCHANT_SESSION_SECRET` exists in Cloudflare Secrets.
+- `MERCHANT_TENANT_SELECTION_TTL_SECONDS=300` is deployed as a Worker var.
+- Live smoke: `/api/health` 200, merchant login page 200 with tenant picker script, single-tenant login 302 with signed cookie, selected tenant dashboard 200, mismatched tenant redirects with `TENANT_SCOPE_MISMATCH`, bad selection token 401, bad merchant session cookie rejected.

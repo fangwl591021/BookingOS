@@ -1,4 +1,4 @@
-﻿const jsonHeaders = {
+const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
@@ -6,6 +6,8 @@
 const PLATFORM_SESSION_COOKIE = "bookingos_platform_session";
 const MERCHANT_SESSION_COOKIE = "bookingos_merchant_session";
 const MERCHANT_SESSION_VERSION = 1;
+const MERCHANT_TENANT_SELECTION_VERSION = 1;
+const MERCHANT_TENANT_SELECTION_PURPOSE = "merchant_tenant_selection";
 const TENANT_ID = "demo-tenant";
 
 function envValue(env, key, fallback = "") {
@@ -63,6 +65,12 @@ function merchantSignedSessionEnabled(env) {
 
 function merchantLegacySessionCompatEnabled(env) {
   return envValue(env, "MERCHANT_LEGACY_SESSION_COMPAT_ENABLED", "true").toLowerCase() !== "false";
+}
+
+function merchantTenantSelectionTtlSeconds(env) {
+  const value = Number(envValue(env, "MERCHANT_TENANT_SELECTION_TTL_SECONDS", "300"));
+  if (!Number.isFinite(value) || value < 60) return 300;
+  return Math.min(Math.floor(value), 900);
 }
 
 async function secureCompare(actual, expected) {
@@ -202,6 +210,9 @@ export default {
     }
     if (url.pathname === "/api/merchant/liff-login" && request.method === "POST") {
       return handleMerchantLiffLogin(request, env);
+    }
+    if (url.pathname === "/merchant-select-tenant" && request.method === "POST") {
+      return handleMerchantSelectTenant(request, env);
     }
     if (url.pathname === "/merchant-logout") {
       return redirectWithCookie(`/merchant-login?tenant=${encodeURIComponent(activeTenantId)}`, clearMerchantSessionCookie());
@@ -461,6 +472,52 @@ async function merchantSessionHmac(env, payloadSegment) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payloadSegment));
   return bytesToBase64Url(new Uint8Array(signature));
+}
+
+
+function randomNonce(size = 16) {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  return bytesToBase64Url(bytes);
+}
+
+async function createMerchantTenantSelectionToken(env, input) {
+  const identityId = String(input.identityId || "").trim();
+  const tenantIds = Array.from(new Set((input.tenantIds || []).map((id) => String(id || "").trim()).filter(Boolean))).sort();
+  if (!identityId || tenantIds.length < 2) throw new Error("Merchant tenant selection principal is incomplete");
+  const iat = Math.floor(Date.now() / 1000);
+  const exp = iat + merchantTenantSelectionTtlSeconds(env);
+  const payload = { v: MERCHANT_TENANT_SELECTION_VERSION, purpose: MERCHANT_TENANT_SELECTION_PURPOSE, sub: identityId, tenant_ids: tenantIds, iat, exp, nonce: randomNonce() };
+  const payloadSegment = stringToBase64Url(JSON.stringify(payload));
+  const signatureSegment = await merchantSessionHmac(env, payloadSegment);
+  return payloadSegment + "." + signatureSegment;
+}
+
+async function verifyMerchantTenantSelectionToken(env, token) {
+  const parts = String(token || "").split(".");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token format is invalid");
+  let payload;
+  try {
+    const expectedSignature = await merchantSessionHmac(env, parts[0]);
+    if (!(await secureCompare(parts[1], expectedSignature))) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token signature is invalid");
+    payload = JSON.parse(base64UrlToString(parts[0]));
+  } catch (error) {
+    return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token cannot be decoded");
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(payload.v) !== MERCHANT_TENANT_SELECTION_VERSION) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token version is invalid");
+  if (payload.purpose !== MERCHANT_TENANT_SELECTION_PURPOSE) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token purpose is invalid");
+  if (!payload.sub || !Array.isArray(payload.tenant_ids) || payload.tenant_ids.length < 2 || !payload.iat || !payload.exp || !payload.nonce) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token is missing required fields");
+  if (Number(payload.iat) > now + 300) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token issued_at is invalid");
+  if (Number(payload.exp) <= now) return merchantAuthError("TENANT_SELECTION_TOKEN_EXPIRED", "Tenant selection token has expired");
+  const tenantIds = Array.from(new Set(payload.tenant_ids.map((id) => String(id || "").trim()).filter(Boolean))).sort();
+  if (tenantIds.length < 2) return merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection token has no selectable tenants");
+  return { ok: true, payload: { v: MERCHANT_TENANT_SELECTION_VERSION, purpose: MERCHANT_TENANT_SELECTION_PURPOSE, sub: String(payload.sub), tenant_ids: tenantIds, iat: Number(payload.iat), exp: Number(payload.exp), nonce: String(payload.nonce) } };
+}
+
+function tenantSelectionFailureResponse(auth) {
+  const status = auth.status || (auth.code === "TENANT_SELECTION_NOT_ALLOWED" ? 403 : 401);
+  return Response.json({ ok: false, success: false, error: { code: auth.code || "TENANT_SELECTION_TOKEN_INVALID", message: auth.message || "Tenant selection failed" } }, { status, headers: jsonHeaders });
 }
 
 function normalizeMerchantRole(role) {
@@ -767,6 +824,58 @@ async function resolveMerchantIdentity(env, admin) {
   return { ok: true, identityId: finalIdentityId, created: finalIdentityId === identityId, linked: false };
 }
 
+
+async function resolveMerchantSelectionIdentity(env, tenantEntries) {
+  const admins = (tenantEntries || []).map((entry) => entry.rows?.[0]).filter(Boolean);
+  const adminIdentityIds = admins.map((admin) => String(admin.identity_id || "").trim());
+  const identityIds = Array.from(new Set(adminIdentityIds.filter(Boolean)));
+  if (admins.length < 2 || adminIdentityIds.some((id) => !id) || identityIds.length !== 1) {
+    return merchantAuthError("TENANT_SELECTION_PRINCIPAL_INVALID", "Tenant selection requires linked identity records", 403);
+  }
+  const identityId = identityIds[0];
+  const identity = await env.DB.prepare("SELECT id, status FROM identities WHERE id = ?").bind(identityId).first();
+  if (!identity?.id || String(identity.status || "active") !== "active") return merchantAuthError("TENANT_SELECTION_PRINCIPAL_INVALID", "Merchant identity is not active", 403);
+  return { ok: true, identityId };
+}
+
+async function buildMerchantTenantSelection(env, tenantEntries) {
+  const identity = await resolveMerchantSelectionIdentity(env, tenantEntries);
+  if (!identity.ok) return identity;
+  const tenants = [];
+  for (const entry of tenantEntries || []) {
+    const tenantId = String(entry.tenantId || entry.rows?.[0]?.tenant_id || "").trim();
+    const principal = await loadMerchantPrincipal(env, identity.identityId, tenantId);
+    if (!principal.ok) return merchantAuthError("TENANT_SELECTION_PRINCIPAL_INVALID", "Merchant tenant permission is not active", principal.status || 403);
+    tenants.push({ tenant_id: tenantId, tenant_name: principal.principal.tenantName || tenantId, role: principal.principal.role });
+  }
+  if (tenants.length < 2) return merchantAuthError("TENANT_SELECTION_NOT_ALLOWED", "Tenant selection requires at least two active tenants", 403);
+  const selectionToken = await createMerchantTenantSelectionToken(env, { identityId: identity.identityId, tenantIds: tenants.map((tenant) => tenant.tenant_id) });
+  return { ok: true, identityId: identity.identityId, selectionToken, expiresIn: merchantTenantSelectionTtlSeconds(env), tenants };
+}
+
+async function handleMerchantSelectTenant(request, env) {
+  if (!env.DB) return Response.json({ ok: false, success: false, error: { code: "DATABASE_NOT_CONFIGURED", message: "Database is not configured" } }, { status: 503, headers: jsonHeaders });
+  if (!merchantSessionSecret(env)) return Response.json({ ok: false, success: false, error: { code: "SESSION_CONFIG_INVALID", message: "Merchant session secret is not configured." } }, { status: 503, headers: jsonHeaders });
+  let payload;
+  try {
+    payload = await request.json();
+  } catch (error) {
+    return tenantSelectionFailureResponse(merchantAuthError("TENANT_SELECTION_TOKEN_INVALID", "Tenant selection request is invalid"));
+  }
+  const token = String(payload?.selection_token || "").trim();
+  const requestedTenantId = String(payload?.tenant_id || "").trim();
+  const next = String(payload?.next || "/merchant").trim() || "/merchant";
+  const verified = await verifyMerchantTenantSelectionToken(env, token);
+  if (!verified.ok) return tenantSelectionFailureResponse(verified);
+  if (!requestedTenantId || !verified.payload.tenant_ids.includes(requestedTenantId)) return tenantSelectionFailureResponse(merchantAuthError("TENANT_SELECTION_NOT_ALLOWED", "Selected tenant is not allowed", 403));
+  const principal = await loadMerchantPrincipal(env, verified.payload.sub, requestedTenantId);
+  if (!principal.ok) return tenantSelectionFailureResponse(merchantAuthError("TENANT_SELECTION_PRINCIPAL_INVALID", "Merchant tenant permission is not active", principal.status || 403));
+  const redirect = next.startsWith("/") ? next + (next.includes("?") ? "&" : "?") + "tenant=" + encodeURIComponent(requestedTenantId) : "/merchant?tenant=" + encodeURIComponent(requestedTenantId);
+  const sessionCookie = await setMerchantSessionCookie(env, { identityId: verified.payload.sub, tenantId: requestedTenantId, role: principal.principal.role });
+  await merchantLoginLog("tenant_selection_success", { tenant_id: requestedTenantId, identity_id: verified.payload.sub, admin_id: principal.principal.adminId });
+  return Response.json({ ok: true, success: true, data: { redirect, tenant_id: requestedTenantId, role: principal.principal.role } }, { headers: { ...jsonHeaders, "set-cookie": sessionCookie } });
+}
+
 async function handleMerchantLogin(request, env) {
   const form = await request.formData();
   const explicitTenantId = String(form.get("tenant") || "").trim();
@@ -798,12 +907,14 @@ async function handleMerchantLogin(request, env) {
   }
 
   if (classified.status === "tenant_selection") {
-    const tenants = classified.tenants.map((entry) => {
-      const admin = entry.rows[0];
-      return { tenant_id: entry.tenantId, tenant_name: String(admin.tenant_name || entry.tenantId), role: String(admin.role || "admin") };
-    });
-    await merchantLoginLog("tenant_selection_required", { account: account.raw, count: tenants.length });
-    return merchantLoginJsonError("TENANT_SELECTION_REQUIRED", "此帳號可管理多家店，請選擇要進入的店家。", 409, { tenants });
+    if (!merchantSessionSecret(env)) return merchantLoginJsonError("SESSION_CONFIG_INVALID", "Merchant session secret is not configured.", 503);
+    const selection = await buildMerchantTenantSelection(env, classified.tenants);
+    if (!selection.ok) {
+      await merchantLoginLog("tenant_selection_failed", { reason: selection.code, account: account.raw, count: classified.tenants.length });
+      return merchantLoginJsonError(selection.code || "TENANT_SELECTION_PRINCIPAL_INVALID", selection.message || "Unable to create tenant selection flow. Please contact platform admin.", selection.status || 403);
+    }
+    await merchantLoginLog("tenant_selection_required", { account: account.raw, count: selection.tenants.length, identity_id: selection.identityId });
+    return merchantLoginJsonError("TENANT_SELECTION_REQUIRED", "Please choose a store to manage.", 409, { selection_token: selection.selectionToken, expires_in: selection.expiresIn, tenants: selection.tenants });
   }
 
   const admin = classified.admin;
@@ -868,6 +979,69 @@ function renderMerchantLoginPage(tenantId = TENANT_ID, next = "/merchant", error
   const safeNext = escapeAttrValue(next || "/merchant");
   const safeLiffId = String(liffId || "").trim();
   const lineLoginBlock = safeLiffId ? `<button class="line-login" type="button" id="line-login">使用 LINE 綁定登入</button><div class="divider">或使用帳密登入</div><div class="line-status" id="line-status"></div>` : "";
+  const tenantPickerScript = `<script>
+(function(){
+  const form=document.querySelector("#merchant-login-form");
+  const picker=document.querySelector("#tenant-picker");
+  const pickerList=document.querySelector("#tenant-picker-list");
+  const pickerStatus=document.querySelector("#tenant-picker-status");
+  const backBtn=document.querySelector("#tenant-picker-back");
+  let selectionToken="";
+  let expiresAt=0;
+  const roleLabel={TenantOwner:"Owner",TenantManager:"Manager",Staff:"Staff",owner:"Owner",admin:"Manager",manager:"Manager",staff:"Staff",viewer:"Viewer"};
+  function setPickerStatus(text){if(pickerStatus)pickerStatus.textContent=text||"";}
+  function resetPicker(){selectionToken="";expiresAt=0;if(picker)picker.hidden=true;if(form)form.hidden=false;setPickerStatus("");}
+  function escapeText(value){return String(value||"").replace(/[&<>\"']/g,function(ch){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;","'":"&#39;"}[ch]||ch;});}
+  function tenantCard(tenant,idx){const tenantId=escapeText(tenant.tenant_id||"");const name=escapeText(tenant.tenant_name||tenant.tenant_id||"Store");const role=escapeText(roleLabel[tenant.role]||tenant.role||"Manager");return '<div class="tenant-option"><div><b>'+name+'</b><small>Role: '+role+'</small></div><button type="button" data-tenant="'+tenantId+'" data-idx="'+idx+'">Enter</button></div>';}
+  function renderTenantPicker(data){
+    selectionToken=String(data.selection_token||"");
+    expiresAt=Date.now()+Number(data.expires_in||300)*1000;
+    const tenants=Array.isArray(data.tenants)?data.tenants:[];
+    if(!selectionToken||tenants.length===0){setPickerStatus("Unable to load stores. Please login again.");return;}
+    pickerList.innerHTML=tenants.map(tenantCard).join("");
+    form.hidden=true;
+    picker.hidden=false;
+    setPickerStatus("Please choose within 5 minutes.");
+  }
+  form?.addEventListener("submit",async function(event){
+    event.preventDefault();
+    const button=form.querySelector("button[type=submit]");
+    button.disabled=true;
+    setPickerStatus("");
+    try{
+      const res=await fetch(form.action,{method:"POST",body:new FormData(form),credentials:"same-origin"});
+      const type=res.headers.get("content-type")||"";
+      if(res.redirected){location.href=res.url;return;}
+      if(type.includes("application/json")){
+        const data=await res.json();
+        if(data?.error?.code==="TENANT_SELECTION_REQUIRED"){renderTenantPicker(data.data||{});return;}
+        setPickerStatus(data?.error?.message||"Login failed.");
+        return;
+      }
+      if(res.ok){location.href="/merchant";return;}
+      setPickerStatus("Login failed.");
+    }catch(error){setPickerStatus("Network error. Please try again.");}
+    finally{button.disabled=false;}
+  });
+  pickerList?.addEventListener("click",async function(event){
+    const button=event.target.closest("button[data-tenant]");
+    if(!button)return;
+    if(!selectionToken||Date.now()>expiresAt){setPickerStatus("Selection token expired. Please login again.");return;}
+    const tenantId=button.getAttribute("data-tenant")||"";
+    Array.from(pickerList.querySelectorAll("button")).forEach(function(btn){btn.disabled=true;});
+    button.textContent="Entering...";
+    try{
+      const next=form?.querySelector("input[name=next]")?.value||"/merchant";
+      const res=await fetch("/merchant-select-tenant",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({selection_token:selectionToken,tenant_id:tenantId,next})});
+      const data=await res.json();
+      if(!res.ok||!data.ok){setPickerStatus(data?.error?.message||"Store selection failed. Please login again.");return;}
+      location.href=data.data?.redirect||"/merchant";
+    }catch(error){setPickerStatus("Store selection failed. Please try again.");}
+    finally{Array.from(pickerList.querySelectorAll("button")).forEach(function(btn){btn.disabled=false;});}
+  });
+  backBtn?.addEventListener("click",resetPicker);
+})();
+</script>`;
   const liffScript = safeLiffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
 const liffId=${JSON.stringify(safeLiffId)};
 const next=${JSON.stringify(next || "/merchant")};
@@ -889,7 +1063,7 @@ async function completeLineLogin(){
 document.querySelector("#line-login")?.addEventListener("click",async()=>{try{setLineStatus("正在開啟 LINE 登入...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}await completeLineLogin();}catch(e){setLineStatus("LINE 登入失敗，請改用帳密登入");}});
 window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await completeLineLogin();}catch(e){setLineStatus("");}});
 </script>` : "";
-  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><div class="hint">帳密登入可使用店家 Admin 手機、Email；指定店家登入時可相容姓名登入。密碼為 V1 全域店家後台密碼，由平台安全設定管理</div></main>${liffScript}</body></html>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 店家登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:white}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.hint{font-size:12px;color:var(--muted);margin-top:12px}.tenant-picker{display:grid;gap:12px}.tenant-picker[hidden]{display:none}.tenant-option{border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;justify-content:space-between;gap:12px;align-items:center}.tenant-option b{display:block;font-size:16px}.tenant-option small{display:block;color:var(--muted);margin-top:4px}.tenant-option button{min-height:40px;padding:0 12px;background:var(--green);white-space:nowrap}.picker-actions{display:flex;gap:8px}.secondary{background:white;color:var(--ink);border:1px solid var(--line)}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Merchant Console</small></div></div><h1>店家後台登入</h1><p>可使用已綁定的 LINE 登入，或使用店家 Admin 帳密登入。</p>${message}${lineLoginBlock}<form method="post" action="/merchant-login" id="merchant-login-form"><input type="hidden" name="tenant" value="${safeTenant}"><input type="hidden" name="next" value="${safeNext}"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form><section class="tenant-picker" id="tenant-picker" hidden><h2>Select store</h2><p>Choose the store to manage. You do not need to re-enter your password.</p><div id="tenant-picker-list"></div><div class="line-status" id="tenant-picker-status"></div><div class="picker-actions"><button type="button" class="secondary" id="tenant-picker-back">Back to login</button></div></section><div class="hint">帳密登入可使用店家 Admin 手機、Email；指定店家登入時可相容姓名登入。密碼為 V1 全域店家後台密碼，由平台安全設定管理</div></main>${liffScript}${tenantPickerScript}</body></html>`;
 }
 function html(body) {
   return new Response(body, {

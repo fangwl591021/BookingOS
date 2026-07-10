@@ -130,3 +130,18 @@
 - [x] D1 backup completed before deploy.
 - [x] Task 008 deployed and smoke tested.
 - [ ] LIFF Login migrated to signed merchant session.
+
+## Gate 4B: Task 009 Merchant Tenant Picker
+
+- [x] Multi-tenant login no longer auto-selects first tenant.
+- [x] Multi-tenant login returns signed short-lived selection token.
+- [x] Multi-tenant login does not issue merchant session cookie before selection.
+- [x] Tenant picker UI stores token only in page memory.
+- [x] Tenant picker token is not placed in URL.
+- [x] Tenant picker token is not stored in Local Storage.
+- [x] Tenant selection API revalidates DB permission.
+- [x] Selected tenant creates real signed merchant session.
+- [x] No migration added.
+- [x] No session table added.
+- [ ] LIFF Login migrated to tenant picker.
+- [ ] Post-login tenant switch implemented.

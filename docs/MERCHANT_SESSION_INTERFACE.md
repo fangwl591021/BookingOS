@@ -129,3 +129,9 @@ Task 008 沒有切換 LIFF Login。既有 LIFF endpoint 仍可能產生 legacy t
 - 已備份正式 D1：`.local-backups/bookingos-db-pre-merchant-session-20260710.sql`，不提交 Git。
 - 已部署 Cloudflare Workers Version ID：`e8bc0de6-3a65-4f4e-8c9c-a1aa3af045b5`。
 - Smoke test：無 cookie 401、legacy cookie 401、signed cookie 同店 200、tampered cookie 401、tenant mismatch 403、logout 後 401。
+
+## Task 009 Tenant Selection Token
+
+Merchant tenant selection token is separate from merchant session. It uses the same secret but a different payload purpose: `merchant_tenant_selection`.
+
+The token contains `sub` and allowed `tenant_ids`, but no role and no `tenant_id` session field. The merchant session validator rejects it if it is used as `bookingos_merchant_session`.
