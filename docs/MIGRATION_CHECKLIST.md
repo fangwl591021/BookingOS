@@ -1,39 +1,43 @@
-﻿# BookingOS Identity Migration Checklist
+# BookingOS Identity Migration Checklist
 
 日期：2026-07-10
-狀態：Checklist only。尚未執行 migration，尚未修改資料庫，尚未修改程式。
+狀態：Task 005 Additive Identity Migration 已完成。未切換登入、Session、LIFF、預約、CRM 行為。
 
 ## Gate 0: Before Any Migration
 
-- [ ] Confirm `docs/SCHEMA_FREEZE.md` is accepted.
-- [ ] Confirm no `identity_profiles` table.
-- [ ] Confirm no new `admins` table.
-- [ ] Confirm no `sessions` table in V1 migration.
-- [ ] Confirm `tenant_admins` remains the tenant role table.
-- [ ] Confirm Identity stores no business data.
-- [ ] Confirm Customer owns CRM, points, tags, coupons, consumption, notes.
+- [x] Confirm `docs/SCHEMA_FREEZE.md` is accepted.
+- [x] Confirm no `identity_profiles` table.
+- [x] Confirm no new `admins` table.
+- [x] Confirm no `sessions` table in V1 migration.
+- [x] Confirm `tenant_admins` remains the tenant role table.
+- [x] Confirm Identity stores no business data.
+- [x] Confirm Customer owns CRM, points, tags, coupons, consumption, notes.
 
 ## Gate 1: Additive Schema
 
-- [ ] Create `identities`.
-- [ ] Create `identity_auth`.
-- [ ] Add `customers.identity_id` nullable.
-- [ ] Add `customers.customer_no` nullable.
-- [ ] Add `tenant_admins.identity_id` nullable.
-- [ ] Add `identity_auth` indexes.
-- [ ] Add `tenant_admins.identity_id` index.
-- [ ] Add `customers(tenant_id, identity_id)` unique index where identity exists.
-- [ ] Verify existing app still runs without using new columns.
+- [x] Create `identities`.
+- [x] Create `identity_auth`.
+- [x] Add `customers.identity_id` nullable.
+- [x] Add `customers.customer_no` nullable.
+- [x] Add `tenant_admins.identity_id` nullable.
+- [x] Add `platform_line_contacts.identity_id` nullable.
+- [x] Add `identity_auth` indexes.
+- [x] Add `tenant_admins.identity_id` index.
+- [x] Add `customers.identity_id` index; defer unique `customers(tenant_id, identity_id)` until audit proves no duplicates.
+- [x] Add `platform_line_contacts.identity_id` index.
+- [x] Verify existing app still runs without using new columns.
 
 ## Gate 2: Backfill
 
-- [ ] Backfill identities from `tenant_admins` trusted phone/email/LINE evidence.
-- [ ] Backfill `identity_auth` rows for LINE, PHONE, EMAIL.
-- [ ] Write `tenant_admins.identity_id`.
-- [ ] Backfill Customer identity only when evidence is safe.
-- [ ] Write `customers.identity_id` where confident.
-- [ ] Export ambiguous matches for manual review.
-- [ ] Do not auto-merge uncertain phone/email matches.
+- [x] Backfill identities only from scoped LINE evidence.
+- [x] Backfill `identity_auth` rows for scoped LINE only.
+- [x] Do not create PHONE or EMAIL auth from unverified phone/email values.
+- [x] Write `platform_line_contacts.identity_id` where safe.
+- [x] Leave `tenant_admins.identity_id` unchanged where no LINE evidence exists.
+- [x] Leave `customers.identity_id` unchanged where no LINE evidence exists.
+- [x] Export ambiguous phone/email matches for manual review through audit output.
+- [x] Do not auto-merge uncertain phone/email matches.
+- [x] Backfill is idempotent: second run writes 0 statements.
 
 ## Gate 3: Login Read Path
 

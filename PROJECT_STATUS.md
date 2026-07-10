@@ -1,4 +1,4 @@
-﻿# PROJECT_STATUS.md
+# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -16,8 +16,7 @@
 
 | 項目 | 狀態 | 驗證方式 |
 | ---- | ---- | ---- |
-| Worker 語法檢查 | 已通過 |
-ode --check src/index.js` |
+| Worker 語法檢查 | 已通過 | `node --check src/index.js` |
 | Git whitespace 檢查 | 已通過 | `git diff --check` |
 | Cloudflare Worker dry-run | 已通過 | `wrangler deploy --dry-run` |
 | 線上健康檢查 | 已通過 | `GET /api/health` |
@@ -61,9 +60,7 @@ ode --check src/index.js` |
 - 未改動任何預約業務流程。
 - 已正式部署至 Cloudflare Workers，Version ID：`ce4b22a4-c3f1-4df5-9b2f-39f0a62c0c61`。
 - 未將任何模組搬到 AIWE Dev System。
--
-pm run check` 因本機 sandbox ACL 問題未完成，但等價的
-ode --check src/index.js` 已成功。
+- `npm run check` 因本機 sandbox ACL 問題未完成，但等價的 `node --check src/index.js` 已成功。
 ## Task 002 Tenant 隔離驗證
 
 - 已修正 `/api/customer-profile`、`/api/member`、`/api/bookings/cancel` 使用目前網址 tenant。
@@ -99,3 +96,14 @@ ode --check src/index.js` 已成功。
 - Session 只凍結 Interface，儲存方式待後續選擇。
 - 已新增 `docs/SCHEMA_FREEZE.md` 與 `docs/MIGRATION_CHECKLIST.md`。
 - 本輪仍未修改程式、資料庫、migration 或部署。
+
+## Task 005 Additive Identity Migration 2026-07-10
+
+- 已新增 `migrations/0012_additive_identity.sql`，只做 additive schema，不切換登入、Session、LIFF、預約或 CRM 行為。
+- 已新增 `identities`、`identity_auth`、`tenant_admins.identity_id`、`customers.identity_id`、`customers.customer_no`、`platform_line_contacts.identity_id` 與必要索引。
+- 未建立 `identity_profiles`、新 `admins` table、`sessions` table，也未建立 `customers(tenant_id, identity_id)` unique index。
+- 本機 D1 migration、audit、backfill dry run、backfill apply、第二次 idempotency apply 均通過。
+- 遠端 D1 已先備份至 `.local-backups/bookingos-db-pre-identity-20260710.sql`，此目錄已加入 `.gitignore`。
+- 遠端 D1 已套用 `0012_additive_identity.sql`，並只以 scoped LINE 回填 2 筆 `identities`、2 筆 `identity_auth`、2 筆 `platform_line_contacts.identity_id`。
+- 遠端 audit 仍有 1 組 duplicated/cross-tenant phone hash，已保留為人工審查，不做自動合併。
+- 注意：遠端 D1 migration history 尚未與 repo 對齊，後續不可直接跑整批 `wrangler d1 migrations apply --remote`，需先 reconcile。

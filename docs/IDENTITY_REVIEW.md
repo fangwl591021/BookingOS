@@ -1,4 +1,4 @@
-﻿# BookingOS Identity Architecture Review
+# BookingOS Identity Architecture Review
 
 日期：2026-07-10
 狀態：Reviewed and accepted with corrections。未修改程式、未修改資料庫、未建立 migration、未 deploy。
@@ -93,7 +93,7 @@ V1 不採用：
 | Unique Index | `identity_auth(provider, normalized_phone)` for PHONE |
 | Unique Index | `identity_auth(provider, normalized_email)` for EMAIL |
 | Index | `idx_tenant_admins_identity` |
-| Unique Index | `customers(tenant_id, identity_id)` where `identity_id IS NOT NULL` |
+| Index | `customers(identity_id)` |
 
 ### Deferred / Not Frozen
 

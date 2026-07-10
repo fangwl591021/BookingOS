@@ -1,4 +1,4 @@
-﻿# KNOWN_ISSUES.md
+# KNOWN_ISSUES.md
 
 ## Resolved 2026-07-10: 平台與店家登入設定硬編碼
 
@@ -48,3 +48,17 @@
 - 現象：多數 API 使用 `{ ok: true/false }`，尚未統一為 AIWE 建議的 `{ success, data, error, meta }`。
 - 風險：前端錯誤處理與跨專案共用工具較難一致。
 - 建議：新 API 先使用標準格式；舊 API 在不破壞前端下逐步調整。
+
+## P0: 遠端 D1 migration history 尚未與 repo 對齊
+
+- 現象：`wrangler d1 migrations list --remote` 仍顯示 `0002` 到 `0012` pending，但 production schema 已有多個舊欄位與表。
+- 風險：若直接執行整批 `wrangler d1 migrations apply --remote`，可能重跑舊 migration 或造成不可預期 schema 衝突。
+- 現況：Task 005 已在備份後只用 direct SQL 套用 `0012_additive_identity.sql`。
+- 建議：下一次 D1 migration 前，先建立 migration history reconcile 策略，不要直接套整批 remote migrations。
+
+## P1: PHONE / EMAIL identity backfill 尚不可自動執行
+
+- 現象：遠端 audit 發現 1 組 duplicated/cross-tenant normalized phone hash。
+- 風險：若用 phone 自動合併 identity，可能把不同店家的不同 Customer 或 Admin 誤合併。
+- 現況：Task 005 僅使用 scoped LINE 回填，PHONE/EMAIL 只做 audit，不建立 auth。
+- 建議：建立 verified phone/email 來源後，再分批建立 PHONE/EMAIL auth。

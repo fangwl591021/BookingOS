@@ -1,4 +1,32 @@
-﻿## 2026-07-10 - Identity Schema Freeze
+
+## 2026-07-10 - Task 005 Additive Identity Migration
+
+### Added
+
+- 新增 `migrations/0012_additive_identity.sql`，建立 `identities`、`identity_auth` 與 nullable identity link columns。
+- 新增 `scripts/identity-audit.mjs`，提供本機/遠端 D1 identity schema 與資料風險 audit。
+- 新增 `scripts/identity-backfill.mjs`，提供可重跑的 scoped LINE identity backfill。
+- 新增 `docs/IDENTITY_MIGRATION_REPORT.md`，記錄本機與遠端 migration/backfill 結果。
+
+### Changed
+
+- 更新 `docs/MIGRATION_CHECKLIST.md` 與 `docs/IDENTITY_MIGRATION_PLAN.md`，標示 Task 005 已完成 additive schema，PHONE/EMAIL 與 customer unique identity constraint 延後。
+- `.gitignore` 新增 `.local-backups/`，避免 D1 備份資料進入版本控制。
+
+### Verified
+
+- `node --check src/index.js`
+- `node --check scripts/identity-audit.mjs`
+- `node --check scripts/identity-backfill.mjs`
+- `git diff --check`
+- Local D1 migration, audit, backfill dry run, backfill apply, idempotency apply
+- Remote D1 backup, schema apply, audit, backfill dry run, backfill apply, idempotency apply
+
+### Not Changed
+
+- 未修改登入、Session、LIFF、預約、CRM 或部署流程。
+
+## 2026-07-10 - Identity Schema Freeze
 
 - 更新 `docs/IDENTITY_MODEL_V1.md`：採納 V1 Freeze，移除 `identity_profiles`、新 `admins` 表與 `sessions` 表。
 - 更新 `docs/IDENTITY_MIGRATION_PLAN.md`：改為新增 `identity_auth`、`customers.identity_id`、`tenant_admins.identity_id`，Session 僅凍結 Interface。
