@@ -1672,6 +1672,22 @@ function pageShell(title, body, active = "merchant", tenantId = TENANT_ID) {
   </style></head><body><main class="wrap"><section class="hero"><h1>${escapeHtmlValue(title)}</h1><p>BookingOS 店家後台</p></section><nav class="nav">${nav}</nav>${body}</main></body></html>`;
 }
 
+
+function customerMemberShell(title, body, active = "member", tenantId = TENANT_ID) {
+  const nav = [
+    ["book", "/book", "\u9810\u7d04"],
+    ["member", "/member", "\u6703\u54e1"],
+    ["points", "/points", "\u9ede\u6578"],
+    ["history", "/history", "\u7d00\u9304"]
+  ].map(([key, href, label]) => {
+    const nextHref = href + "?tenant=" + encodeURIComponent(tenantId);
+    return `<a class="nav-item ${active === key ? "active" : ""}" href="${nextHref}">${label}</a>`;
+  }).join("");
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${escapeHtmlValue(title)}</title><style>
+  :root{--bg:#eef2ed;--surface:#fff;--soft:#f8faf6;--ink:#202124;--muted:#667067;--line:#dfe5dd;--brand:#176b5b;--brand2:#0f463e;--blue:#3d6f9f;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{text-decoration:none;color:inherit}button,input,select{font:inherit}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:92px}.hero{background:var(--brand2);color:white;padding:18px 16px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}.logo{width:38px;height:38px;border-radius:8px;background:white;color:var(--brand2);display:grid;place-items:center;font-weight:950}.product{font-size:15px;font-weight:950}.version{color:rgba(255,255,255,.72);font-size:12px;margin-top:2px}.hero h1{margin:0;font-size:25px;line-height:1.2}.content{padding:14px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 10px 24px rgba(32,33,36,.055)}.panel h2{font-size:20px}.muted,.muted-small{color:var(--muted);line-height:1.55}.btn{display:inline-grid;place-items:center;min-height:40px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 14px;font-weight:900}.primary,.save-btn{background:var(--blue);border-color:var(--blue);color:white}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line);backdrop-filter:blur(14px)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900}.nav-item.active{background:var(--ok);color:var(--brand2)}@media(min-width:760px){body{padding:18px 0}.page{min-height:calc(100vh - 36px);border:1px solid var(--line);border-radius:8px;overflow:hidden}.bottom-nav{border:1px solid var(--line);border-bottom:0;border-top-left-radius:8px;border-top-right-radius:8px}}
+  </style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="logo">B</div><div><div class="product">BookingOS Book</div><div class="version">&#23458;&#25142;&#26371;&#21729;&#31471;</div></div></div><h1>${escapeHtmlValue(title)}</h1></section><div class="content">${body}</div></main><nav class="bottom-nav">${nav}</nav></body></html>`;
+}
+
 function renderMerchantPage(data = { store, bookings, services, staffMembers, resourceTypes }, customers = []) {
   const bookingRows = (data.bookings || []).slice(0, 8).map((booking) => `<tr><td>${escapeHtmlValue(booking.start || "-")}</td><td>${escapeHtmlValue(booking.customer || "-")}</td><td>${escapeHtmlValue(booking.service || "-")}</td><td>${escapeHtmlValue(booking.staffName || booking.staffId || "-")}</td><td><span class="badge">${escapeHtmlValue(booking.status || "-")}</span></td></tr>`).join("");
   const trialNotice = data.store?.status === "trial" ? `<section class="panel" style="margin-bottom:12px"><h2>免費試用中</h2><p class="muted">試用期限至 ${escapeHtmlValue(data.store.contractEnd || "-")}。期間內或到期後，可提出正式付費申請。</p><p><a class="btn primary" href="/apply">申請正式使用</a></p></section>` : "";
@@ -1749,7 +1765,7 @@ function historyView(profile){const rows=(profile.bookings||[]).map(b=>'<div cla
 async function load(){try{const data=await api('/api/member');const profile=data.profile||{};if(memberState.active==='points')pointsView(profile);else if(memberState.active==='history')historyView(profile);else profileView(profile);}catch(err){content.textContent='會員登入已失效，請重新登入';setTimeout(()=>{location.href='/member-login?tenant='+encodeURIComponent(memberState.tenantId)+'&next='+encodeURIComponent(location.pathname+location.search);},700);}}
 load();
 </script>`;
-  return pageShell(title, body, active === "points" ? "points" : active === "history" ? "history" : "member", tenantId);
+  return customerMemberShell(title, body, active === "points" ? "points" : active === "history" ? "history" : "member", tenantId);
 }
 function renderSchedulePage(data = { staffMembers, resourceTypes }) {
   const staffRows = (data.staffMembers || staffMembers).map((staff) => `<tr><td>${escapeHtmlValue(staff.name)}</td><td>${escapeHtmlValue(staff.role || "-")}</td></tr>`).join("");
