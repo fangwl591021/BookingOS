@@ -483,6 +483,15 @@ function customerIntentFromLoginUrl(url) {
   if (!rawState) return { ok: false };
   const states = [rawState];
   try { states.push(decodeURIComponent(rawState)); } catch {}
+  const hasExplicitMerchantNext = states.some((state) => {
+    try {
+      const stateUrl = new URL(state, url.origin);
+      return stateUrl.pathname === "/merchant" || stateUrl.searchParams.get("next") === "/merchant";
+    } catch {
+      return state.includes("/merchant") || state.includes("next=%2Fmerchant") || state.includes("next=/merchant");
+    }
+  });
+  if (!hasExplicitMerchantNext && url.searchParams.has("liff.state")) return { ok: true, next: "/member", intent: "login" };
   for (const state of states) {
     try {
       const stateUrl = new URL(state, url.origin);
@@ -519,12 +528,9 @@ async function handleMemberEntry(request, env, tenantId = TENANT_ID) {
     if (!target.searchParams.get("tenant")) target.searchParams.set("tenant", safeTenant);
     return Response.redirect(target, 302);
   }
-  const loginUrl = new URL("/member-login", request.url);
-  loginUrl.searchParams.set("tenant", safeTenant);
-  loginUrl.searchParams.set("next", next);
   const error = url.searchParams.get("error") || "";
-  if (error) loginUrl.searchParams.set("error", error);
-  return new Response(null, { status: 302, headers: { location: loginUrl.toString(), "cache-control": "no-store" } });
+  const liffId = await customerLoginLiffId(env, safeTenant);
+  return html(renderCustomerLoginPage({ store: await loadStore(env, safeTenant) }, next, error, liffId, false));
 }
 
 
