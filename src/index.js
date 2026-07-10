@@ -242,7 +242,7 @@ export default {
     }
     if (url.pathname === "/api/customer/session") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
       return Response.json({ ok: true, success: true, session: { tenant_id: session.tenantId, customer_id: session.customerId, role: "Customer" }, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
     if (url.pathname === "/customer-logout") {
@@ -362,20 +362,20 @@ export default {
 
     if (url.pathname === "/api/member") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
       if (request.method === "POST") return saveMemberProfile(request, env, activeTenantId, session);
       return Response.json({ ok: true, profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/customer-history") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
       return Response.json({ ok: true, bookings: await loadCustomerBookings(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
     if (url.pathname === "/api/customer-points") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
       return Response.json({ ok: true, points: await loadCustomerPointTransactions(env, session.tenantId, session.customerId), profile: await loadCustomerProfileById(env, session.tenantId, session.customerId) }, { headers: jsonHeaders });
     }
 
@@ -410,7 +410,7 @@ export default {
 
     if (url.pathname === "/member" || url.pathname === "/points" || url.pathname === "/history") {
       const session = await requireCustomerSession(request, env, activeTenantId);
-      if (!session.ok) return customerAuthFailureResponse(request, session, activeTenantId);
+      if (!session.ok) return customerAuthFailureResponse(request, env, session, activeTenantId);
       const active = url.pathname === "/points" ? "points" : url.pathname === "/history" ? "history" : "member";
       return html(renderMemberPage(await dashboardData(env, todayInTaipei(), activeTenantId), active));
     }
@@ -677,14 +677,20 @@ function clearCustomerSessionCookie() {
   return CUSTOMER_SESSION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
 }
 
-function customerAuthFailureResponse(request, auth, tenantId = "") {
+async function customerAuthFailureResponse(request, env, auth, tenantId = "") {
   const status = auth.status || 401;
   if (new URL(request.url).pathname.startsWith("/api/")) return Response.json({ ok: false, success: false, error: { code: auth.code || "CUSTOMER_SESSION_REQUIRED", message: auth.message || "customer login required" } }, { status, headers: jsonHeaders });
-  const url = new URL("/member-login", request.url);
-  if (tenantId) url.searchParams.set("tenant", tenantId);
-  url.searchParams.set("next", new URL(request.url).pathname + new URL(request.url).search);
-  url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
-  return new Response(null, { status: 302, headers: { location: url.toString(), "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
+  const requestUrl = new URL(request.url);
+  const nextPath = requestUrl.pathname + requestUrl.search;
+  const liffId = tenantId ? await customerLoginLiffId(env, tenantId) : "";
+  const location = liffId ? customerLiffEntryUrl(liffId, tenantId, nextPath) : (() => {
+    const url = new URL("/member-login", request.url);
+    if (tenantId) url.searchParams.set("tenant", tenantId);
+    url.searchParams.set("next", nextPath);
+    url.searchParams.set("error", auth.code || "CUSTOMER_SESSION_REQUIRED");
+    return url.toString();
+  })();
+  return new Response(null, { status: 302, headers: { location, "set-cookie": clearCustomerSessionCookie(), "cache-control": "no-store" } });
 }
 function normalizeMerchantRole(role) {
   const raw = String(role || "").trim().toLowerCase();
@@ -1313,7 +1319,10 @@ async function customerLiffConfig(env, tenantId) {
   const tenantLiffId = String(tenantSetting?.liff_id || "").trim();
   const tenantChannelId = String(tenantSetting?.channel_id || "").trim();
   if (tenantLiffId && tenantChannelId) return { liffId: tenantLiffId, channelId: tenantChannelId, source: "tenant" };
-  return { liffId: "", channelId: "", source: "tenant" };
+  const platformSetting = await platformLineSettings(env);
+  const platformRegistrationLiffId = String(platformSetting?.registration_liff_id || "").trim();
+  const platformChannelId = String(platformSetting?.channel_id || "").trim();
+  return { liffId: platformRegistrationLiffId, channelId: platformChannelId, source: platformRegistrationLiffId ? "platform_registration" : "tenant" };
 }
 
 async function customerLoginLiffId(env, tenantId) {
@@ -2956,7 +2965,7 @@ async function loadBookings(env, date, tenantId) {
 
 async function saveMemberProfile(request, env, tenantId, session = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
-  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required"), tenantId);
+  if (!session?.ok || session.tenantId !== tenantId) return customerAuthFailureResponse(request, env, customerAuthError("CUSTOMER_SESSION_REQUIRED", "Customer session is required"), tenantId);
   try {
     const payload = await request.json();
     const name = limitText(payload.name, 80);
