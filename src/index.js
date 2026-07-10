@@ -235,7 +235,7 @@ export default {
     }
     if (url.pathname === "/member-login") {
       const liffId = await customerLoginLiffId(env, activeTenantId);
-      return html(renderCustomerLoginPage(await dashboardData(env, todayInTaipei(), activeTenantId), url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId));
+      return html(renderCustomerLoginPage(await dashboardData(env, todayInTaipei(), activeTenantId), url.searchParams.get("next") || liffStateParams.get("next") || "/member", url.searchParams.get("error") || liffStateParams.get("error") || "", liffId, url.searchParams.has("liff.state")));
     }
     if (url.pathname === "/api/customer/liff-login" && request.method === "POST") {
       return handleCustomerLiffLogin(request, env);
@@ -1728,13 +1728,15 @@ const payload = JSON.stringify({ tenantId, store: data.store || store, services:
   </script></body></html>`;
 }
 
-function renderCustomerLoginPage(data = { store }, next = "/member", error = "", liffId = "") {
+function renderCustomerLoginPage(data = { store }, next = "/member", error = "", liffId = "", isLiffEntry = false) {
   const tenantId = data.store?.tenantId || TENANT_ID;
   const storeName = data.store?.name || "BookingOS";
   const safeLiffId = String(liffId || "").trim();
   const safeNext = next && String(next).startsWith("/") ? String(next) : "/member";
   const errorBox = error ? `<div class="error">登入失敗：${escapeHtmlValue(error)}</div>` : "";
   const lineActionText = "&#29992; LINE &#30331;&#20837; / &#35387;&#20874;";
+  const liffEntryUrl = safeLiffId ? `https://liff.line.me/${encodeURIComponent(safeLiffId)}?tenant=${encodeURIComponent(tenantId)}&next=${encodeURIComponent(safeNext)}` : "";
+  const shouldInitLiff = Boolean(isLiffEntry);
   const liffScript = safeLiffId ? `<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script>
 const liffId=${JSON.stringify(safeLiffId)};
 const tenant=${JSON.stringify(tenantId)};
@@ -1743,10 +1745,10 @@ const statusBox=document.querySelector("#login-status");
 let liffReady=null;
 function setStatus(text){if(statusBox)statusBox.textContent=text||"";}
 async function initLiff(){if(!liffReady)liffReady=liff.init({liffId});return liffReady;}
-async function login(){try{setStatus("正在確認 LINE 身分...");await initLiff();if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE 登入憑證取得失敗，請重新開啟");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"會員登入失敗");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("請由 LINE App 開啟會員入口");}}
+async function login(){try{setStatus("Opening LINE login...");if(!shouldInitLiff&&liffEntryUrl){location.href=liffEntryUrl;return;}setStatus("Checking LINE identity...");await initLiff();if(!liff.isLoggedIn()){setStatus("Open from LINE member link");return;}const idToken=liff.getIDToken();if(!idToken){setStatus("LINE token missing, reopen from LINE");return;}const res=await fetch("/api/customer/liff-login",{method:"POST",headers:{"content-type":"application/json"},credentials:"same-origin",body:JSON.stringify({id_token:idToken,tenant,next})});const data=await res.json();if(!res.ok||!data.ok){setStatus(data?.error?.message||"Member login failed");return;}location.href=data.redirect||data.data?.redirect||next;}catch(error){setStatus("Open from LINE App member link");}}
 document.querySelector("#line-login")?.addEventListener("click",login);
 document.querySelector("#line-register")?.addEventListener("click",login);
-window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn())await login();}catch(error){setStatus("請由 LINE App 開啟會員入口");}});
+window.addEventListener("load",async()=>{try{if(!shouldInitLiff)return;await initLiff();if(liff.isLoggedIn())await login();else setStatus("Tap LINE login / register");}catch(error){setStatus("Open from LINE App member link");}});
 </script>` : `<script>window.addEventListener("load",()=>{document.querySelector("#login-status").textContent="此店尚未設定會員 LIFF，請先使用公開預約。";});</script>`;
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(storeName)} &#26371;&#21729;&#30331;&#20837;</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#176b5b;--blue:#3b76ad}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 28px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);color:white;display:grid;place-items:center;font-weight:950}h1{font-size:24px;margin:0 0 6px}h2{font-size:17px;margin:0 0 6px}p{color:var(--muted);line-height:1.55}.login-box{border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:12px;background:#fbfdfb}.login-box.register{background:#f2faf6}.line{width:100%;min-height:48px;border:0;border-radius:8px;background:#06c755;color:#062216;font-weight:950;font-size:17px}.line.secondary-line{background:var(--blue);color:white}.status{min-height:22px;margin-top:12px;color:#0f513f;font-weight:850}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}.secondary{display:grid;place-items:center;margin-top:10px;min-height:44px;border:1px solid var(--line);border-radius:8px;color:var(--ink);text-decoration:none;font-weight:900}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><h1>${escapeHtmlValue(storeName)}</h1><p style="margin:2px 0 0">&#26371;&#21729;&#30331;&#20837;</p></div></div>${errorBox}<section class="login-box"><h2>&#24050;&#26159;&#26371;&#21729;</h2><p>&#20351;&#29992;&#24050;&#32129;&#23450;&#30340; LINE &#30331;&#20837;&#26371;&#21729;&#36039;&#26009;&#12289;&#40670;&#25976;&#33287;&#38928;&#32004;&#32000;&#37636;&#12290;</p><button class="line" id="line-login" type="button">${lineActionText}</button></section><section class="login-box register"><h2>&#23578;&#26410;&#35387;&#20874;</h2><p>&#31532;&#19968;&#27425;&#20351;&#29992;&#35531;&#29992; LINE &#35387;&#20874;&#65292;&#31995;&#32113;&#26371;&#24314;&#31435;&#36889;&#23478;&#24215;&#30340;&#26371;&#21729;&#36039;&#26009;&#12290;</p><button class="line secondary-line" id="line-register" type="button">${lineActionText}</button></section><div class="status" id="login-status"></div><a class="secondary" href="/book?tenant=${encodeURIComponent(tenantId)}">&#20808;&#22238;&#38928;&#32004;&#38913;</a></main>${liffScript}</body></html>`;
 }
