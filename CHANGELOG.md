@@ -4,6 +4,9 @@
 
 ### Added
 
+- 新增 `docs/IDENTITY_MODEL_V1.md`，定義 Identity、Customer、Admin、Staff、Session 與 ER 圖。
+- 新增 `docs/IDENTITY_MIGRATION_PLAN.md`，列出 schema 差距、立即/延後 migration 與過渡規則。
+
 - 新增 `docs/IDENTITY_AUDIT.md`，整理目前登入方式、Session、Identity/Tenant 關係與 V2 模型方向。
 
 - 新增 `docs/TENANT_AUDIT.md`，完整列出 API、Worker、CRUD 與 SQL tenant filter audit。
@@ -19,6 +22,8 @@
 - 新增 `.env.example`，說明目前 Cloudflare binding 與 LINE 設定存放位置。
 
 ### Security
+
+- 新增 ADR-005《Identity 與 Customer 分離》，平台 Identity 不存 Customer CRM/點數/消費/備註。
 
 - 新增 AIWE Rule：Identity 優先於 Tenant，登入需先識別 user，再選 tenant，再判斷 permission。
 

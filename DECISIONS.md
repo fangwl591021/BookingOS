@@ -40,7 +40,19 @@
 - 影響：只在完成報告列可重用候選，不搬移程式。
 - 是否可逆：可逆。
 
-## ADR-005: 第一版維持單一 Worker
+
+## ADR-005: Identity 與 Customer 分離
+
+- 日期：2026-07-10
+- 決策：BookingOS V1 將平台身份 Identity 與店家會員 Customer 分離。Identity 只代表「我是誰」，Customer 代表「我在這家店是什麼會員」。
+- 背景：SaaS 會遇到同一個人同時管理多家店、在不同店擔任不同角色、或同時是某店客戶與另一店員工的情境。若以 tenant 或 phone/LINE UID 直接當主身份，登入、選店、權限與資料隱私會混在一起。
+- 選擇原因：Identity 必須先於 Tenant；登入流程應為 `Identity -> Tenant -> Permission -> Data`。平台不應存放店家 Customer 的 CRM、生日、地址、點數、消費、看診/髮色/美甲備註等資料。
+- 放棄方案：使用 `tenant_admins` 或 `customers.line_user_id` 作為主身份；用 LINE UID 當主鍵；登入時用 `LIMIT 1` 自動選店；把姓名、生日、CRM 備註放進平台 Identity。
+- 目標模型：新增 `identities`、`identity_credentials`、`admins`、`sessions`；`customers` 保留店家會員資料並新增 `identity_id`；`staff_members.identity_id` 可為 nullable；`bookings`、點數、券、CRM 全部指向 `customer_id`，不指向 `identity_id`。
+- 影響：後續登入、Session、權限與多店切換都必須依 Identity Model 設計；現有 `tenant_admins` 暫時保留為過渡表，不立即刪除。
+- 是否可逆：概念上不建議逆轉。可分階段 migration，且在未切換登入前保持相容。
+
+## ADR-006: 第一版維持單一 Worker
 
 - 日期：2026-07-10
 - 決策：第一版維持 `src/index.js` 單一 Worker，不在本輪切分前後端或導入框架。

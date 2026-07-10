@@ -83,3 +83,9 @@
 - 目前平台 session 只代表平台 secret 命中；店家 session 只存 tenant，不存 `user_id` 與 `role`。
 - 目前一人多店在 schema 上部分可發生，但登入流程會以 requested tenant 或 `LIMIT 1` 自動選店。
 - 本輪尚未修補；下一步需先確認 V2 Identity Model，再改登入、session、permission。
+## BookingOS V1 Identity Model 2026-07-10
+
+- 已產生 `docs/IDENTITY_MODEL_V1.md`：完整 ER Diagram 與登入流程。
+- 已產生 `docs/IDENTITY_MIGRATION_PLAN.md`：目前 schema 對照、需新增/修改/廢棄項目、立即與延後 migration。
+- 已新增 ADR-005《Identity 與 Customer 分離》，原 ADR-005 單一 Worker 順延為 ADR-006。
+- 本輪尚未修改程式或資料庫；migration 需在模型確認後分階段執行。
