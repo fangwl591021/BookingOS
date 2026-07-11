@@ -29,14 +29,14 @@ The customer session must not contain phone, email, LINE UID, birthday, address,
 Entry:
 
 ```text
-/member-login?tenant=<tenant_id>&next=/member
+/store/{slug}/login?next=/store/{slug}/member
 ```
 
 Active flow:
 
 ```text
 Customer enters phone + ROC birthday, for example 591021
--> POST /api/customer/phone-login
+-> POST /api/store/{slug}/customer/phone-login
 -> identity_auth provider PHONE
 -> identities
 -> customers WHERE tenant_id + identity_id
@@ -48,7 +48,7 @@ Registration flow:
 
 ```text
 Customer enters name + phone + ROC birthday, for example 591021
--> POST /api/customer/phone-register
+-> POST /api/store/{slug}/customer/phone-register
 -> create or reuse PHONE identity
 -> create or update tenant customer
 -> signed customer session
@@ -255,3 +255,32 @@ Smoke coverage includes:
 - Platform signed session
 - Post-login customer multi-store switch UX
 - Optional Customer LINE binding
+## Store Slug Routing
+
+Customer-facing tenant query URLs are now legacy compatibility routes. The canonical customer entry is:
+
+```text
+/store/{slug}
+/store/{slug}/login
+/store/{slug}/member
+/store/{slug}/points
+/store/{slug}/history
+```
+
+For `demo-tenant`, the current slug is:
+
+```text
+/store/anhe
+```
+
+Legacy examples redirect when the tenant has a slug:
+
+```text
+/book?tenant=demo-tenant        -> /store/anhe
+/member-login?tenant=demo-tenant -> /store/anhe/login
+/member?tenant=demo-tenant      -> /store/anhe/member
+/points?tenant=demo-tenant      -> /store/anhe/points
+/history?tenant=demo-tenant     -> /store/anhe/history
+```
+
+Slug-scoped customer APIs resolve tenant from the URL and must not trust a tenant supplied in the request body.

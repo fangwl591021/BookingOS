@@ -122,7 +122,7 @@ Purpose:
 
 Current behavior:
 
-- Public booking page is available by tenant URL.
+- Public booking page is available by store slug URL; tenant query URLs are legacy redirects.
 - Guest booking can create or find a tenant customer by phone.
 - If a valid customer session exists for the same tenant, booking should attach to that session customer.
 
@@ -137,13 +137,13 @@ Important rule:
 Canonical pattern:
 
 ```text
-/book?tenant=<tenant_id>
+/store/{slug}
 ```
 
 Example:
 
 ```text
-/book?tenant=demo-tenant
+/store/anhe
 ```
 
 Expected behavior:
@@ -158,7 +158,7 @@ Expected behavior:
 Canonical pattern:
 
 ```text
-/member-login?tenant=<tenant_id>&next=<customer_page>
+/store/{slug}/login?next=<customer_page>
 ```
 
 Expected behavior:

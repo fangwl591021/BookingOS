@@ -1,5 +1,6 @@
 const baseUrl = (process.env.BOOKINGOS_BASE_URL || "https://bookingos.fangwl591021.workers.dev").replace(/\/+$/, "");
 const tenant = process.env.BOOKINGOS_TENANT || "demo-tenant";
+const slug = process.env.BOOKINGOS_STORE_SLUG || "anhe";
 
 const checks = [];
 
@@ -35,19 +36,56 @@ addCheck("wrong api method returns 405", async () => {
   assert(res.headers.get("allow") === "GET", "expected Allow: GET");
 });
 
-addCheck("public booking page loads", async () => {
-  const res = await request(`/book?tenant=${encodeURIComponent(tenant)}`);
+addCheck("store booking page loads", async () => {
+  const res = await request(`/store/${slug}`);
+  assert(res.status === 200, `expected 200, got ${res.status}`);
+  const text = await res.text();
+  assert(text.includes("BookingOS Book"), "booking page marker missing");
+  assert(!text.includes("Merchant Console"), "store booking must not show merchant login");
+});
+
+addCheck("store /book alias loads", async () => {
+  const res = await request(`/store/${slug}/book`);
   assert(res.status === 200, `expected 200, got ${res.status}`);
   const text = await res.text();
   assert(text.includes("BookingOS Book"), "booking page marker missing");
 });
 
-addCheck("member page redirects to member login", async () => {
-  const res = await request(`/member?tenant=${encodeURIComponent(tenant)}`);
+addCheck("legacy tenant booking redirects to store slug", async () => {
+  const res = await request(`/book?tenant=${encodeURIComponent(tenant)}`);
   assert(res.status === 302, `expected 302, got ${res.status}`);
   const location = res.headers.get("location") || "";
-  assert(location.includes("/member-login"), `expected member-login redirect, got ${location}`);
+  assert(location.endsWith(`/store/${slug}`), `expected /store/${slug}, got ${location}`);
+});
+
+addCheck("store member page redirects to store login", async () => {
+  const res = await request(`/store/${slug}/member`);
+  assert(res.status === 302, `expected 302, got ${res.status}`);
+  const location = res.headers.get("location") || "";
+  assert(location.includes(`/store/${slug}/login`), `expected store login redirect, got ${location}`);
   assert(!location.includes("/merchant-login"), `must not redirect to merchant-login: ${location}`);
+});
+
+addCheck("legacy member routes redirect to store slug", async () => {
+  const cases = [
+    [`/member-login?tenant=${encodeURIComponent(tenant)}`, `/store/${slug}/login`],
+    [`/member?tenant=${encodeURIComponent(tenant)}`, `/store/${slug}/member`],
+    [`/points?tenant=${encodeURIComponent(tenant)}`, `/store/${slug}/points`],
+    [`/history?tenant=${encodeURIComponent(tenant)}`, `/store/${slug}/history`]
+  ];
+  for (const [path, expected] of cases) {
+    const res = await request(path);
+    assert(res.status === 302, `expected 302 for ${path}, got ${res.status}`);
+    const location = res.headers.get("location") || "";
+    assert(location.includes(expected), `expected ${expected}, got ${location}`);
+  }
+});
+
+addCheck("unknown store slug returns STORE_NOT_FOUND", async () => {
+  const res = await request("/store/not-exist-store");
+  assert(res.status === 404, `expected 404, got ${res.status}`);
+  const data = await res.json();
+  assert(data?.error?.code === "STORE_NOT_FOUND", "missing STORE_NOT_FOUND");
 });
 
 addCheck("merchant login ignores customer intent parameters", async () => {
@@ -63,13 +101,6 @@ addCheck("merchant login ignores customer intent parameters", async () => {
     assert(text.includes("Merchant Console"), `merchant marker missing for ${path}`);
     assert(!text.includes("會員登入"), `customer login marker leaked into merchant login for ${path}`);
   }
-});
-
-addCheck("merchant login remains available", async () => {
-  const res = await request(`/merchant-login?tenant=${encodeURIComponent(tenant)}&next=%2Fmerchant`);
-  assert(res.status === 200, `expected 200, got ${res.status}`);
-  const text = await res.text();
-  assert(text.includes("Merchant Console"), "merchant login marker missing");
 });
 
 addCheck("availability endpoint remains public", async () => {
@@ -93,6 +124,7 @@ addCheck("customer profile requires customer session", async () => {
     assert(data?.error?.message === "請先登入會員", `unexpected message for ${path}: ${data?.error?.message}`);
   }
 });
+
 let failed = 0;
 for (const check of checks) {
   try {

@@ -1,4 +1,4 @@
-﻿# BookingOS
+# BookingOS
 
 BookingOS 是 Cloudflare Workers + D1 的預約 SaaS 原型。
 
@@ -60,3 +60,25 @@ Task 010 moves merchant LIFF login to verified LINE token -> IdentityAuth -> ten
 Task 011 adds Customer LIFF identity login and a signed customer session cookie. Customer profile, points and history now use `tenant_id + customer_id` from the verified session. Public guest booking remains supported.
 
 Required production secret: `CUSTOMER_SESSION_SECRET`. See `docs/CUSTOMER_IDENTITY_SESSION.md`.
+## Store Slug URLs
+
+Task 012 adds tenant-owned public store URLs.
+
+Canonical customer entry:
+
+```text
+/store/{slug}
+/store/{slug}/book
+/store/{slug}/login
+/store/{slug}/member
+/store/{slug}/points
+/store/{slug}/history
+```
+
+Demo tenant:
+
+```text
+/store/anhe
+```
+
+Legacy tenant query URLs such as `/book?tenant=demo-tenant` and `/member-login?tenant=demo-tenant` are retained only as redirects to the slug URL when the tenant has a slug. New customer-facing links should use `/store/{slug}`.

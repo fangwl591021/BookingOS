@@ -64,12 +64,12 @@ Tasks:
 3. Ensure `/member`, `/points`, `/history`, and customer tab URLs always require customer session only.
 4. Ensure unauthenticated customer member access redirects only to `/member-login`.
 5. Ensure unauthenticated merchant access redirects only to `/merchant-login`.
-6. Keep `/book?tenant=...` public.
+6. Use `/store/{slug}` as the public customer URL; keep `/book?tenant=...` only as a redirect when a slug exists.
 7. Keep `/merchant-login` and merchant LINE login unchanged unless tests require a small fix.
 
 Acceptance:
 
-- `/book?tenant=demo-tenant` shows booking page.
+- `/book?tenant=demo-tenant` redirects to `/store/anhe`.
 - Member tab without customer session goes to `/member-login`, not `/merchant-login`.
 - Points tab without customer session goes to `/member-login`, not `/merchant-login`.
 - History tab without customer session goes to `/member-login`, not `/merchant-login`.
