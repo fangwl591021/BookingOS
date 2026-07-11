@@ -1,4 +1,4 @@
-# BookingOS Plan and Trial Enforcement
+﻿# BookingOS Plan and Trial Enforcement
 
 Task 015 defines the first production-grade rule set for tenant plan, trial, contract, grace and suspended states.
 
@@ -33,6 +33,14 @@ All date math uses the Asia/Taipei calendar day. Contract end dates are valid th
 | team | 8 | NT$12,000 |
 
 `staff_limit` is derived from the billing plan and enforced on the backend. Enabled staff are counted. Downgrades never delete or disable existing staff automatically; if a tenant is over the new limit, staff creation/reactivation is blocked until the tenant disables staff or upgrades.
+
+Downgrade handling is conservative:
+
+- Existing staff records remain enabled so historical bookings, payroll review and CRM context are not destroyed.
+- Only the first `staff_limit` enabled staff, ordered by `sort_order, name`, are eligible for new customer bookings and system auto-assignment.
+- Staff beyond the limit become plan-limited: they remain visible in backend data, but are excluded from public availability and booking creation.
+- Existing future bookings assigned to plan-limited staff are not cancelled or moved automatically.
+- Plan change APIs return `planImpact.limitedStaff` and `planImpact.affectedFutureBookings` so platform/admin operators can review and manually reassign, upgrade, or contact customers.
 
 ## Trial Rules
 

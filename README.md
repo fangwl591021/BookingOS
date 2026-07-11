@@ -1,4 +1,4 @@
-# BookingOS
+﻿# BookingOS
 
 BookingOS 是 Cloudflare Workers + D1 的預約 SaaS 原型。
 
@@ -87,7 +87,7 @@ Legacy tenant query URLs such as `/book?tenant=demo-tenant` and `/member-login?t
 
 Task 015 centralizes tenant business access in `evaluateTenantAccess(tenant, now)`. Plans define staff limits, trial accounts run for 60 days, active contracts receive a 7-day grace period after expiry, and expired/grace tenants become readonly with new bookings disabled.
 
-Public availability and booking creation return `TENANT_BOOKING_DISABLED` when a tenant cannot accept bookings. Staff limits are enforced on save without automatically deleting or disabling existing staff during downgrades.
+Public availability and booking creation return `TENANT_BOOKING_DISABLED` when a tenant cannot accept bookings. Staff limits are enforced on save without automatically deleting or disabling existing staff during downgrades. If a downgrade leaves the tenant over the staff limit, plan-limited staff are excluded from new public bookings and system assignment, while existing future bookings are reported through `planImpact` for manual handling.
 
 See `docs/PLAN_AND_TRIAL_ENFORCEMENT.md`.
 Task 015C closes out the first legacy tenant billing audit. `demo-tenant` is recorded as the active platform demo store for 2026-07-11 through 2027-07-10. `sunny-hair` remains a trial tenant through 2026-09-09 under the 60-day rule. Two legacy trial tenants still require Tony-approved slugs before public store URLs are assigned.
