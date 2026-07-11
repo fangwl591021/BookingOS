@@ -1,3 +1,20 @@
+## 2026-07-11 - Task 015D Staff Plan Selection
+
+### Added
+
+- Added `staff_members.plan_booking_status` through migration `0016_staff_plan_booking_status.sql`.
+- Added merchant API `POST /api/merchant/staff/plan-selection` for explicit post-downgrade staff selection.
+
+### Changed
+
+- Plan downgrade no longer uses `sort_order` or name to decide which staff can accept new bookings.
+- Public availability, booking creation, and system assignment now only use staff marked `active` for plan booking status.
+- When staff selection is required, new booking APIs return 409 `STAFF_PLAN_SELECTION_REQUIRED` until the merchant selects eligible staff.
+
+### Safety
+
+- Existing staff, customers, bookings, payroll context, and future bookings are not deleted, disabled, cancelled, or reassigned automatically.
+- Future bookings assigned to `plan_limited` staff are reported with masked customer phone numbers for manual handling.
 ## 2026-07-10 - Task 006 D1 Migration History Reconcile
 
 ### Added

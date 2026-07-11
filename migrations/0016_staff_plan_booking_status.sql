@@ -1,0 +1,2 @@
+ALTER TABLE staff_members ADD COLUMN plan_booking_status TEXT NOT NULL DEFAULT 'active';
+CREATE INDEX IF NOT EXISTS idx_staff_members_plan_booking_status ON staff_members(tenant_id, enabled, plan_booking_status);

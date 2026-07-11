@@ -1,4 +1,4 @@
-﻿# BookingOS Plan and Trial Enforcement
+# BookingOS Plan and Trial Enforcement
 
 Task 015 defines the first production-grade rule set for tenant plan, trial, contract, grace and suspended states.
 
@@ -32,15 +32,17 @@ All date math uses the Asia/Taipei calendar day. Contract end dates are valid th
 | growth | 4 | NT$8,000 |
 | team | 8 | NT$12,000 |
 
-`staff_limit` is derived from the billing plan and enforced on the backend. Enabled staff are counted. Downgrades never delete or disable existing staff automatically; if a tenant is over the new limit, staff creation/reactivation is blocked until the tenant disables staff or upgrades.
+`staff_limit` is derived from the billing plan and enforced on the backend. Enabled staff are counted separately from staff who are allowed to accept new bookings. Downgrades never delete, disable, cancel or reassign existing staff or bookings automatically; if a tenant is over the new limit, staff creation/reactivation is blocked and the tenant must explicitly choose which staff can keep accepting new bookings.
 
 Downgrade handling is conservative:
 
 - Existing staff records remain enabled so historical bookings, payroll review and CRM context are not destroyed.
-- Only the first `staff_limit` enabled staff, ordered by `sort_order, name`, are eligible for new customer bookings and system auto-assignment.
-- Staff beyond the limit become plan-limited: they remain visible in backend data, but are excluded from public availability and booking creation.
-- Existing future bookings assigned to plan-limited staff are not cancelled or moved automatically.
-- Plan change APIs return `planImpact.limitedStaff` and `planImpact.affectedFutureBookings` so platform/admin operators can review and manually reassign, upgrade, or contact customers.
+- Staff eligibility for new bookings is controlled by `staff_members.plan_booking_status`, not by `sort_order`, name or automatic slicing.
+- When enabled staff exceed `staff_limit` and active booking staff also exceed the limit, `staffSelectionRequired = true`.
+- While selection is required, `/api/availability` and `/api/bookings` return 409 `STAFF_PLAN_SELECTION_REQUIRED`; merchant data remains viewable.
+- The merchant/platform must submit `/api/merchant/staff/plan-selection` to choose up to `staff_limit` enabled staff as `active`; unselected enabled staff become `plan_limited`.
+- `plan_limited` staff remain visible in backend data and keep historical/future assigned bookings, but are excluded from public availability, manual booking creation and system auto-assignment.
+- Existing future bookings assigned to `plan_limited` staff are not cancelled or moved automatically. Plan change and selection APIs return `planImpact.limitedStaff` and masked `planImpact.affectedFutureBookings` for manual handling.
 
 ## Trial Rules
 
@@ -87,6 +89,7 @@ Public booking pages can still show basic store information when booking is disa
 
 - `/api/availability` returns 403 with `TENANT_BOOKING_DISABLED` when `canAcceptBookings` is false.
 - `/api/bookings` returns 403 with `TENANT_BOOKING_DISABLED` when `canAcceptBookings` is false.
+- `/api/availability` and `/api/bookings` return 409 `STAFF_PLAN_SELECTION_REQUIRED` when a downgrade requires explicit staff selection.
 - Merchant write routes require the relevant capability before saving settings, resources, services or staff.
 - `saveStaffMembers` rejects requests above the effective staff limit with `STAFF_LIMIT_REACHED`.
 
