@@ -1,3 +1,18 @@
+## 2026-07-11 - Task 016 Supplement Staff Selection Onboarding
+
+### Changed
+
+- Merchant onboarding now treats required staff plan selection as incomplete and blocks go-live completion.
+- Added setup checklist item `方案人員接單狀態已確認`.
+- Onboarding test bookings and formal booking enablement are blocked while staff selection is required.
+- Onboarding test bookings now only use staff with `plan_booking_status = active`.
+- Merchant and platform pages show plan-limited staff as a valid retained state, not as data corruption.
+- Platform tenant checks now expose over-limit status, pending staff selection, plan-limited staff count, and affected future booking count.
+
+### Safety
+
+- Existing `plan_limited` staff are not automatically changed back to active.
+- Existing bookings remain retained for manual handling.
 ## 2026-07-11 - Task 015D Staff Plan Selection
 
 ### Added
