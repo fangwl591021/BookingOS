@@ -103,3 +103,37 @@ Proceed with one store at a time:
 4. Repeat for 王師傅整人大師.
 
 Do not enable formal booking for stores with zero services.
+
+## Task 016C Update - Store Acceptance
+
+Date: 2026-07-11
+
+米樂按摩 and 王師傅整人大師 were configured in production D1 with minimum viable booking data. No Worker deploy, schema migration, identity change, login change, plan change, or booking engine change was performed.
+
+### Store Setup Result
+
+| Store | Tenant | Services | Staff | Resources | Business Hours | Staff Plan Selection | Ready For Booking |
+|---|---|---:|---:|---:|---|---|---|
+| 米樂按摩 | trial-mrd14uce | 3 | 1 active | 1 按摩床 | Mon-Sat 10:00-20:00, break 13:00-14:00, Sun closed | Not required | yes |
+| 王師傅整人大師 | trial-mrdj8djy | 3 | 1 active | 1 整復床 | Mon-Sat 09:00-19:00, break 12:00-13:00, Sun closed | Not required | yes |
+
+### Acceptance Result
+
+| Check | Result |
+|---|---|
+| /store/mile-massage | 200, correct store, no fallback |
+| /store/wang-master | 200, correct store, no fallback |
+| 米樂 Availability | 200, returns 米樂師傅 and mile-massage resources |
+| 王師傅 Availability | 200, returns 王師傅 and wang-master resources |
+| 米樂 guest booking | PASS during acceptance |
+| 米樂 member registration/login/booking | PASS during acceptance |
+| 王師傅 guest booking | PASS during acceptance |
+| 王師傅 member registration/login/booking | PASS during acceptance |
+| Same phone cross-store isolation | PASS, returns CUSTOMER_NOT_REGISTERED before store-specific registration |
+| Customer history isolation | PASS, each member saw only its own tenant booking |
+| Staff plan limits | PASS, enabled staff <= staff_limit, plan_limited = 0 |
+| Smoke test | PASS, 12/12 |
+
+Test bookings and test customers were removed after acceptance to avoid production statistics and points pollution. Store setup data was retained.
+
+Current action: both 米樂按摩 and 王師傅整人大師 are configured for continued live trial testing.
