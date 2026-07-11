@@ -82,3 +82,11 @@ Demo tenant:
 ```
 
 Legacy tenant query URLs such as `/book?tenant=demo-tenant` and `/member-login?tenant=demo-tenant` are retained only as redirects to the slug URL when the tenant has a slug. New customer-facing links should use `/store/{slug}`.
+
+## Plan and Trial Enforcement
+
+Task 015 centralizes tenant business access in `evaluateTenantAccess(tenant, now)`. Plans define staff limits, trial accounts run for 14 days, active contracts receive a 7-day grace period after expiry, and expired/grace tenants become readonly with new bookings disabled.
+
+Public availability and booking creation return `TENANT_BOOKING_DISABLED` when a tenant cannot accept bookings. Staff limits are enforced on save without automatically deleting or disabling existing staff during downgrades.
+
+See `docs/PLAN_AND_TRIAL_ENFORCEMENT.md`.
