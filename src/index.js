@@ -409,6 +409,21 @@ export default {
       if (request.method === "GET") return Response.json({ ok: true, resourceTypes: (await dashboardData(env, todayInTaipei(), activeTenantId)).resourceTypes }, { headers: jsonHeaders });
       if (request.method === "POST") return saveResourceTypes(request, env, activeTenantId);
     }
+    if (url.pathname === "/api/merchant/onboarding") {
+      return merchantOnboardingResponse(request, env, activeTenantId);
+    }
+    if (url.pathname === "/api/merchant/onboarding/apply-template" && request.method === "POST") {
+      return applyOnboardingTemplate(request, env, activeTenantId);
+    }
+    if (url.pathname === "/api/merchant/onboarding/test-booking" && request.method === "POST") {
+      return createOnboardingTestBooking(request, env, activeTenantId);
+    }
+    if (url.pathname === "/api/merchant/onboarding/enable-booking" && request.method === "POST") {
+      return setTenantBookingEnabled(request, env, activeTenantId, true);
+    }
+    if (url.pathname === "/api/merchant/onboarding/disable-booking" && request.method === "POST") {
+      return setTenantBookingEnabled(request, env, activeTenantId, false);
+    }
 
     if (url.pathname === "/api/customers/export") {
       return exportCustomerWorkbook(request, env, activeTenantId);
@@ -490,7 +505,9 @@ export default {
     }
 
     if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/merchant") {
-      return html(renderMerchantPage(await dashboardData(env, todayInTaipei(), activeTenantId), await loadCustomers(env, activeTenantId)));
+      const merchantData = await dashboardData(env, todayInTaipei(), activeTenantId);
+      merchantData.onboardingSetup = await evaluateTenantSetup(env, activeTenantId);
+      return html(renderMerchantPage(merchantData, await loadCustomers(env, activeTenantId)));
     }
 
     return Response.json({ ok: false, error: "Not found" }, { status: 404, headers: jsonHeaders });
@@ -655,6 +672,11 @@ function apiRouteMethods(pathname) {
     "/api/services": ["GET", "POST"],
     "/api/staff": ["GET", "POST"],
     "/api/resources": ["GET", "POST"],
+    "/api/merchant/onboarding": ["GET"],
+    "/api/merchant/onboarding/apply-template": ["POST"],
+    "/api/merchant/onboarding/test-booking": ["POST"],
+    "/api/merchant/onboarding/enable-booking": ["POST"],
+    "/api/merchant/onboarding/disable-booking": ["POST"],
     "/api/customers/export": ["GET"],
     "/api/customers": ["GET"],
     "/api/customer-profile": ["GET"],
@@ -758,7 +780,7 @@ function renderPlatformLoginPage(error = "") {
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 平台登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#06c755;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:#062216}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Platform Console</small></div></div><h1>平台總後台登入</h1><p>請輸入平台管理員帳密後進入總後台。</p>${message}<form method="post" action="/platform-login"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form></main></body></html>`;
 }
 function isMerchantProtectedPath(pathname) {
-  return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/customers" || pathname === "/api/customers/export";
+  return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/merchant/onboarding" || pathname.startsWith("/api/merchant/onboarding/") || pathname === "/api/customers" || pathname === "/api/customers/export";
 }
 
 function merchantRoutePermission(pathname, method = "GET") {
@@ -773,6 +795,8 @@ function merchantRoutePermission(pathname, method = "GET") {
   if (pathname === "/api/services") return write ? "service.write" : "tenant.read";
   if (pathname === "/api/staff") return write ? "staff.write" : "tenant.read";
   if (pathname === "/api/resources" || pathname.startsWith("/api/resources/")) return write ? "tenant.settings.write" : "tenant.read";
+  if (pathname === "/api/merchant/onboarding") return write ? "tenant.settings.write" : "tenant.read";
+  if (pathname.startsWith("/api/merchant/onboarding/")) return "tenant.settings.write";
   if (pathname === "/api/customers/export") return "crm.export";
   if (pathname === "/api/customers") return "crm.read";
   return "tenant.read";
@@ -785,6 +809,7 @@ function merchantRouteCapability(pathname, method = "GET") {
   if (!write) return TENANT_CAPABILITIES.VIEW_DASHBOARD;
   if (pathname === "/api/store") return TENANT_CAPABILITIES.MANAGE_STORE;
   if (pathname === "/api/settings" || pathname === "/api/resources" || pathname.startsWith("/api/resources/")) return TENANT_CAPABILITIES.MANAGE_SCHEDULE;
+  if (pathname.startsWith("/api/merchant/onboarding/")) return TENANT_CAPABILITIES.MANAGE_STORE;
   if (pathname === "/api/services") return TENANT_CAPABILITIES.MANAGE_SERVICES;
   if (pathname === "/api/staff") return TENANT_CAPABILITIES.MANAGE_STAFF;
   return TENANT_CAPABILITIES.VIEW_DASHBOARD;
@@ -2383,8 +2408,8 @@ function pageShell(title, body, active = "merchant", tenantId = TENANT_ID, store
   const bookingUrl = publicBookingPath;
   const nav = `${navLinks}<button class="copy-booking-url" type="button" data-booking-url="${escapeAttrValue(bookingUrl)}">複製預約網址</button>`;
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(title)}</title><style>
-    :root{--green:#0f766e;--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#14221d;--muted:#68746d;--blue:#3d6f9f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{text-decoration:none;color:inherit}button{font:inherit}.wrap{max-width:1040px;margin:0 auto;padding:18px}.hero{background:#0f4f43;color:white;border-radius:10px;padding:20px;margin-bottom:14px}.hero h1{margin:0;font-size:28px}.hero p{margin:7px 0 0;color:rgba(255,255,255,.76);line-height:1.5}.nav{display:flex;gap:8px;overflow:auto;margin-bottom:14px}.nav a,.nav button{background:white;border:1px solid var(--line);border-radius:999px;padding:10px 16px;font-weight:900;white-space:nowrap;color:var(--ink);cursor:pointer}.nav a.active{background:var(--green);border-color:var(--green);color:white}.nav button{background:#e7f1ff;border-color:#c7d9f4;color:#234f7c}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.panel{background:white;border:1px solid var(--line);border-radius:8px;padding:16px}.panel h2{margin:0 0 10px;font-size:18px}.muted{color:var(--muted);line-height:1.55}.stat{font-size:30px;font-weight:950;margin-top:6px}.table{width:100%;border-collapse:collapse;font-size:14px}.table th,.table td{border-bottom:1px solid #edf1ec;padding:10px;text-align:left;vertical-align:top}.badge{display:inline-block;border-radius:999px;background:#e7f7ee;color:#0f513f;padding:4px 9px;font-size:12px;font-weight:900}.btn{display:inline-grid;place-items:center;min-height:40px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 14px;font-weight:900}.primary{background:var(--blue);border-color:var(--blue);color:white}@media(max-width:760px){.grid{grid-template-columns:1fr}.wrap{padding:12px}.hero h1{font-size:24px}}
-  </style></head><body><main class="wrap"><section class="hero"><h1>${escapeHtmlValue(title)}</h1><p>BookingOS 店家後台</p></section><nav class="nav">${nav}</nav>${body}</main><script>document.querySelectorAll("[data-booking-url]").forEach((button)=>{button.addEventListener("click",async()=>{const url=new URL(button.dataset.bookingUrl,location.origin).href;try{await navigator.clipboard.writeText(url);}catch(error){const input=document.createElement("input");input.value=url;document.body.appendChild(input);input.select();document.execCommand("copy");input.remove();}const original=button.textContent;button.textContent="已複製";setTimeout(()=>{button.textContent=original;},1400);});});</script></body></html>`;
+    :root{--green:#0f766e;--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#14221d;--muted:#68746d;--blue:#3d6f9f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{text-decoration:none;color:inherit}button{font:inherit}.wrap{max-width:1040px;margin:0 auto;padding:18px}.hero{background:#0f4f43;color:white;border-radius:10px;padding:20px;margin-bottom:14px}.hero h1{margin:0;font-size:28px}.hero p{margin:7px 0 0;color:rgba(255,255,255,.76);line-height:1.5}.nav{display:flex;gap:8px;overflow:auto;margin-bottom:14px}.nav a,.nav button{background:white;border:1px solid var(--line);border-radius:999px;padding:10px 16px;font-weight:900;white-space:nowrap;color:var(--ink);cursor:pointer}.nav a.active{background:var(--green);border-color:var(--green);color:white}.nav button{background:#e7f1ff;border-color:#c7d9f4;color:#234f7c}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.panel{background:white;border:1px solid var(--line);border-radius:8px;padding:16px}.panel h2{margin:0 0 10px;font-size:18px}.muted{color:var(--muted);line-height:1.55}.stat{font-size:30px;font-weight:950;margin-top:6px}.table{width:100%;border-collapse:collapse;font-size:14px}.table th,.table td{border-bottom:1px solid #edf1ec;padding:10px;text-align:left;vertical-align:top}.badge{display:inline-block;border-radius:999px;background:#e7f7ee;color:#0f513f;padding:4px 9px;font-size:12px;font-weight:900}.badge.yellow{background:#fff4cf;color:#755100}.btn{display:inline-grid;place-items:center;min-height:40px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 14px;font-weight:900}.primary{background:var(--blue);border-color:var(--blue);color:white}.onboard-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.progress{height:8px;background:#edf1ec;border-radius:999px;overflow:hidden;margin:10px 0 14px}.progress i{display:block;height:100%;background:var(--green)}.onboard-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.onboard-check{border:1px solid var(--line);border-radius:8px;padding:9px;background:#fffdf7}.onboard-check.ok{background:#f0faf4}.onboard-check b{display:block;font-size:12px;color:#0f513f}.onboard-check span{display:block;font-weight:900;margin-top:2px}.onboard-check small{display:block;color:var(--muted);margin-top:4px;line-height:1.35}.onboard-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}@media(max-width:760px){.onboard-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.grid{grid-template-columns:1fr}.wrap{padding:12px}.hero h1{font-size:24px}}
+  </style></head><body><main class="wrap"><section class="hero"><h1>${escapeHtmlValue(title)}</h1><p>BookingOS 店家後台</p></section><nav class="nav">${nav}</nav>${body}</main><script>document.querySelectorAll("[data-booking-url]").forEach((button)=>{button.addEventListener("click",async()=>{const url=new URL(button.dataset.bookingUrl,location.origin).href;try{await navigator.clipboard.writeText(url);}catch(error){const input=document.createElement("input");input.value=url;document.body.appendChild(input);input.select();document.execCommand("copy");input.remove();}const original=button.textContent;button.textContent="已複製";setTimeout(()=>{button.textContent=original;},1400);});});document.querySelectorAll("[data-test-booking]").forEach((button)=>button.addEventListener("click",async()=>{const status=document.querySelector("#onboarding-status"); if(status) status.textContent="建立測試預約中..."; const res=await fetch("/api/merchant/onboarding/test-booking",{method:"POST"}); const data=await res.json(); if(status) status.textContent=data.ok?"測試預約已建立，請重新整理查看完成度。":"測試失敗："+((data.error&&data.error.message)||data.error||"請補齊設定");}));document.querySelectorAll("[data-open-booking]").forEach((button)=>button.addEventListener("click",async()=>{const status=document.querySelector("#onboarding-status"); if(status) status.textContent="檢查並開放預約中..."; const res=await fetch("/api/merchant/onboarding/enable-booking",{method:"POST"}); const data=await res.json(); if(status) status.textContent=data.ok?"已開放正式預約。":"尚不能開放："+((data.error&&data.error.message)||data.error||"請補齊設定");}));document.querySelectorAll("[data-copy-onboarding-url]").forEach((button)=>button.addEventListener("click",async()=>{const url=new URL(button.dataset.copyOnboardingUrl,location.origin).href;try{await navigator.clipboard.writeText(url);}catch(error){const input=document.createElement("input");input.value=url;document.body.appendChild(input);input.select();document.execCommand("copy");input.remove();}button.textContent="已複製公開網址";}));</script></body></html>`;
 }
 
 
@@ -2400,12 +2425,21 @@ function customerMemberShell(title, body, active = "member", tenantId = TENANT_I
   </style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="logo">B</div><div><div class="product">BookingOS Book</div><div class="version">&#23458;&#25142;&#26371;&#21729;&#31471;</div></div></div><h1>${escapeHtmlValue(title)}</h1></section><div class="content">${body}</div></main><nav class="bottom-nav">${nav}</nav></body></html>`;
 }
 
+function renderOnboardingPanel(setup = null, tenantId = TENANT_ID) {
+  if (!setup) return "";
+  const checks = Object.entries(setup.checks || {}).map(([key, item]) => `<div class="onboard-check ${item.ok ? "ok" : "miss"}"><b>${item.ok ? "完成" : "待補"}</b><span>${escapeHtmlValue(item.label)}</span><small>${escapeHtmlValue(item.action || "")}</small></div>`).join("");
+  const missing = (setup.missingActions || []).map((item) => item.label).join("、") || "已完成";
+  const publicPath = setup.publicPath || `/book?tenant=${encodeURIComponent(tenantId)}`;
+  const canOpen = setup.goLiveComplete && setup.bookingEnabled;
+  return `<section class="panel onboard"><div class="onboard-head"><div><h2>歡迎使用預約服務通</h2><p class="muted">上線準備 ${setup.completed}/${setup.total}，完成度 ${setup.percentage}%</p></div><span class="badge ${canOpen ? "" : "yellow"}">${canOpen ? "已開放預約" : "尚未正式開放"}</span></div><div class="progress"><i style="width:${Math.max(0, Math.min(100, Number(setup.percentage || 0)))}%"></i></div><div class="onboard-grid">${checks}</div><p class="muted">待處理：${escapeHtmlValue(missing)}</p><div class="onboard-actions"><a class="btn primary" href="/settings?tenant=${encodeURIComponent(tenantId)}">前往設定</a><button class="btn" type="button" data-open-booking="1">開放正式預約</button><button class="btn" type="button" data-test-booking="1">建立測試預約</button><button class="btn" type="button" data-copy-onboarding-url="${escapeAttrValue(publicPath)}">複製公開網址</button><a class="btn" href="${escapeAttrValue(publicPath)}" target="_blank">預覽客戶端</a></div><p class="muted" id="onboarding-status"></p></section>`;
+}
 function renderMerchantPage(data = { store, bookings, services, staffMembers, resourceTypes }, customers = []) {
   const bookingRows = (data.bookings || []).slice(0, 8).map((booking) => `<tr><td>${escapeHtmlValue(booking.start || "-")}</td><td>${escapeHtmlValue(booking.customer || "-")}</td><td>${escapeHtmlValue(booking.service || "-")}</td><td>${escapeHtmlValue(booking.staffName || booking.staffId || "-")}</td><td><span class="badge">${escapeHtmlValue(booking.status || "-")}</span></td></tr>`).join("");
   const access = data.store?.access || data.store?.tenantAccess || evaluateTenantAccess(data.store || {});
   const plan = planById(data.store?.billingPlanId || data.store?.billing_plan_id || "solo");
   const statusNotice = `<section class="panel" style="margin-bottom:12px"><h2>方案與權限</h2><p class="muted">${escapeHtmlValue(tenantStatusLabel(access, data.store || {}))}｜${escapeHtmlValue(plan.name)}｜啟用人員 ${escapeHtmlValue(tenantStaffUsageText(access, data.store || {}))}</p>${!access.canAcceptBookings ? `<p class="muted">${escapeHtmlValue(tenantAccessMessage(access))}</p>` : ""}${access.overLimit ? `<p class="muted">服務人員已超過方案上限，請停用人員或升級方案後再新增。</p>` : ""}${access.isTrial ? `<p style="margin-top:10px"><a class="btn primary" href="/apply">申請正式使用</a></p>` : ""}</section>`;
-  const body = `${statusNotice}<section class="grid"><div class="panel"><h2>今日預約</h2><div class="stat">${(data.bookings || []).length}</div><p class="muted">目前載入的預約筆數</p></div><div class="panel"><h2>會員</h2><div class="stat">${customers.length}</div><p class="muted">CRM 客戶資料</p><p style="margin-top:10px"><a class="btn" href="/api/customers/export?tenant=${encodeURIComponent(data.store?.tenantId || TENANT_ID)}">下載名單</a></p></div><div class="panel"><h2>服務項目</h2><div class="stat">${(data.services || []).length}</div><p class="muted">店家可預約服務</p></div></section><section class="panel" style="margin-top:12px"><h2>預約列表</h2><table class="table"><thead><tr><th>時間</th><th>客戶</th><th>服務</th><th>人員</th><th>狀態</th></tr></thead><tbody>${bookingRows || `<tr><td colspan="5">目前沒有預約資料</td></tr>`}</tbody></table></section>${data.dataError ? `<section class="panel" style="margin-top:12px"><h2>資料提醒</h2><p class="muted">${escapeHtmlValue(data.dataError)}</p></section>` : ""}`;
+  const onboardingPanel = renderOnboardingPanel(data.onboardingSetup, data.store?.tenantId || TENANT_ID);
+  const body = `${onboardingPanel}${statusNotice}<section class="grid"><div class="panel"><h2>今日預約</h2><div class="stat">${(data.bookings || []).length}</div><p class="muted">目前載入的預約筆數</p></div><div class="panel"><h2>會員</h2><div class="stat">${customers.length}</div><p class="muted">CRM 客戶資料</p><p style="margin-top:10px"><a class="btn" href="/api/customers/export?tenant=${encodeURIComponent(data.store?.tenantId || TENANT_ID)}">下載名單</a></p></div><div class="panel"><h2>服務項目</h2><div class="stat">${(data.services || []).length}</div><p class="muted">店家可預約服務</p></div></section><section class="panel" style="margin-top:12px"><h2>預約列表</h2><table class="table"><thead><tr><th>時間</th><th>客戶</th><th>服務</th><th>人員</th><th>狀態</th></tr></thead><tbody>${bookingRows || `<tr><td colspan="5">目前沒有預約資料</td></tr>`}</tbody></table></section>${data.dataError ? `<section class="panel" style="margin-top:12px"><h2>資料提醒</h2><p class="muted">${escapeHtmlValue(data.dataError)}</p></section>` : ""}`;
   return pageShell(data.store?.name || store.name, body, "merchant", data.store?.tenantId || TENANT_ID, data.store?.slug || "");
 }
 
@@ -2434,10 +2468,10 @@ function renderCustomerPage(data = { store, services, businessHours, staffMember
   const pageServices = Array.isArray(data.services) ? data.services : [];
   const pageStaff = Array.isArray(data.staffMembers) ? data.staffMembers : [];
   const pageAccess = data.store?.access || evaluateTenantAccess(data.store || {});
-  if (!pageAccess.canAcceptBookings || !pageServices.length || !pageStaff.length) {
+  if (!pageAccess.canAcceptBookings || data.store?.bookingEnabled === false || !pageServices.length || !pageStaff.length) {
     const st = compactInlineStore(data.store || store);
     const logo = st.logoUrl ? `<img src="${escapeAttrValue(st.logoUrl)}" alt="Logo">` : "B";
-    return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${escapeHtmlValue(st.name || "BookingOS")} 預約</title><style>:root{--bg:#eef2ed;--surface:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--brand:#0f463e;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:86px}.hero{background:var(--brand);color:white;padding:18px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;gap:10px}.logo{width:40px;height:40px;border-radius:8px;background:white;color:var(--brand);display:grid;place-items:center;font-weight:950;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}h1{font-size:25px;margin:12px 0 4px}.meta{color:rgba(255,255,255,.78);line-height:1.5}.content{padding:14px}.panel{background:white;border:1px solid var(--line);border-radius:8px;padding:18px;line-height:1.65}.panel h2{font-size:22px;margin:0 0 8px}.panel p{margin:0;color:var(--muted)}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand)}</style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="logo">${logo}</div><div><b>BookingOS Book</b><div class="meta">客戶預約端</div></div></div><h1>${escapeHtmlValue(st.name || "BookingOS")}</h1><div class="meta">${escapeHtmlValue(st.address || "")}<br>${escapeHtmlValue(st.phone || "")}</div></section><div class="content"><section class="panel"><h2>${!pageAccess.canAcceptBookings ? "目前暫停接受新預約" : "店家尚未完成預約設定"}</h2><p>${!pageAccess.canAcceptBookings ? escapeHtmlValue(tenantAccessMessage(pageAccess)) : "服務項目與服務人員設定完成後，客戶就可以在這裡預約。"}</p></section></div></main><nav class="bottom-nav"><a class="nav-item active" href="${escapeAttrValue(publicBookHref)}">預約</a><a class="nav-item" href="${escapeAttrValue(memberHref)}">會員</a><a class="nav-item" href="${escapeAttrValue(pointsHref)}">點數</a><a class="nav-item" href="${escapeAttrValue(historyHref)}">紀錄</a></nav></body></html>`;
+    return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${escapeHtmlValue(st.name || "BookingOS")} 預約</title><style>:root{--bg:#eef2ed;--surface:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--brand:#0f463e;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:86px}.hero{background:var(--brand);color:white;padding:18px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;gap:10px}.logo{width:40px;height:40px;border-radius:8px;background:white;color:var(--brand);display:grid;place-items:center;font-weight:950;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}h1{font-size:25px;margin:12px 0 4px}.meta{color:rgba(255,255,255,.78);line-height:1.5}.content{padding:14px}.panel{background:white;border:1px solid var(--line);border-radius:8px;padding:18px;line-height:1.65}.panel h2{font-size:22px;margin:0 0 8px}.panel p{margin:0;color:var(--muted)}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand)}</style></head><body><main class="page"><section class="hero"><div class="topbar"><div class="logo">${logo}</div><div><b>BookingOS Book</b><div class="meta">客戶預約端</div></div></div><h1>${escapeHtmlValue(st.name || "BookingOS")}</h1><div class="meta">${escapeHtmlValue(st.address || "")}<br>${escapeHtmlValue(st.phone || "")}</div></section><div class="content"><section class="panel"><h2>${!pageAccess.canAcceptBookings ? "目前暫停接受新預約" : data.store?.bookingEnabled === false ? "尚未開放正式預約" : "店家尚未完成預約設定"}</h2><p>${!pageAccess.canAcceptBookings ? escapeHtmlValue(tenantAccessMessage(pageAccess)) : data.store?.bookingEnabled === false ? "店家完成上線檢查後，會在這裡開放客戶預約。" : "服務項目與服務人員設定完成後，客戶就可以在這裡預約。"}</p></section></div></main><nav class="bottom-nav"><a class="nav-item active" href="${escapeAttrValue(publicBookHref)}">預約</a><a class="nav-item" href="${escapeAttrValue(memberHref)}">會員</a><a class="nav-item" href="${escapeAttrValue(pointsHref)}">點數</a><a class="nav-item" href="${escapeAttrValue(historyHref)}">紀錄</a></nav></body></html>`;
   }
 const payload = JSON.stringify({ tenantId, store: compactInlineStore(data.store || store), services: pageServices, staffMembers: pageStaff, today: todayInTaipei() }).replace(/</g, "\\u003c");  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>BookingOS Book</title><style>
   :root{--bg:#eef2ed;--surface:#fff;--soft:#f8faf6;--ink:#202124;--muted:#667067;--line:#dfe5dd;--brand:#176b5b;--brand2:#0f463e;--amber-soft:#f4e6db;--blue:#3d6f9f;--ok:#e4f2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input,select,textarea{font:inherit}.page{width:100%;max-width:480px;min-height:100vh;margin:0 auto;background:#f7f8f4;padding-bottom:92px}.hero{background:var(--brand2);color:white;padding:18px 16px 16px;border-bottom-left-radius:8px;border-bottom-right-radius:8px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.mark{display:flex;align-items:center;gap:10px}.logo{width:38px;height:38px;border-radius:8px;background:white;color:var(--brand2);display:grid;place-items:center;font-weight:900;overflow:hidden}.logo img{width:100%;height:100%;object-fit:cover}.product{font-size:15px;font-weight:900}.version{color:rgba(255,255,255,.7);font-size:12px;margin-top:2px}.mode{white-space:nowrap;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.1);border-radius:999px;padding:7px 10px;font-size:12px;font-weight:850}h1,h2,p{margin:0}h1{font-size:25px;line-height:1.2}.store-meta{margin-top:7px;color:rgba(255,255,255,.76);font-size:13px;line-height:1.45}.content{padding:14px}section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;box-shadow:0 10px 24px rgba(32,33,36,.055)}.step-bar{display:flex;align-items:center;gap:10px;background:var(--brand2);color:white;border-radius:8px;padding:12px 13px;margin-bottom:12px}.step-bar span{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.2);border-radius:999px;padding:5px 8px;font-size:12px;font-weight:950}.step-bar strong{font-size:20px}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}input,select{width:100%;min-height:44px;border-radius:8px;border:1px solid var(--line);background:white;color:var(--ink);padding:9px 10px}.service-select{color:#1f5f9b;font-weight:900}.price-row,.staff-row{display:flex;gap:7px;overflow-x:auto;padding-top:10px;scrollbar-width:none}.choice{flex:0 0 auto;border-radius:999px;background:white;color:var(--ink);border:1px solid var(--line);min-height:36px;padding:7px 10px;font-weight:900}.choice.active{background:var(--brand);border-color:var(--brand);color:white}.price{flex:0 0 auto;border-radius:999px;background:var(--amber-soft);color:#7b3e20;padding:6px 9px;font-size:12px;font-weight:850}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.slot{min-height:42px;border-radius:8px;background:#f2faf6;border:1px solid #cddbd4;color:var(--brand2);display:grid;place-items:center;font-weight:900}.slot.active{background:var(--brand);border-color:var(--brand);color:white}.empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:8px;padding:12px;color:var(--muted);text-align:center;font-size:13px}.notice{border-radius:8px;background:var(--ok);color:var(--brand2);padding:11px;font-size:13px;font-weight:850;line-height:1.45}.pay-card{border:1px solid var(--line);border-radius:8px;background:var(--soft);padding:12px;display:grid;gap:10px}.money-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.money{border:1px solid var(--line);border-radius:8px;background:white;padding:10px}.money span{display:block;color:var(--muted);font-size:12px}.money b{display:block;margin-top:5px;font-size:18px}.submit{width:100%;min-height:52px;border:1px solid var(--blue);border-radius:8px;background:var(--blue);color:white;font-weight:950}.submit:disabled{opacity:.45}.bottom-nav{position:fixed;left:50%;bottom:0;transform:translateX(-50%);width:100%;max-width:480px;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:rgba(255,255,255,.96);border-top:1px solid var(--line);backdrop-filter:blur(14px)}.nav-item{min-height:48px;border-radius:8px;display:grid;place-items:center;color:var(--muted);font-size:12px;font-weight:900;text-decoration:none}.nav-item.active{background:var(--ok);color:var(--brand2)}@media(min-width:760px){body{padding:18px 0}.page{min-height:calc(100vh - 36px);border:1px solid var(--line);border-radius:8px;overflow:hidden}.bottom-nav{border:1px solid var(--line);border-bottom:0;border-top-left-radius:8px;border-top-right-radius:8px}}
@@ -2834,6 +2868,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN slug TEXT").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN business_type TEXT").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN logo_url TEXT").run(); } catch (error) {}
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN booking_enabled INTEGER NOT NULL DEFAULT 1").run(); } catch (error) {}
   await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_slug_unique ON tenants(slug) WHERE slug IS NOT NULL AND slug <> ''").run();
   try { await env.DB.prepare("ALTER TABLE tenant_admins ADD COLUMN identity_id TEXT").run(); } catch (error) {}
   await env.DB.prepare(`
@@ -3044,7 +3079,7 @@ async function platformData(env) {
   await ensurePlatformSchema(env);
   const monthStart = todayInTaipei().slice(0, 7) + "-01";
   const tenants = await env.DB.prepare(`
-    SELECT t.id, t.slug, t.name, t.phone, t.address, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.billing_cycle, t.annual_price, t.staff_limit, t.extra_staff_annual_price, t.created_at, t.updated_at,
+    SELECT t.id, t.slug, t.name, t.phone, t.address, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.billing_cycle, t.annual_price, t.staff_limit, t.extra_staff_annual_price, t.booking_enabled, t.created_at, t.updated_at,
       bs.open_time, bs.close_time,
       (SELECT COUNT(*) FROM customers c WHERE c.tenant_id = t.id) AS customer_count,
       (SELECT COUNT(*) FROM bookings b WHERE b.tenant_id = t.id) AS booking_count,
@@ -3093,9 +3128,10 @@ async function platformData(env) {
     ORDER BY created_at DESC
     LIMIT 50
   `).all();
-  const tenantRows = (tenants.results || []).map((tenant) => {
+  const tenantRows = await Promise.all((tenants.results || []).map(async (tenant) => {
     const access = evaluateTenantAccess(tenant);
-    const setup = tenantSetupChecklist(tenant);
+    const fullSetup = await evaluateTenantSetup(env, tenant.id);
+    const setup = { ...fullSetup, percent: fullSetup.percentage, checks: Object.values(fullSetup.checks || {}) };
     return {
       ...tenant,
       access,
@@ -3105,12 +3141,13 @@ async function platformData(env) {
       staff_limit_effective: access.staffLimit,
       active_staff_count: access.activeStaffCount,
       staff_over_limit: access.overLimit,
-      can_accept_bookings: access.canAcceptBookings,
+      can_accept_bookings: access.canAcceptBookings && fullSetup.bookingEnabled && fullSetup.readyForBooking,
+      booking_enabled: fullSetup.bookingEnabled ? 1 : 0,
       public_url_path: storePublicPathForTenant(tenant),
       setup,
       due_days: access.daysRemaining
     };
-  });
+  }));
   const sanitizedLineSettings = (lineSettings.results || []).map(sanitizeLineSetting);
   const sanitizedPlatformLineOA = sanitizeLineSetting(platformLineOA || {});
   const sanitizedContacts = (platformContacts.results || []).map(sanitizePlatformContact);
@@ -3936,7 +3973,156 @@ async function claimPlatformReferral(request, env) {
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
-}async function dashboardData(env, date, tenantId = TENANT_ID) {
+}
+async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
+  const data = await dashboardData(env, todayInTaipei(), tenantId);
+  const storeData = data.store || {};
+  const access = storeData.access || evaluateTenantAccess(storeData);
+  const serviceIds = new Set((data.services || []).map((service) => String(service.id || "")).filter(Boolean));
+  const boundStaff = (data.staffMembers || []).filter((staff) => Array.isArray(staff.serviceIds) && staff.serviceIds.some((id) => serviceIds.has(String(id))));
+  const serviceResourceIds = new Set((data.services || []).map((service) => String(service.resourceTypeId || "")).filter(Boolean));
+  const resourceIds = new Set((data.resourceTypes || []).map((resource) => String(resource.id || "")).filter(Boolean));
+  const resourcesCoverServices = serviceResourceIds.size === 0 ? (data.resourceTypes || []).length > 0 : Array.from(serviceResourceIds).every((id) => resourceIds.has(id));
+  let testBookingCount = 0;
+  if (env.DB) {
+    const testRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM bookings WHERE tenant_id = ? AND source = 'setup_test'").bind(tenantId).first();
+    testBookingCount = Number(testRow?.count || 0);
+  }
+  const rawChecks = {
+    storeProfile: Boolean(storeData.name && storeData.phone && storeData.address),
+    businessHours: Boolean(data.businessHours?.open && data.businessHours?.close),
+    services: (data.services || []).some((service) => service.name && Array.isArray(service.prices) && service.prices.length > 0),
+    staff: (data.staffMembers || []).length > 0,
+    staffServiceBinding: boundStaff.length > 0,
+    resources: resourcesCoverServices,
+    publicStore: Boolean(normalizeStoreSlug(storeData.slug || "") && access.canAcceptBookings),
+    testBooking: testBookingCount > 0
+  };
+  const labels = {
+    storeProfile: "店家資料",
+    businessHours: "營業時間",
+    services: "服務與時長價格",
+    staff: "服務人員",
+    staffServiceBinding: "人員服務綁定",
+    resources: "場地資源",
+    publicStore: "公開網址",
+    testBooking: "測試預約"
+  };
+  const actions = {
+    storeProfile: "到設定填寫店名、電話、地址與 Logo",
+    businessHours: "到設定調整營業時間",
+    services: "建立至少一個服務與時長價格",
+    staff: "建立至少一位服務人員",
+    staffServiceBinding: "勾選每位人員可服務項目",
+    resources: "建立床位、座位或服務空間數量",
+    publicStore: "確認店家 slug 與合約狀態",
+    testBooking: "按下測試預約確認流程"
+  };
+  const checks = Object.fromEntries(Object.entries(rawChecks).map(([key, ok]) => [key, { ok, label: labels[key], action: actions[key] }]));
+  const completed = Object.values(rawChecks).filter(Boolean).length;
+  const total = Object.keys(rawChecks).length;
+  const missingActions = Object.entries(checks).filter(([, item]) => !item.ok).map(([key, item]) => ({ key, label: item.label, action: item.action }));
+  const operationalReady = Object.entries(rawChecks).filter(([key]) => key !== "testBooking").every(([, ok]) => ok);
+  return {
+    completed,
+    total,
+    percentage: Math.round((completed / total) * 100),
+    readyForBooking: operationalReady,
+    goLiveComplete: completed === total,
+    bookingEnabled: storeData.bookingEnabled !== false,
+    publicPath: storePublicPathForTenant({ id: tenantId, slug: storeData.slug || "" }),
+    checks,
+    missingActions
+  };
+}
+
+async function merchantOnboardingResponse(request, env, tenantId = TENANT_ID) {
+  const setup = await evaluateTenantSetup(env, tenantId);
+  const data = await dashboardData(env, todayInTaipei(), tenantId);
+  return Response.json({ ok: true, setup, store: data.store, services: data.services, staffMembers: data.staffMembers, resourceTypes: data.resourceTypes }, { headers: jsonHeaders });
+}
+
+function onboardingWriteBlockedResponse(access = {}) {
+  return Response.json({ ok: false, error: { code: "TENANT_READ_ONLY", message: tenantAccessMessage(access) || "目前店家狀態不可修改設定" } }, { status: 403, headers: jsonHeaders });
+}
+
+async function assertOnboardingWritable(env, tenantId) {
+  const storeData = await loadStore(env, tenantId);
+  const access = storeData.access || evaluateTenantAccess(storeData);
+  return { ok: access.canMerchantLogin && (access.operationalStatus === "active" || access.operationalStatus === "trial"), access, store: storeData };
+}
+
+function onboardingTemplates() {
+  return {
+    therapy: {
+      resources: [{ id: "bed", name: "床位", quantity: 2 }],
+      services: [
+        { id: "body-care", name: "整復調理", category: "整復推拿", resourceTypeId: "bed", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 1200 }, { minutes: 90, price: 1700 }] },
+        { id: "shoulder-neck", name: "肩頸放鬆", category: "放鬆保養", resourceTypeId: "bed", pointRedeemLimit: 0, prices: [{ minutes: 30, price: 700 }, { minutes: 60, price: 1200 }] }
+      ],
+      staffMembers: [{ id: "staff-1", name: "服務人員 1", role: "整復師", serviceIds: ["body-care", "shoulder-neck"], crmPermissions: [] }]
+    },
+    hair: {
+      resources: [{ id: "chair", name: "座位", quantity: 2 }],
+      services: [
+        { id: "hair-cut", name: "剪髮", category: "美髮", resourceTypeId: "chair", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 800 }] },
+        { id: "hair-care", name: "護髮", category: "美髮", resourceTypeId: "chair", pointRedeemLimit: 0, prices: [{ minutes: 90, price: 1600 }] }
+      ],
+      staffMembers: [{ id: "staff-1", name: "服務人員 1", role: "設計師", serviceIds: ["hair-cut", "hair-care"], crmPermissions: [] }]
+    },
+    blank: { resources: [], services: [], staffMembers: [] }
+  };
+}
+
+async function applyOnboardingTemplate(request, env, tenantId = TENANT_ID) {
+  if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
+  const writable = await assertOnboardingWritable(env, tenantId);
+  if (!writable.ok) return onboardingWriteBlockedResponse(writable.access);
+  const data = await dashboardData(env, todayInTaipei(), tenantId);
+  if ((data.services || []).length || (data.staffMembers || []).length || (data.resourceTypes || []).length) {
+    return Response.json({ ok: false, error: { code: "ONBOARDING_TEMPLATE_NOT_EMPTY", message: "店家已有服務、人員或資源，範本不會覆蓋既有設定" } }, { status: 409, headers: jsonHeaders });
+  }
+  const payload = await request.json().catch(() => ({}));
+  const template = onboardingTemplates()[String(payload.template || "blank")] || onboardingTemplates().blank;
+  if (template.resources.length) await saveResourceTypes(new Request(request.url, { method: "POST", body: JSON.stringify({ resourceTypes: template.resources }) }), env, tenantId);
+  if (template.services.length) await saveServices(new Request(request.url, { method: "POST", body: JSON.stringify({ services: template.services }) }), env, tenantId);
+  if (template.staffMembers.length) await saveStaffMembers(new Request(request.url, { method: "POST", body: JSON.stringify({ staffMembers: template.staffMembers }) }), env, tenantId);
+  return Response.json({ ok: true, setup: await evaluateTenantSetup(env, tenantId) }, { headers: jsonHeaders });
+}
+
+async function createOnboardingTestBooking(request, env, tenantId = TENANT_ID) {
+  if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
+  const writable = await assertOnboardingWritable(env, tenantId);
+  if (!writable.ok) return onboardingWriteBlockedResponse(writable.access);
+  const data = await dashboardData(env, todayInTaipei(), tenantId);
+  const service = (data.services || [])[0];
+  const staff = filterStaffByService(data.staffMembers || [], service?.id || "")[0] || (data.staffMembers || [])[0];
+  const price = service?.prices?.[0];
+  if (!service || !staff || !price) return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "請先建立服務、人員與時長價格" } }, { status: 409, headers: jsonHeaders });
+  const date = todayInTaipei();
+  const start = data.businessHours?.open || "09:00";
+  const duration = Number(price.minutes || 60);
+  const end = toTime(toMinutes(start) + duration);
+  const bookingId = crypto.randomUUID();
+  await env.DB.prepare(`
+    INSERT INTO bookings (id, tenant_id, customer_id, staff_id, service_id, service_name, duration_minutes, price, booking_date, start_time, end_time, customer_name, customer_phone, status, source, note)
+    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, '系統測試顧客', 'setup-test', 'cancelled', 'setup_test', 'setup_test: onboarding verification')
+  `).bind(bookingId, tenantId, staff.id, service.id, service.name, duration, Number(price.price || 0), date, start, end).run();
+  return Response.json({ ok: true, bookingId, setup: await evaluateTenantSetup(env, tenantId) }, { headers: jsonHeaders });
+}
+
+async function setTenantBookingEnabled(request, env, tenantId = TENANT_ID, enabled = true) {
+  if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
+  const writable = await assertOnboardingWritable(env, tenantId);
+  if (!writable.ok) return onboardingWriteBlockedResponse(writable.access);
+  const setup = await evaluateTenantSetup(env, tenantId);
+  if (enabled && !setup.goLiveComplete) {
+    return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "上線檢查尚未完成，不能開放正式預約", missingActions: setup.missingActions } }, { status: 409, headers: jsonHeaders });
+  }
+  const result = await env.DB.prepare("UPDATE tenants SET booking_enabled = ?, updated_at = datetime('now') WHERE id = ?").bind(enabled ? 1 : 0, tenantId).run();
+  return Response.json({ ok: true, changes: result.meta?.changes ?? null, setup: await evaluateTenantSetup(env, tenantId) }, { headers: jsonHeaders });
+}
+async function dashboardData(env, date, tenantId = TENANT_ID) {
   if (!env.DB) return { store, businessHours, services, staffMembers, resourceTypes, bookings };
   try {
     const [loadedStore, loadedBusinessHours, loadedServices, loadedStaffMembers, loadedResourceTypes, loadedBookings] = await Promise.all([
@@ -3955,10 +4141,10 @@ async function claimPlatformReferral(request, env) {
 }
 
 async function loadStore(env, tenantId = TENANT_ID) {
-  const row = await env.DB.prepare("SELECT t.name, t.phone, t.address, t.logo_url, t.slug, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.staff_limit, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count FROM tenants t WHERE t.id = ?").bind(tenantId).first();
+  const row = await env.DB.prepare("SELECT t.name, t.phone, t.address, t.logo_url, t.slug, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.staff_limit, t.booking_enabled, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count FROM tenants t WHERE t.id = ?").bind(tenantId).first();
   if (row) {
     const access = evaluateTenantAccess(row);
-    return { name: row.name, phone: row.phone, address: row.address, logoUrl: row.logo_url || "", slug: row.slug || "", status: row.status || "active", contractStart: row.contract_start || "", contractEnd: row.contract_end || "", billingPlanId: row.billing_plan_id || "solo", staffLimit: access.staffLimit, activeStaffCount: access.activeStaffCount, tenantAccess: access, access, tenantId };
+    return { name: row.name, phone: row.phone, address: row.address, logoUrl: row.logo_url || "", slug: row.slug || "", status: row.status || "active", contractStart: row.contract_start || "", contractEnd: row.contract_end || "", billingPlanId: row.billing_plan_id || "solo", staffLimit: access.staffLimit, activeStaffCount: access.activeStaffCount, bookingEnabled: Number(row.booking_enabled ?? 1) !== 0, tenantAccess: access, access, tenantId };
   }
   return isDefaultDemoTenant(env, tenantId) ? { ...store, tenantId, access: evaluateTenantAccess({ status: "active", billing_plan_id: "solo", staff_limit: 1 }) } : { name: "", phone: "", address: "", logoUrl: "", slug: "", status: "not_found", contractStart: "", contractEnd: "", billingPlanId: "solo", staffLimit: 1, tenantId, access: evaluateTenantAccess({ status: "not_found" }) };
 }
@@ -4421,6 +4607,9 @@ async function createBooking(request, env, data) {
   const payload = await request.json();
   const access = data.store?.access || evaluateTenantAccess(data.store || {});
   if (!access.canAcceptBookings) return tenantBookingDisabledResponse(access);
+  const tenantSetup = await evaluateTenantSetup(env, tenantId);
+  if (!tenantSetup.bookingEnabled) return Response.json({ ok: false, error: { code: "TENANT_BOOKING_NOT_OPEN", message: "店家尚未開放正式預約" } }, { status: 409, headers: jsonHeaders });
+  if (!tenantSetup.readyForBooking) return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "店家尚未完成預約設定", missingActions: tenantSetup.missingActions } }, { status: 409, headers: jsonHeaders });
   const customerSession = await readCustomerSession(request, env);
   if (!Array.isArray(data.services) || !data.services.length || !Array.isArray(data.staffMembers) || !data.staffMembers.length) {
     return Response.json({ ok: false, error: { code: "STORE_SETUP_INCOMPLETE", message: "店家尚未完成預約設定" } }, { status: 409, headers: jsonHeaders });

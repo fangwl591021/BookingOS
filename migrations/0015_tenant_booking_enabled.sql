@@ -1,0 +1,1 @@
+ALTER TABLE tenants ADD COLUMN booking_enabled INTEGER NOT NULL DEFAULT 1;

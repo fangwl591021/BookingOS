@@ -91,3 +91,9 @@ Public availability and booking creation return `TENANT_BOOKING_DISABLED` when a
 
 See `docs/PLAN_AND_TRIAL_ENFORCEMENT.md`.
 Task 015C closes out the first legacy tenant billing audit. `demo-tenant` is recorded as the active platform demo store for 2026-07-11 through 2027-07-10. `sunny-hair` remains a trial tenant through 2026-09-09 under the 60-day rule. Two legacy trial tenants still require Tony-approved slugs before public store URLs are assigned.
+
+## Merchant Go-Live Onboarding
+
+Task 016 adds first-store go-live readiness checks. Merchant overview now shows an 8-item setup checklist, public URL preview, setup test booking, and a formal booking open switch.
+
+Formal booking requires setup completion and `tenants.booking_enabled = 1`. See `docs/STORE_GO_LIVE_CHECKLIST.md` and `docs/MERCHANT_QUICK_START.md`.
