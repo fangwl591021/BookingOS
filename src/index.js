@@ -313,9 +313,14 @@ export default {
       return Response.json({ ok: true, service: "BookingOS", version: "0.2.2-resource-capacity", database: Boolean(env.DB) }, { headers: jsonHeaders });
     }
 
-    if (url.pathname === "/api/platform") {
-      return Response.json({ ok: true, data: await platformData(env) }, { headers: jsonHeaders });
-    }
+    if (url.pathname === "/api/platform") return platformSectionResponse(request, env, "overview");
+    if (url.pathname === "/api/platform/overview") return platformSectionResponse(request, env, "overview");
+    if (url.pathname === "/api/platform/tenants" && request.method === "GET") return platformSectionResponse(request, env, "tenants");
+    if (url.pathname === "/api/platform/applications" && request.method === "GET") return platformSectionResponse(request, env, "applications");
+    if (url.pathname === "/api/platform/orders" && request.method === "GET") return platformSectionResponse(request, env, "orders");
+    if (url.pathname === "/api/platform/line-oa" && request.method === "GET") return platformSectionResponse(request, env, "line-oa");
+    if (url.pathname === "/api/platform/contacts" && request.method === "GET") return platformSectionResponse(request, env, "contacts");
+    if (url.pathname === "/api/platform/system" && request.method === "GET") return platformSectionResponse(request, env, "system");
     if (url.pathname === "/api/applications" && request.method === "POST") {
       return submitTenantApplication(request, env);
     }
@@ -585,16 +590,21 @@ function apiRouteMethods(pathname) {
     "/api/customer/liff-login": ["POST"],
     "/api/customer/session": ["GET"],
     "/api/platform": ["GET"],
+    "/api/platform/overview": ["GET"],
+    "/api/platform/tenants": ["GET", "POST"],
+    "/api/platform/applications": ["GET"],
+    "/api/platform/orders": ["GET"],
+    "/api/platform/line-oa": ["GET", "POST"],
+    "/api/platform/contacts": ["GET"],
+    "/api/platform/system": ["GET"],
     "/api/applications": ["POST"],
     "/api/trials": ["POST"],
     "/api/platform/applications/approve": ["POST"],
     "/api/platform/trials/convert": ["POST"],
     "/api/platform/orders/mark-paid": ["POST"],
     "/api/platform/orders/plan": ["POST"],
-    "/api/platform/tenants": ["POST"],
     "/api/platform/admins": ["POST"],
     "/api/platform/platform-line-oa": ["POST"],
-    "/api/platform/line-oa": ["POST"],
     "/api/referrals/claim": ["POST"],
     "/api/dashboard": ["GET"],
     "/api/availability": ["GET"],
@@ -2394,7 +2404,130 @@ function lineWebhookUrl(tenantId, env = {}, requestOrUrl = null) {
 function platformLineWebhookUrl(env = {}, requestOrUrl = null) {
   return `${publicBaseUrl(env, requestOrUrl)}/platform-line-webhook`;
 }
+
+function secretMeta(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return { configured: false, masked: "" };
+  const tail = raw.slice(-4);
+  return { configured: true, masked: `****${tail}` };
+}
+
+function maskLineUserId(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.length <= 8 ? `****${raw.slice(-4)}` : `${raw.slice(0, 4)}…${raw.slice(-4)}`;
+}
+
+function storePublicPathForTenant(tenant = {}) {
+  const slug = normalizeStoreSlug(tenant.slug || "");
+  return slug ? storePath(slug, "") : `/book?tenant=${encodeURIComponent(tenant.id || TENANT_ID)}`;
+}
+
+function contractDaysLeft(contractEnd = "") {
+  if (!contractEnd) return null;
+  return daysBetween(todayInTaipei(), contractEnd);
+}
+
+function isTenantDueSoon(tenant = {}) {
+  const days = contractDaysLeft(tenant.contract_end || "");
+  return days !== null && days >= 0 && days <= 7;
+}
+
+function isTenantExpired(tenant = {}) {
+  const days = contractDaysLeft(tenant.contract_end || "");
+  return days !== null && days < 0;
+}
+
+function tenantSetupChecklist(tenant = {}) {
+  const checks = [
+    { key: "slug", label: "公開網址", ok: Boolean(normalizeStoreSlug(tenant.slug || "")) },
+    { key: "profile", label: "基本資料", ok: Boolean(tenant.name && tenant.phone && tenant.address) },
+    { key: "service", label: "至少一個服務", ok: Number(tenant.service_count || 0) > 0 },
+    { key: "staff", label: "至少一位人員", ok: Number(tenant.active_staff_count || 0) > 0 },
+    { key: "hours", label: "營業時間", ok: Boolean(tenant.open_time && tenant.close_time) },
+    { key: "public", label: "公開預約頁", ok: Boolean(normalizeStoreSlug(tenant.slug || "") && isActiveTenantStatus(tenant.status)) }
+  ];
+  const done = checks.filter((item) => item.ok).length;
+  return { done, total: checks.length, percent: Math.round((done / checks.length) * 100), checks };
+}
+
+function sanitizeLineSetting(setting = {}) {
+  const channelSecret = secretMeta(setting.channel_secret);
+  const channelAccessToken = secretMeta(setting.channel_access_token);
+  return {
+    ...setting,
+    channel_secret: undefined,
+    channel_access_token: undefined,
+    channel_secret_configured: channelSecret.configured,
+    channel_secret_masked: channelSecret.masked,
+    channel_access_token_configured: channelAccessToken.configured,
+    channel_access_token_masked: channelAccessToken.masked
+  };
+}
+
+function sanitizePlatformContact(contact = {}) {
+  return {
+    ...contact,
+    line_user_id_masked: maskLineUserId(contact.line_user_id),
+    line_user_id_tail: String(contact.line_user_id || "").slice(-6),
+    line_user_id: undefined,
+    referrer_line_user_id: undefined,
+    referrer_line_user_id_masked: maskLineUserId(contact.referrer_line_user_id)
+  };
+}
+function renderPlatformOperationsPage(platform = { tenants: [], admins: [] }, currentData = { store }, env = {}, requestOrUrl = null) {
+  const tenants = platform.tenants || [];
+  const admins = platform.admins || [];
+  const applications = platform.applications || [];
+  const orders = platform.orders || [];
+  const contacts = platform.platformContacts || [];
+  const lineSettings = platform.lineSettings || [];
+  const webhookLogs = platform.platformWebhookLogs || [];
+  const overview = platform.overview || {};
+  const baseUrl = publicBaseUrl(env, requestOrUrl);
+  const publicUrl = (path) => path ? `${baseUrl}${String(path).startsWith("/") ? path : "/" + path}` : "";
+  const tenantOptions = tenants.map((tenant) => `<option value="${escapeAttrValue(tenant.id)}">${escapeHtmlValue(tenant.name)} | ${escapeHtmlValue(tenant.id)}</option>`).join("");
+  const statCards = [
+    ["店家總數", overview.tenant_total ?? tenants.length],
+    ["啟用店家", overview.active_tenants ?? tenants.filter((tenant) => tenant.status === "active").length],
+    ["試用店家", overview.trial_tenants ?? tenants.filter((tenant) => tenant.status === "trial").length],
+    ["待收款訂單", overview.pending_orders ?? orders.filter((order) => order.status === "pending").length],
+    ["待審申請", overview.pending_applications ?? applications.filter((app) => app.status === "pending").length],
+    ["平台好友", overview.platform_contacts ?? contacts.length],
+    ["本月預約", overview.month_booking_total ?? tenants.reduce((sum, tenant) => sum + Number(tenant.month_booking_count || 0), 0)],
+    ["設定未完成", overview.incomplete_tenants ?? tenants.filter((tenant) => Number(tenant.setup?.percent || 0) < 100).length]
+  ].map(([label, value]) => `<article class="stat"><span>${escapeHtmlValue(label)}</span><b>${Number(value || 0)}</b></article>`).join("");
+  const tenantRows = tenants.map((tenant) => {
+    const tenantAdmins = admins.filter((admin) => admin.tenant_id === tenant.id);
+    const plan = planSummary(tenant.billing_plan_id || "solo");
+    const publicPath = tenant.public_url_path || storePublicPathForTenant(tenant);
+    const setup = tenant.setup || tenantSetupChecklist(tenant);
+    const setupItems = (setup.checks || []).map((item) => `<span class="check ${item.ok ? "ok" : "miss"}">${item.ok ? "OK" : "待補"} ${escapeHtmlValue(item.label)}</span>`).join("");
+    const contract = tenant.contract_start || tenant.contract_end ? `${tenant.contract_start || "-"} 至 ${tenant.contract_end || "-"}` : "-";
+    const dueClass = isTenantExpired(tenant) ? "danger" : isTenantDueSoon(tenant) ? "warn" : "";
+    return `<details class="tenant-card" data-search="${escapeAttrValue([tenant.name, tenant.id, tenant.slug, tenant.phone, tenant.status, plan, tenantAdmins.map((admin) => admin.name).join(" ")].join(" ").toLowerCase())}"><summary><div><b>${escapeHtmlValue(tenant.name)}</b><small>${escapeHtmlValue(tenant.id)}${tenant.slug ? " | /store/" + escapeHtmlValue(tenant.slug) : ""}</small></div><span class="badge ${tenant.status === "trial" ? "blue" : tenant.status === "paused" ? "warn" : ""}">${escapeHtmlValue(tenant.status || "active")}</span><span>${escapeHtmlValue(plan)}</span><span class="${dueClass}">${escapeHtmlValue(contract)}</span><span>${Number(tenant.active_staff_count || 0)} 師 / ${Number(tenant.customer_count || 0)} 會員 / ${Number(tenant.booking_count || 0)} 約</span></summary><div class="tenant-detail"><div><h3>營運狀態</h3><div class="checks">${setupItems}</div><p>公開網址：<a href="${escapeAttrValue(publicPath)}" target="_blank">${escapeHtmlValue(publicPath)}</a></p><p>預約連結：<input readonly value="${escapeAttrValue(publicUrl(publicPath))}" onclick="this.select()"></p></div><div><h3>Admin</h3>${tenantAdmins.map((admin) => `<p><b>${escapeHtmlValue(admin.name)}</b> <span class="muted">${escapeHtmlValue(admin.role)} | ${escapeHtmlValue(admin.phone || admin.email || "-")}</span></p>`).join("") || "<p>尚無 Admin</p>"}</div></div></details>`;
+  }).join("") || `<div class="empty">尚未建立店家</div>`;
+  const trialRows = tenants.filter((tenant) => tenant.status === "trial").map((tenant) => `<tr><td>${escapeHtmlValue(tenant.name)}<small>${escapeHtmlValue(tenant.id)}</small></td><td>${escapeHtmlValue(tenant.contract_end || "-")}</td><td>${escapeHtmlValue(planSummary(tenant.billing_plan_id || "solo"))}</td><td>${Number(tenant.active_staff_count || 0)}</td><td>${Number(tenant.booking_count || 0)}</td><td><button class="mini" data-convert-trial="${escapeAttrValue(tenant.id)}">轉正式</button></td></tr>`).join("") || `<tr><td colspan="6">尚無試用店家</td></tr>`;
+  const applicationRows = applications.map((app) => `<tr><td>${escapeHtmlValue(app.store_name)}<small>${escapeHtmlValue(app.business_type || "-")}</small></td><td>${escapeHtmlValue(app.owner_name)}<small>${escapeHtmlValue(app.owner_phone || app.owner_email || "-")}</small></td><td>${escapeHtmlValue(app.contract_start || "核准日起")} 至 ${escapeHtmlValue(app.contract_end || "一年")}</td><td>${escapeHtmlValue(planSummary(app.billing_plan_id || "solo"))}<small>NT$${Number(app.annual_price || planById(app.billing_plan_id || "solo").annualPrice).toLocaleString()}</small></td><td><span class="badge ${app.status === "pending" ? "warn" : ""}">${escapeHtmlValue(app.status || "pending")}</span></td><td>${app.status === "pending" ? `<button class="mini" data-approve-application="${escapeAttrValue(app.id)}">核准</button>` : "-"}</td></tr>`).join("") || `<tr><td colspan="6">尚無申請</td></tr>`;
+  const orderRows = orders.map((order) => `<tr><td>${escapeHtmlValue(order.store_name)}<small>${escapeHtmlValue(order.tenant_id || "未建店")}</small></td><td>${escapeHtmlValue(order.owner_name || "-")}<small>${escapeHtmlValue(order.owner_phone || "-")}</small></td><td><select data-order-plan="${escapeAttrValue(order.id)}">${renderPlanOptions(order.billing_plan_id || "solo")}</select></td><td>NT$${Number(order.amount || 0).toLocaleString()}<small>${escapeHtmlValue(order.due_date || "-")}</small></td><td><span class="badge ${order.status === "pending" ? "warn" : ""}">${escapeHtmlValue(order.status || "pending")}</span></td><td>${order.status === "pending" ? `<button class="mini" data-mark-paid="${escapeAttrValue(order.id)}">已收款</button>` : escapeHtmlValue(order.paid_at || "-")}</td></tr>`).join("") || `<tr><td colspan="6">尚無收款訂單</td></tr>`;
+  const platformLineOA = platform.platformLineOA || {};
+  const platformWebhook = platformLineWebhookUrl(env, requestOrUrl);
+  const secretHint = (item, secretKey, tokenKey) => {
+    const secret = item[`${secretKey}_masked`] || "尚未設定";
+    const token = item[`${tokenKey}_masked`] || "尚未設定";
+    return `<p class="muted">Secret：${escapeHtmlValue(secret)}；Token：${escapeHtmlValue(token)}。留空儲存會保留既有值。</p>`;
+  };
+  const platformLineForm = `<form class="form" data-platform-line-form><label>Webhook URL<input readonly value="${escapeAttrValue(platformWebhook)}" onclick="this.select()"></label><div class="grid2"><label>Basic ID<input name="basicId" value="${escapeAttrValue(platformLineOA.basic_id || "")}"></label><label>Channel ID<input name="channelId" value="${escapeAttrValue(platformLineOA.channel_id || "")}"></label></div><div class="grid2"><label>Channel Secret<input name="channelSecret" type="password" placeholder="${escapeAttrValue(platformLineOA.channel_secret_masked || "留空保留")}"></label><label>Access Token<input name="channelAccessToken" type="password" placeholder="${escapeAttrValue(platformLineOA.channel_access_token_masked || "留空保留")}"></label></div><div class="grid2"><label>登入 LIFF ID<input name="loginLiffId" value="${escapeAttrValue(platformLineOA.login_liff_id || "")}"></label><label>註冊 LIFF ID<input name="registrationLiffId" value="${escapeAttrValue(platformLineOA.registration_liff_id || "")}"></label></div><div class="grid2"><label>加入好友網址<input name="friendAddUrl" value="${escapeAttrValue(platformLineOA.friend_add_url || "")}"></label><label>Rich Menu ID<input name="richMenuId" value="${escapeAttrValue(platformLineOA.rich_menu_id || "")}"></label></div><div class="checks"><label><input type="checkbox" name="webhookEnabled" ${Number(platformLineOA.webhook_enabled ?? 1) ? "checked" : ""}> 啟用 Webhook</label><label><input type="checkbox" name="ownerLoginEnabled" ${Number(platformLineOA.owner_login_enabled || 0) ? "checked" : ""}> 業主 LINE 登入</label><label><input type="checkbox" name="ownerRegistrationEnabled" ${Number(platformLineOA.owner_registration_enabled ?? 1) ? "checked" : ""}> 業主註冊</label></div><label>備註<textarea name="notes">${escapeHtmlValue(platformLineOA.notes || "")}</textarea></label>${secretHint(platformLineOA, "channel_secret", "channel_access_token")}<button class="primary" type="submit">儲存平台 LINE OA</button></form>`;
+  const tenantLineForms = tenants.map((tenant) => {
+    const setting = lineSettings.find((item) => item.tenant_id === tenant.id) || {};
+    return `<details class="line-detail"><summary>${escapeHtmlValue(tenant.name)}<span>${escapeHtmlValue(setting.basic_id || "未設定")}</span></summary><form class="form" data-line-form><input type="hidden" name="tenantId" value="${escapeAttrValue(tenant.id)}"><label>Webhook URL<input readonly value="${escapeAttrValue(lineWebhookUrl(tenant.id, env, requestOrUrl))}" onclick="this.select()"></label><div class="grid2"><label>Basic ID<input name="basicId" value="${escapeAttrValue(setting.basic_id || "")}"></label><label>Channel ID<input name="channelId" value="${escapeAttrValue(setting.channel_id || "")}"></label></div><div class="grid2"><label>Channel Secret<input name="channelSecret" type="password" placeholder="${escapeAttrValue(setting.channel_secret_masked || "留空保留")}"></label><label>Access Token<input name="channelAccessToken" type="password" placeholder="${escapeAttrValue(setting.channel_access_token_masked || "留空保留")}"></label></div><div class="grid2"><label>LIFF ID<input name="liffId" value="${escapeAttrValue(setting.liff_id || "")}"></label><label>登入 LIFF ID<input name="loginLiffId" value="${escapeAttrValue(setting.login_liff_id || "")}"></label></div><label>Rich Menu ID<input name="richMenuId" value="${escapeAttrValue(setting.rich_menu_id || "")}"></label><div class="checks"><label><input type="checkbox" name="webhookEnabled" ${Number(setting.webhook_enabled ?? 1) ? "checked" : ""}> Webhook</label><label><input type="checkbox" name="loginEnabled" ${Number(setting.login_enabled || 0) ? "checked" : ""}> 店家登入</label><label><input type="checkbox" name="registrationEnabled" ${Number(setting.registration_enabled || 0) ? "checked" : ""}> 註冊管理</label></div><label>備註<textarea name="notes">${escapeHtmlValue(setting.notes || "")}</textarea></label>${secretHint(setting, "channel_secret", "channel_access_token")}<button class="primary" type="submit">儲存店家 LINE OA</button></form></details>`;
+  }).join("");
+  const contactRows = contacts.map((contact) => `<tr data-search="${escapeAttrValue([contact.display_name, contact.phone, contact.email, contact.lead_status, contact.line_user_id_tail].join(" ").toLowerCase())}"><td><div class="person">${contact.picture_url ? `<img class="avatar" src="${escapeAttrValue(contact.picture_url)}" alt="">` : `<span class="avatar">B</span>`}<div><b>${escapeHtmlValue(contact.display_name || contact.name || "未命名店家")}</b><small>${escapeHtmlValue(contact.line_user_id_masked || contact.line_user_id_tail || "-")}</small></div></div></td><td>${escapeHtmlValue(contact.phone || "-")}</td><td><span class="badge ${contact.lead_status === "trial" ? "blue" : ""}">${escapeHtmlValue(contact.lead_status || "一般好友")}</span><small>${contact.referrer_display_name ? "介紹人：" + escapeHtmlValue(contact.referrer_display_name) : ""}</small></td><td>${escapeHtmlValue(contact.created_at || "-")}</td><td><button class="mini">CRM 檔案</button></td></tr>`).join("") || `<tr><td colspan="5">尚無平台好友資料</td></tr>`;
+  const webhookRows = webhookLogs.map((log) => `<tr><td>${escapeHtmlValue(log.created_at || "-")}</td><td>${escapeHtmlValue(log.method || "POST")}<small>簽章 ${Number(log.signature_present || 0) ? "有" : "無"}</small></td><td>${Number(log.event_count || 0)}<small>${escapeHtmlValue(log.first_event_type || "-")}</small></td><td>${escapeHtmlValue(log.first_user_id || "-")}<small>${escapeHtmlValue(log.first_message || "-")}</small></td><td>${Number(log.saved_contacts || 0)}</td><td>${escapeHtmlValue(log.error || "-")}</td></tr>`).join("") || `<tr><td colspan="6">尚無 webhook 紀錄</td></tr>`;
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 平台總後台</title><style>:root{--bg:#eef2ed;--panel:#fff;--ink:#10231d;--muted:#66756e;--line:#dbe3da;--green:#087b68;--dark:#10231d;--blue:#3d6f9f;--warn:#fff2cf;--danger:#ffe2df}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:inherit;text-decoration:none}button,input,select,textarea{font:inherit}.shell{min-height:100vh;display:grid;grid-template-columns:260px minmax(0,1fr)}.rail{background:var(--dark);color:#fff;padding:18px 16px;display:flex;flex-direction:column}.brand{display:flex;gap:12px;align-items:center;padding:8px}.mark,.avatar{width:42px;height:42px;border-radius:10px;background:#0bd466;color:#062216;display:grid;place-items:center;font-weight:950}.brand b{font-size:20px}.brand small{display:block;color:rgba(255,255,255,.65)}.nav{display:grid;gap:7px;margin-top:22px}.nav button,.nav a{border:0;background:transparent;color:rgba(255,255,255,.78);text-align:left;padding:12px;border-radius:8px;font-weight:900;cursor:pointer}.nav button.active,.nav button:hover,.nav a:hover{background:rgba(255,255,255,.14);color:#fff}.rail-foot{margin-top:auto;color:rgba(255,255,255,.55);font-size:12px;line-height:1.5;border-top:1px solid rgba(255,255,255,.12);padding-top:14px}.main{padding:24px 28px;min-width:0}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start}.top h1{margin:0;font-size:28px}.top p,.muted{color:var(--muted)}.actions{display:flex;gap:10px;flex-wrap:wrap}.btn,.mini,.primary{border:1px solid var(--line);background:#fff;border-radius:8px;min-height:38px;padding:0 14px;font-weight:900;display:inline-grid;place-items:center;cursor:pointer}.primary{background:#0bd466;border-color:#0bd466;color:#052015}.mini{min-height:30px;font-size:13px}.stats{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin:18px 0}.stat{background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px}.stat span{font-size:12px;color:var(--muted)}.stat b{display:block;font-size:30px;margin-top:5px}.section{display:none}.section.active{display:block}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.panel{background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}.panel.pad{padding:16px}.head{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}.head h2{margin:0;font-size:18px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;border-bottom:1px solid #edf1ec;padding:11px 12px;white-space:nowrap;vertical-align:middle}th{color:var(--muted);font-size:12px}td small{display:block;color:var(--muted);margin-top:3px}.badge{border-radius:999px;background:#e7f7ee;color:#0f513f;padding:4px 8px;font-size:12px;font-weight:900}.badge.blue{background:#e8f1ff;color:#24517c}.badge.warn,.warn{background:var(--warn);color:#725000}.danger{background:var(--danger);color:#8c1d18}.tenant-list{display:grid;gap:10px}.tenant-card,.line-detail{background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}.tenant-card summary,.line-detail summary{list-style:none;cursor:pointer;padding:14px 16px;display:grid;grid-template-columns:1.6fr .6fr .8fr 1.2fr 1.2fr;gap:10px;align-items:center}.tenant-card summary::-webkit-details-marker,.line-detail summary::-webkit-details-marker{display:none}.tenant-detail{border-top:1px solid var(--line);padding:14px 16px;display:grid;grid-template-columns:1fr 1fr;gap:16px}.checks{display:flex;gap:8px;flex-wrap:wrap}.check{border:1px solid var(--line);border-radius:999px;padding:5px 9px;font-size:12px}.check.ok{background:#e7f7ee;color:#0f513f}.check.miss{background:#fff2cf;color:#725000}.form{display:grid;gap:10px}label{display:grid;gap:6px;color:var(--muted);font-size:12px;font-weight:850}input,select,textarea{width:100%;min-height:40px;border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 10px}textarea{min-height:86px}.person{display:flex;gap:12px;align-items:center}.person .avatar{border-radius:999px;object-fit:cover}.tools{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}.empty{background:#fff;border:1px solid var(--line);border-radius:8px;padding:18px;color:var(--muted)}@media(max-width:1100px){.shell{grid-template-columns:220px 1fr}.stats,.grid{grid-template-columns:1fr 1fr}.tenant-card summary{grid-template-columns:1fr}.tenant-detail{grid-template-columns:1fr}}@media(max-width:760px){.shell{display:block}.main{padding:16px 12px}.nav{grid-template-columns:1fr 1fr}.top{display:block}.actions{margin-top:12px}.stats,.grid,.grid2{grid-template-columns:1fr}.tenant-card summary,.line-detail summary{grid-template-columns:1fr}.table-wrap{max-width:100%;overflow-x:auto}}</style></head><body><div class="shell"><aside class="rail"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Platform Console</small></div></div><nav class="nav"><button class="active" data-tab="overview">總覽</button><button data-tab="tenants">店家管理</button><button data-tab="applications">申請與試用</button><button data-tab="billing">收款與續約</button><button data-tab="lineoa">平台 LINE OA</button><button data-tab="contacts">潛在客戶 CRM</button><button data-tab="system">系統狀態</button><a href="/merchant">店家後台</a></nav><div class="rail-foot">總後台只管理平台營運，不混入店家日常作業。</div></aside><main class="main"><header class="top"><div><h1>平台總後台</h1><p>管理店家、試用帳號、申請、年費收款、平台 LINE OA 與營運健康狀態。</p></div><div class="actions"><a class="btn" href="/pricing" target="_blank">費用說明</a><a class="btn" href="/trial" target="_blank">試用網址</a><a class="btn" href="/apply" target="_blank">正式申請</a><a class="primary" href="/platform-logout">登出</a></div></header><section class="stats">${statCards}</section><section class="section active" data-section="overview"><div class="grid"><article class="panel pad"><h2>今日優先處理</h2><p>待審申請 ${applications.filter((app) => app.status === "pending").length} 筆、待收款 ${orders.filter((order) => order.status === "pending").length} 筆、合約即將到期 ${tenants.filter(isTenantDueSoon).length} 家。</p><div class="checks"><button class="mini" data-tab="applications">處理申請</button><button class="mini" data-tab="billing">處理收款</button><button class="mini" data-tab="tenants">檢查店家</button></div></article><article class="panel pad"><h2>公開入口</h2><p><b>正式申請：</b>${escapeHtmlValue(publicUrl("/apply"))}</p><p><b>免費試用：</b>${escapeHtmlValue(publicUrl("/trial"))}</p><p><b>費用方案：</b>${escapeHtmlValue(publicUrl("/pricing"))}</p></article></div></section><section class="section" data-section="tenants"><div class="tools"><input id="tenant-search" placeholder="搜尋店家、電話、方案、Admin"><button class="mini" type="button" data-clear="tenant-search">清除</button></div><div class="tenant-list" id="tenant-list">${tenantRows}</div><div class="grid" style="margin-top:14px"><section class="panel pad"><h2>新增店家</h2><form id="tenant-form" class="form"><label>店家名稱<input id="tenant-name" required></label><div class="grid2"><label>電話<input id="tenant-phone"></label><label>狀態<select id="tenant-status"><option value="active">啟用</option><option value="trial">試用</option><option value="paused">停用</option></select></label></div><label>地址<input id="tenant-address"></label><label>方案<select id="tenant-plan">${renderPlanOptions("solo")}</select></label><div class="grid2"><label>合約開始<input id="tenant-contract-start" type="date"></label><label>合約結束<input id="tenant-contract-end" type="date"></label></div><button class="primary" type="submit">建立店家</button></form></section><section class="panel pad"><h2>建立 Admin</h2><form id="admin-form" class="form"><label>所屬店家<select id="admin-tenant">${tenantOptions}</select></label><div class="grid2"><label>姓名<input id="admin-name" required></label><label>角色<select id="admin-role"><option value="owner">店主 owner</option><option value="admin">管理員 admin</option><option value="staff">師傅 staff</option><option value="viewer">查看 viewer</option></select></label></div><div class="grid2"><label>手機<input id="admin-phone"></label><label>Email<input id="admin-email"></label></div><button class="primary" type="submit">建立 Admin</button></form></section></div></section><section class="section" data-section="applications"><div class="grid"><section class="panel"><div class="head"><h2>申請審核</h2><span>${applications.length} 筆</span></div><div class="table-wrap"><table><thead><tr><th>店家</th><th>業主</th><th>合約</th><th>方案</th><th>狀態</th><th>操作</th></tr></thead><tbody>${applicationRows}</tbody></table></div></section><section class="panel"><div class="head"><h2>試用列表</h2><span>${tenants.filter((tenant) => tenant.status === "trial").length} 家</span></div><div class="table-wrap"><table><thead><tr><th>店家</th><th>期限</th><th>方案</th><th>師傅</th><th>預約</th><th>操作</th></tr></thead><tbody>${trialRows}</tbody></table></div></section></div></section><section class="section" data-section="billing"><section class="panel"><div class="head"><h2>收款與續約</h2><span>${orders.filter((order) => order.status === "pending").length} 待收</span></div><div class="table-wrap"><table><thead><tr><th>店家</th><th>業主</th><th>方案</th><th>金額</th><th>狀態</th><th>操作</th></tr></thead><tbody>${orderRows}</tbody></table></div></section></section><section class="section" data-section="lineoa"><div class="grid"><section class="panel pad"><h2>平台官方帳號</h2>${platformLineForm}</section><section class="panel pad"><h2>各店 LINE OA</h2>${tenantLineForms || "<p class='muted'>尚無店家可設定</p>"}</section></div></section><section class="section" data-section="contacts"><section class="panel"><div class="head"><h2>潛在客戶 CRM</h2><span>${contacts.length} 位</span></div><div class="tools" style="padding:14px 16px"><input id="contact-search" placeholder="搜尋姓名、電話、LINE ID、狀態"><button class="mini" type="button">會員 Excel 下載</button></div><div class="table-wrap"><table><thead><tr><th>姓名</th><th>電話</th><th>目前狀態</th><th>加入日期</th><th>操作</th></tr></thead><tbody id="contact-list">${contactRows}</tbody></table></div></section></section><section class="section" data-section="system"><div class="grid"><section class="panel pad"><h2>系統狀態</h2><p>D1：${env.DB ? "已連線" : "未設定"}</p><p>店家數：${tenants.length}</p><p>Webhook 紀錄：${webhookLogs.length}</p></section><section class="panel"><div class="head"><h2>Webhook 紀錄</h2><span>${webhookLogs.length} 筆</span></div><div class="table-wrap"><table><thead><tr><th>時間</th><th>請求</th><th>事件</th><th>使用者 / 訊息</th><th>寫入</th><th>錯誤</th></tr></thead><tbody>${webhookRows}</tbody></table></div></section></div></section><p id="platform-notice" class="panel pad muted" style="margin-top:14px">營運操作會直接寫入正式資料，儲存前請確認店家與方案。</p></main></div><script>const notice=document.querySelector('#platform-notice');function tab(name){document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el.dataset.tab===name));document.querySelectorAll('[data-section]').forEach(el=>el.classList.toggle('active',el.dataset.section===name));}document.querySelectorAll('[data-tab]').forEach(el=>el.addEventListener('click',()=>tab(el.dataset.tab)));function filterRows(inputId, selector){const input=document.getElementById(inputId);if(!input)return;input.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();document.querySelectorAll(selector).forEach(row=>row.style.display=(row.dataset.search||'').includes(q)?'':'none');});}filterRows('tenant-search','#tenant-list [data-search]');filterRows('contact-search','#contact-list [data-search]');document.querySelectorAll('[data-clear]').forEach(btn=>btn.addEventListener('click',()=>{const el=document.getElementById(btn.dataset.clear);if(el){el.value='';el.dispatchEvent(new Event('input'));}}));async function postJson(url,payload){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!d.ok)throw new Error(d.error||'操作失敗');return d;}document.querySelector('#tenant-form')?.addEventListener('submit',async e=>{e.preventDefault();try{notice.textContent='建立店家中...';await postJson('/api/platform/tenants',{name:document.querySelector('#tenant-name').value.trim(),phone:document.querySelector('#tenant-phone').value.trim(),address:document.querySelector('#tenant-address').value.trim(),status:document.querySelector('#tenant-status').value,planId:document.querySelector('#tenant-plan').value,contractStart:document.querySelector('#tenant-contract-start').value,contractEnd:document.querySelector('#tenant-contract-end').value});location.reload();}catch(err){notice.textContent=err.message;}});document.querySelector('#admin-form')?.addEventListener('submit',async e=>{e.preventDefault();try{notice.textContent='建立 Admin 中...';await postJson('/api/platform/admins',{tenantId:document.querySelector('#admin-tenant').value,name:document.querySelector('#admin-name').value.trim(),role:document.querySelector('#admin-role').value,phone:document.querySelector('#admin-phone').value.trim(),email:document.querySelector('#admin-email').value.trim()});location.reload();}catch(err){notice.textContent=err.message;}});document.querySelectorAll('[data-approve-application]').forEach(btn=>btn.addEventListener('click',async()=>{try{await postJson('/api/platform/applications/approve',{applicationId:btn.dataset.approveApplication});location.reload();}catch(err){notice.textContent=err.message;}}));document.querySelectorAll('[data-convert-trial]').forEach(btn=>btn.addEventListener('click',async()=>{try{await postJson('/api/platform/trials/convert',{tenantId:btn.dataset.convertTrial});location.reload();}catch(err){notice.textContent=err.message;}}));document.querySelectorAll('[data-order-plan]').forEach(sel=>sel.addEventListener('change',async()=>{try{await postJson('/api/platform/orders/plan',{orderId:sel.dataset.orderPlan,planId:sel.value});location.reload();}catch(err){notice.textContent=err.message;}}));document.querySelectorAll('[data-mark-paid]').forEach(btn=>btn.addEventListener('click',async()=>{try{await postJson('/api/platform/orders/mark-paid',{orderId:btn.dataset.markPaid});location.reload();}catch(err){notice.textContent=err.message;}}));document.querySelectorAll('[data-platform-line-form]').forEach(form=>form.addEventListener('submit',async e=>{e.preventDefault();const fd=new FormData(form);try{await postJson('/api/platform/platform-line-oa',{basicId:fd.get('basicId'),channelId:fd.get('channelId'),channelSecret:fd.get('channelSecret'),channelAccessToken:fd.get('channelAccessToken'),loginLiffId:fd.get('loginLiffId'),registrationLiffId:fd.get('registrationLiffId'),friendAddUrl:fd.get('friendAddUrl'),richMenuId:fd.get('richMenuId'),notes:fd.get('notes'),webhookEnabled:fd.has('webhookEnabled'),ownerLoginEnabled:fd.has('ownerLoginEnabled'),ownerRegistrationEnabled:fd.has('ownerRegistrationEnabled')});notice.textContent='平台 LINE OA 已儲存';}catch(err){notice.textContent=err.message;}}));document.querySelectorAll('[data-line-form]').forEach(form=>form.addEventListener('submit',async e=>{e.preventDefault();const fd=new FormData(form);try{await postJson('/api/platform/line-oa',{tenantId:fd.get('tenantId'),basicId:fd.get('basicId'),channelId:fd.get('channelId'),channelSecret:fd.get('channelSecret'),channelAccessToken:fd.get('channelAccessToken'),liffId:fd.get('liffId'),loginLiffId:fd.get('loginLiffId'),richMenuId:fd.get('richMenuId'),notes:fd.get('notes'),webhookEnabled:fd.has('webhookEnabled'),loginEnabled:fd.has('loginEnabled'),registrationEnabled:fd.has('registrationEnabled')});notice.textContent='店家 LINE OA 已儲存';}catch(err){notice.textContent=err.message;}}));</script></body></html>`;
+}
 function renderPlatformPage(platform = { tenants: [], admins: [] }, currentData = { store }, env = {}, requestOrUrl = null) {
+  return renderPlatformOperationsPage(platform, currentData, env, requestOrUrl);
   const tenantOptions = platform.tenants.map((tenant) => `<option value="${escapeAttrValue(tenant.id)}">${escapeHtmlValue(tenant.name)}｜${escapeHtmlValue(tenant.id)}</option>`).join("");
   const tenantRows = platform.tenants.map((tenant) => {
     const admins = platform.admins.filter((admin) => admin.tenant_id === tenant.id);
@@ -2685,16 +2818,21 @@ async function ensurePlatformSchema(env) {
 }
 
 async function platformData(env) {
-  if (!env.DB) return { tenants: [{ id: TENANT_ID, name: store.name, phone: store.phone, address: store.address, status: "active", customer_count: 0, booking_count: 0, updated_at: "" }], admins: [], applications: [], orders: [], lineSettings: [], platformLineOA: {}, platformContacts: [], platformWebhookLogs: [] };
+  if (!env.DB) return { tenants: [{ id: TENANT_ID, slug: "anhe", name: store.name, phone: store.phone, address: store.address, status: "active", customer_count: 0, booking_count: 0, active_staff_count: 0, service_count: 0, setup: tenantSetupChecklist({ id: TENANT_ID, slug: "anhe", name: store.name, phone: store.phone, address: store.address, status: "active", service_count: 0, active_staff_count: 0, open_time: "09:00", close_time: "18:00" }) }], admins: [], applications: [], orders: [], lineSettings: [], platformLineOA: {}, platformContacts: [], platformWebhookLogs: [], overview: {} };
   await ensurePlatformSchema(env);
+  const monthStart = todayInTaipei().slice(0, 7) + "-01";
   const tenants = await env.DB.prepare(`
     SELECT t.id, t.slug, t.name, t.phone, t.address, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.billing_cycle, t.annual_price, t.staff_limit, t.extra_staff_annual_price, t.created_at, t.updated_at,
+      bs.open_time, bs.close_time,
       (SELECT COUNT(*) FROM customers c WHERE c.tenant_id = t.id) AS customer_count,
       (SELECT COUNT(*) FROM bookings b WHERE b.tenant_id = t.id) AS booking_count,
-      (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count
+      (SELECT COUNT(*) FROM bookings b WHERE b.tenant_id = t.id AND b.booking_date >= ?) AS month_booking_count,
+      (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count,
+      (SELECT COUNT(*) FROM services s WHERE s.tenant_id = t.id AND s.enabled = 1) AS service_count
     FROM tenants t
+    LEFT JOIN business_settings bs ON bs.tenant_id = t.id
     ORDER BY t.created_at DESC
-  `).all();
+  `).bind(monthStart).all();
   const admins = await env.DB.prepare(`
     SELECT id, tenant_id, name, phone, email, line_user_id, role, permissions_json, status, last_login_at, created_at, updated_at
     FROM tenant_admins
@@ -2709,7 +2847,7 @@ async function platformData(env) {
     SELECT id, tenant_id, application_id, source, store_name, owner_name, owner_phone, billing_plan_id, billing_cycle, amount, staff_limit, extra_staff_annual_price, status, due_date, paid_at, note, created_at
     FROM billing_orders
     ORDER BY CASE status WHEN 'pending' THEN 1 WHEN 'paid' THEN 2 ELSE 3 END, created_at DESC
-    LIMIT 100
+    LIMIT 200
   `).all();
   const lineSettings = await env.DB.prepare(`
     SELECT tenant_id, channel_id, channel_secret, channel_access_token, basic_id, liff_id, login_liff_id, rich_menu_id, webhook_path, webhook_enabled, login_enabled, registration_enabled, notes, updated_at
@@ -2727,8 +2865,126 @@ async function platformData(env) {
     ORDER BY COALESCE(c.last_interaction_at, c.created_at) DESC
     LIMIT 300
   `).all();
-  return { tenants: tenants.results || [], admins: admins.results || [], applications: applications.results || [], orders: orders.results || [], lineSettings: lineSettings.results || [], platformLineOA: platformLineOA || {}, platformContacts: platformContacts.results || [] };
+  const platformWebhookLogs = await env.DB.prepare(`
+    SELECT id, method, signature_present, event_count, first_event_type, first_user_id, first_message, saved_contacts, error, body_preview, created_at
+    FROM platform_line_webhook_logs
+    ORDER BY created_at DESC
+    LIMIT 50
+  `).all();
+  const tenantRows = (tenants.results || []).map((tenant) => {
+    const setup = tenantSetupChecklist(tenant);
+    return { ...tenant, public_url_path: storePublicPathForTenant(tenant), setup, due_days: contractDaysLeft(tenant.contract_end || "") };
+  });
+  const sanitizedLineSettings = (lineSettings.results || []).map(sanitizeLineSetting);
+  const sanitizedPlatformLineOA = sanitizeLineSetting(platformLineOA || {});
+  const sanitizedContacts = (platformContacts.results || []).map(sanitizePlatformContact);
+  const sanitizedWebhookLogs = (platformWebhookLogs.results || []).map((log) => ({ ...log, first_user_id: maskLineUserId(log.first_user_id || "") }));
+  const pendingOrders = (orders.results || []).filter((order) => order.status === "pending");
+  const pendingApplications = (applications.results || []).filter((app) => app.status === "pending");
+  const overview = {
+    tenant_total: tenantRows.length,
+    active_tenants: tenantRows.filter((tenant) => tenant.status === "active").length,
+    trial_tenants: tenantRows.filter((tenant) => tenant.status === "trial").length,
+    due_soon_tenants: tenantRows.filter(isTenantDueSoon).length,
+    expired_tenants: tenantRows.filter(isTenantExpired).length,
+    pending_applications: pendingApplications.length,
+    pending_orders: pendingOrders.length,
+    customer_total: tenantRows.reduce((sum, tenant) => sum + Number(tenant.customer_count || 0), 0),
+    month_booking_total: tenantRows.reduce((sum, tenant) => sum + Number(tenant.month_booking_count || 0), 0),
+    incomplete_tenants: tenantRows.filter((tenant) => Number(tenant.setup?.percent || 0) < 100).length,
+    webhook_log_count: sanitizedWebhookLogs.length,
+    platform_contacts: sanitizedContacts.length
+  };
+  return { tenants: tenantRows, admins: admins.results || [], applications: applications.results || [], orders: orders.results || [], lineSettings: sanitizedLineSettings, platformLineOA: sanitizedPlatformLineOA, platformContacts: sanitizedContacts, platformWebhookLogs: sanitizedWebhookLogs, overview };
 }
+function listLimit(url, fallback = 50, max = 100) {
+  const value = Number(url.searchParams.get("limit") || fallback);
+  return Math.max(1, Math.min(max, Number.isFinite(value) ? value : fallback));
+}
+
+function listOffset(url) {
+  const value = Number(url.searchParams.get("offset") || 0);
+  return Math.max(0, Number.isFinite(value) ? value : 0);
+}
+
+function includesText(row, search, fields) {
+  const q = String(search || "").trim().toLowerCase();
+  if (!q) return true;
+  return fields.some((field) => String(row[field] || "").toLowerCase().includes(q));
+}
+
+function paginateRows(rows, url, fallbackLimit = 50) {
+  const limit = listLimit(url, fallbackLimit);
+  const offset = listOffset(url);
+  return { rows: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
+}
+
+async function platformSectionResponse(request, env, section) {
+  const url = new URL(request.url);
+  const data = await platformData(env);
+  if (section === "overview") {
+    const needs = {
+      pendingApplications: data.applications.filter((app) => app.status === "pending").slice(0, 6),
+      dueSoonTenants: data.tenants.filter(isTenantDueSoon).slice(0, 6),
+      expiredTenants: data.tenants.filter(isTenantExpired).slice(0, 6),
+      pendingOrders: data.orders.filter((order) => order.status === "pending").slice(0, 6),
+      incompleteTenants: data.tenants.filter((tenant) => Number(tenant.setup?.percent || 0) < 100).slice(0, 6)
+    };
+    return Response.json({ ok: true, overview: data.overview, needs }, { headers: jsonHeaders });
+  }
+  if (section === "tenants") {
+    const search = url.searchParams.get("search") || "";
+    const status = url.searchParams.get("status") || "";
+    const plan = url.searchParams.get("plan") || "";
+    const due = url.searchParams.get("due") || "";
+    let rows = data.tenants.filter((tenant) => includesText({ ...tenant, owner_names: data.admins.filter((admin) => admin.tenant_id === tenant.id).map((admin) => admin.name).join(" "), owner_phones: data.admins.filter((admin) => admin.tenant_id === tenant.id).map((admin) => admin.phone).join(" ") }, search, ["name", "id", "slug", "phone", "owner_names", "owner_phones"]));
+    if (status) rows = rows.filter((tenant) => String(tenant.status || "") === status);
+    if (plan) rows = rows.filter((tenant) => String(tenant.billing_plan_id || "solo") === plan);
+    if (due === "soon") rows = rows.filter(isTenantDueSoon);
+    if (due === "expired") rows = rows.filter(isTenantExpired);
+    const page = paginateRows(rows, url, 50);
+    return Response.json({ ok: true, tenants: page.rows, admins: data.admins, total: page.total, limit: page.limit, offset: page.offset }, { headers: jsonHeaders });
+  }
+  if (section === "applications") {
+    const status = url.searchParams.get("status") || "";
+    let rows = data.applications;
+    if (status && status !== "all") rows = rows.filter((app) => app.status === status);
+    const page = paginateRows(rows, url, 50);
+    return Response.json({ ok: true, applications: page.rows, total: page.total, limit: page.limit, offset: page.offset }, { headers: jsonHeaders });
+  }
+  if (section === "orders") {
+    const status = url.searchParams.get("status") || "";
+    const due = url.searchParams.get("due") || "";
+    let rows = data.orders;
+    if (status && status !== "all") rows = rows.filter((order) => order.status === status);
+    if (due === "soon") rows = rows.filter((order) => {
+      const days = contractDaysLeft(order.due_date || "");
+      return days !== null && days >= 0 && days <= 7;
+    });
+    if (due === "overdue") rows = rows.filter((order) => {
+      const days = contractDaysLeft(order.due_date || "");
+      return days !== null && days < 0;
+    });
+    const page = paginateRows(rows, url, 50);
+    return Response.json({ ok: true, orders: page.rows, tenants: data.tenants, total: page.total, limit: page.limit, offset: page.offset }, { headers: jsonHeaders });
+  }
+  if (section === "line-oa") {
+    return Response.json({ ok: true, platformLineOA: data.platformLineOA, lineSettings: data.lineSettings, tenants: data.tenants, webhookUrl: platformLineWebhookUrl(env, request), applyUrl: `${publicBaseUrl(env, request)}/apply`, trialUrl: `${publicBaseUrl(env, request)}/trial` }, { headers: jsonHeaders });
+  }
+  if (section === "contacts") {
+    const search = url.searchParams.get("search") || "";
+    const status = url.searchParams.get("status") || "";
+    let rows = data.platformContacts.filter((contact) => includesText(contact, search, ["display_name", "phone", "email", "tenant_id", "referrer_display_name", "line_user_id_tail"]));
+    if (status && status !== "all") rows = rows.filter((contact) => contact.lead_status === status);
+    const page = paginateRows(rows, url, 50);
+    return Response.json({ ok: true, contacts: page.rows, tenants: data.tenants, total: page.total, limit: page.limit, offset: page.offset }, { headers: jsonHeaders });
+  }
+  if (section === "system") {
+    return Response.json({ ok: true, system: { workerVersion: envValue(env, "WORKER_VERSION_ID", "not-set"), d1Connected: Boolean(env.DB), pendingMigrations: "Worker runtime cannot inspect Wrangler migration queue", tenantTotal: data.overview.tenant_total, todayBookings: data.tenants.reduce((sum, tenant) => sum + Number(tenant.booking_count || 0), 0), webhookLogs: data.platformWebhookLogs.slice(0, 10), latestWebhook: data.platformWebhookLogs[0] || null } }, { headers: jsonHeaders });
+  }
+  return Response.json({ ok: false, error: "platform section not found" }, { status: 404, headers: jsonHeaders });
+}
+
 async function createBillingOrder(env, { tenantId = null, applicationId = null, source = "application", storeName, ownerName = "", ownerPhone = "", plan, status = "pending", dueDate = null, note = "" }) {
   const id = "ord-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
   await env.DB.prepare(`
@@ -2955,6 +3211,9 @@ async function savePlatformLineOASettings(request, env) {
     await ensurePlatformSchema(env);
     const payload = await request.json();
     const webhookPath = "/platform-line-webhook";
+    const existing = await env.DB.prepare("SELECT channel_secret, channel_access_token FROM platform_line_oa_settings WHERE id = 'platform'").first();
+    const channelSecret = String(payload.channelSecret || "").trim() || existing?.channel_secret || null;
+    const channelAccessToken = String(payload.channelAccessToken || "").trim() || existing?.channel_access_token || null;
     await env.DB.prepare(`
       INSERT INTO platform_line_oa_settings (id, channel_id, channel_secret, channel_access_token, basic_id, login_liff_id, registration_liff_id, rich_menu_id, friend_add_url, webhook_path, webhook_enabled, owner_login_enabled, owner_registration_enabled, notes, created_at, updated_at)
       VALUES ('platform', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -2975,8 +3234,8 @@ async function savePlatformLineOASettings(request, env) {
         updated_at = datetime('now')
     `).bind(
       String(payload.channelId || "").trim() || null,
-      String(payload.channelSecret || "").trim() || null,
-      String(payload.channelAccessToken || "").trim() || null,
+      channelSecret,
+      channelAccessToken,
       String(payload.basicId || "").trim() || null,
       String(payload.loginLiffId || "").trim() || null,
       String(payload.registrationLiffId || "").trim() || null,
@@ -3003,6 +3262,9 @@ async function savePlatformLineOA(request, env) {
     const tenant = await env.DB.prepare("SELECT id FROM tenants WHERE id = ?").bind(tenantId).first();
     if (!tenant) return Response.json({ ok: false, error: "tenant not found" }, { status: 404, headers: jsonHeaders });
     const webhookPath = `/line-webhook?tenant=${encodeURIComponent(tenantId)}`;
+    const existing = await env.DB.prepare("SELECT channel_secret, channel_access_token FROM line_oa_settings WHERE tenant_id = ?").bind(tenantId).first();
+    const channelSecret = String(payload.channelSecret || "").trim() || existing?.channel_secret || null;
+    const channelAccessToken = String(payload.channelAccessToken || "").trim() || existing?.channel_access_token || null;
     await env.DB.prepare(`
       INSERT INTO line_oa_settings (tenant_id, channel_id, channel_secret, channel_access_token, basic_id, liff_id, login_liff_id, rich_menu_id, webhook_path, webhook_enabled, login_enabled, registration_enabled, notes, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -3023,8 +3285,8 @@ async function savePlatformLineOA(request, env) {
     `).bind(
       tenantId,
       String(payload.channelId || "").trim() || null,
-      String(payload.channelSecret || "").trim() || null,
-      String(payload.channelAccessToken || "").trim() || null,
+      channelSecret,
+      channelAccessToken,
       String(payload.basicId || "").trim() || null,
       String(payload.liffId || "").trim() || null,
       String(payload.loginLiffId || "").trim() || null,
