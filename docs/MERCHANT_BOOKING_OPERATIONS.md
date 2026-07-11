@@ -1,4 +1,4 @@
-﻿# Merchant Booking Operations
+# Merchant Booking Operations
 
 Task 018 adds the merchant daily booking operations workspace at `/merchant/operations`.
 
@@ -120,3 +120,21 @@ Required checks:
 - merchant note does not appear in customer API
 - plan-limited staff cannot receive new reassignment
 - smoke test remains green
+## Task 018A Acceptance Record
+
+Acceptance run: 2026-07-11 on production Worker with the isolated `onboarding-test` tenant. All temporary bookings, customers, point transactions, events, staff, and tenant-state changes were removed after verification.
+
+- Status workflow verified: `pending -> confirmed -> checked_in -> in_service -> completed`; each merchant transition wrote an event and the corresponding timestamp.
+- `no_show` is terminal, keeps the booking/customer, and does not revoke earned points. Cancelled bookings are terminal; repeated cancellation did not create duplicate events, revokes, or refunds.
+- Invalid transitions return `409 INVALID_BOOKING_STATUS_TRANSITION`. `in_service -> cancelled` remains intentionally rejected in V1.
+- Reschedule validates past time, break time, closed day, staff availability, resource capacity, and ignores the booking being edited when detecting conflicts. Closed dates return no public slots and merchant reschedule returns `409 BOOKING_SLOT_CONFLICT`.
+- Reassignment verifies tenant-scoped active staff and service capability. Plan-limited staff reject new reassignment, while existing plan-limited bookings remain visible in the `方案調整待處理預約` worklist and can be moved manually to active staff.
+- All mutation endpoints use `expected_updated_at` in the SQL update predicate. Status, reschedule, reassign, note, and booking-contact stale writes return `409 BOOKING_CONFLICT`.
+- Merchant notes and booking-event metadata are visible only to merchant APIs. Real customer member/history responses did not include merchant notes, event metadata, actor information, or booking-only contact edits.
+- Grace and expired tenants can view and process existing bookings within the permitted transition rules but cannot reschedule. Suspended and cancelled tenants can view the operations workspace only; writes remain blocked.
+- Cross-tenant booking reads, notes, status updates, and events return the same `404 Not found` response.
+- Point verification covered booking reward, redemption, cancellation revoke, and refund. A redeemed booking produced exactly one `earn`, `redeem`, `revoke`, and `refund` transaction; repeat cancellation was idempotent.
+
+Final deployment: Worker version `1467d438-2651-44b6-a1e1-cfd8a1f475ee`.
+Remote D1 backup: `.local-backups/bookingos-db-task018a-pre-20260711-215700.sql`.
+Final acceptance data was removed from `onboarding-test`; the tenant was restored to `trial`, `solo`, one active staff member, and its original business-hours configuration.

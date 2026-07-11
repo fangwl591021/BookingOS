@@ -1,4 +1,4 @@
-﻿CREATE TABLE IF NOT EXISTS booking_events (
+CREATE TABLE IF NOT EXISTS booking_events (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
   booking_id TEXT NOT NULL,

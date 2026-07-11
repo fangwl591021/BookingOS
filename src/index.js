@@ -1,4 +1,4 @@
-﻿const jsonHeaders = {
+const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
@@ -835,7 +835,10 @@ function merchantRouteCapability(pathname, method = "GET") {
   if (pathname === "/customers" || pathname === "/api/customers") return TENANT_CAPABILITIES.VIEW_CUSTOMERS;
   if (pathname === "/api/customers/export") return TENANT_CAPABILITIES.EXPORT_DATA;
   if (!write && (pathname === "/merchant/onboarding" || pathname === "/api/merchant/onboarding")) return null;
-  if (pathname === "/merchant/operations" || pathname === "/api/merchant/bookings") return TENANT_CAPABILITIES.VIEW_BOOKINGS;
+  // Operations read routes remain available to signed-in merchants even when a tenant is suspended or cancelled.
+  // Mutations keep the booking capability gate and the per-action business-status checks.
+  if (pathname === "/merchant/operations" || pathname === "/api/merchant/bookings") return null;
+  if (pathname.startsWith("/api/merchant/bookings/") && pathname.endsWith("/events")) return null;
   if (pathname.startsWith("/api/merchant/bookings/")) return TENANT_CAPABILITIES.VIEW_BOOKINGS;
   if (!write) return TENANT_CAPABILITIES.VIEW_DASHBOARD;
   if (pathname === "/api/store") return TENANT_CAPABILITIES.MANAGE_STORE;
@@ -1193,7 +1196,9 @@ function evaluateTenantAccess(tenant = {}, nowDate = todayInTaipei()) {
     activeBookingStaffCount,
     overLimit,
     staffSelectionRequired,
-    canMerchantLogin: operationalStatus !== "suspended" && operationalStatus !== "cancelled",
+    // Authorized merchants must still be able to inspect existing data after suspension or cancellation.
+    // Capabilities remain empty for those states, so this does not grant write access.
+    canMerchantLogin: true,
     canManage,
     canAcceptBookings,
     canCreateStaff: canManage && activeStaffCount < staffLimit && !overLimit,
@@ -1307,6 +1312,14 @@ function bookingActionFlags(status) {
     canReschedule: value === "pending" || value === "confirmed",
     canReassign: value === "pending" || value === "confirmed"
   };
+}
+
+function bookingMutationTimestamp() {
+  return new Date().toISOString();
+}
+
+function bookingExpectedUpdatedAt(payload = "") {
+  return String(payload?.expected_updated_at || "").trim();
 }
 
 function merchantBookingError(code, message, status = 400) {
@@ -2444,6 +2457,9 @@ function availabilityResponse(url, data = { businessHours, bookings, staffMember
     return Response.json({ ok: false, error: "duration must be between 15 and 240 minutes" }, { status: 400, headers: jsonHeaders });
   }
 
+  if (!isBusinessOpenOnDate(data.businessHours, date)) {
+    return Response.json({ ok: true, tenantId: data.store?.tenantId || TENANT_ID, staffId, serviceId, date, duration, slots: [] }, { headers: jsonHeaders });
+  }
   const resourceList = Array.isArray(data.resourceTypes) ? data.resourceTypes : [];
   const selectedService = serviceList.find((service) => service.id === serviceId) || serviceList[0];
   const capableStaff = filterStaffByService(activeStaff, selectedService?.id || serviceId);
@@ -2528,6 +2544,18 @@ function ymdDateParts(dateText) {
   const match = String(dateText || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (!match) return null;
   return { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+}
+
+function weekdayLabelForDate(dateText) {
+  const parts = ymdDateParts(dateText);
+  if (!parts) return "";
+  return ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"][new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay()] || "";
+}
+
+function isBusinessOpenOnDate(businessHours = {}, dateText = "") {
+  const closedDays = Array.isArray(businessHours.closedDays) ? businessHours.closedDays : [];
+  const weekday = weekdayLabelForDate(dateText);
+  return !weekday || !closedDays.includes(weekday);
 }
 
 function dateKeyFromUtcDate(date) {
@@ -2664,7 +2692,7 @@ function renderMerchantOperationsPage(data = { store, services: [], staffMembers
   const today = todayInTaipei();
   const staffOptions = (data.staffMembers || []).map((staff) => `<option value="${escapeAttrValue(staff.id)}">${escapeHtmlValue(staff.name)}</option>`).join("");
   const serviceOptions = (data.services || []).map((service) => `<option value="${escapeAttrValue(service.id)}">${escapeHtmlValue(service.name)}</option>`).join("");
-  const body = `<section class="panel ops"><div class="ops-head"><div><h2>預約營運工作台</h2><p class="muted">查看今日與未來預約，處理確認、到店、服務中、完成、未到店、取消、改期與改派。</p></div><a class="btn" href="${escapeAttrValue(storeSlug ? storePath(storeSlug, "") : `/book?tenant=${encodeURIComponent(tenantId)}`)}" target="_blank">開客戶端</a></div><div class="ops-summary" id="ops-summary"><div><b>0</b><span>總數</span></div><div><b>0</b><span>待確認</span></div><div><b>0</b><span>已確認</span></div><div><b>0</b><span>服務中</span></div><div><b>0</b><span>已完成</span></div><div><b>0</b><span>未到店</span></div></div><div class="ops-filters"><button class="btn" type="button" data-day="-1">前一天</button><button class="btn primary" type="button" data-today>今天</button><button class="btn" type="button" data-day="1">後一天</button><label>日期<input id="ops-date" type="date" value="${escapeAttrValue(today)}"></label><label>狀態<select id="ops-status"><option value="">不含取消</option><option value="pending">待確認</option><option value="confirmed">已確認</option><option value="checked_in">已到店</option><option value="in_service">服務中</option><option value="completed">已完成</option><option value="no_show">未到店</option><option value="cancelled">已取消</option></select></label><label>人員<select id="ops-staff"><option value="">全部人員</option>${staffOptions}</select></label><label>服務<select id="ops-service"><option value="">全部服務</option>${serviceOptions}</select></label><label>顧客<input id="ops-keyword" placeholder="姓名或電話末碼"></label><label class="check-inline"><input id="ops-cancelled" type="checkbox"> 顯示已取消</label></div><div id="ops-plan-limited"></div><div class="ops-list" id="ops-list"><p class="muted">載入中...</p></div></section><style>.ops-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ops-summary{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0}.ops-summary div{border:1px solid var(--line);border-radius:8px;background:#f8faf8;padding:10px}.ops-summary b{display:block;font-size:22px}.ops-summary span{display:block;color:var(--muted);font-size:12px}.ops-filters{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.ops-filters label{display:grid;gap:5px;color:var(--muted);font-size:12px;font-weight:850}.ops-filters input,.ops-filters select{min-height:40px;border:1px solid var(--line);border-radius:8px;padding:8px;background:white}.check-inline{display:flex!important;align-items:center;gap:6px}.booking-card{border:1px solid var(--line);border-radius:8px;background:white;padding:12px;margin-bottom:10px}.booking-top{display:flex;justify-content:space-between;gap:10px}.booking-time{font-size:22px;font-weight:950;color:var(--green)}.booking-title{font-weight:950}.booking-meta{color:var(--muted);line-height:1.45;margin-top:4px}.booking-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.booking-actions button{min-height:34px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 10px;font-weight:850}.booking-actions .primary{background:var(--blue);border-color:var(--blue);color:white}.booking-actions .danger{border-color:#f1b8b8;color:#9b1c1c}.note-box{display:grid;gap:6px;margin-top:8px}.note-box textarea{width:100%;min-height:58px;border:1px solid var(--line);border-radius:8px;padding:8px}.warn{background:#fff4cf;border:1px solid #f1d58a;border-radius:8px;padding:10px;margin-bottom:10px;color:#604600}@media(max-width:760px){.ops-summary{grid-template-columns:repeat(2,1fr)}.ops-filters{grid-template-columns:1fr 1fr}.ops-head{display:block}}</style><script>(function(){const tenant=${JSON.stringify(tenantId)};const $=(id)=>document.getElementById(id);const esc=(v)=>String(v??"").replace(/[&<>"']/g,(m)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const labels={pending:"待確認",confirmed:"已確認",checked_in:"已到店",in_service:"服務中",completed:"已完成",no_show:"未到店",cancelled:"已取消"};async function post(url,body){const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{})});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!data.ok)throw new Error((data.error&&data.error.message)||data.error||"操作失敗");return data;}function actionButton(label,action,value,cls=""){return '<button class="'+cls+'" data-action="'+action+'" data-value="'+value+'" type="button">'+label+'</button>';}function card(b){let actions="";if(b.canConfirm)actions+=actionButton("確認","status","confirmed","primary");if(b.canCheckIn)actions+=actionButton("到店","status","checked_in","primary");if(b.canStartService)actions+=actionButton("開始服務","status","in_service","primary");if(b.canComplete)actions+=actionButton("完成","status","completed","primary");if(b.canNoShow)actions+=actionButton("未到店","status","no_show","");if(b.canCancel)actions+=actionButton("取消","cancel","cancelled","danger");if(b.canReschedule)actions+=actionButton("改期","reschedule","","");if(b.canReassign)actions+=actionButton("改派","reassign","","");actions+=actionButton("歷程","events","","");return '<article class="booking-card" data-id="'+esc(b.booking_id)+'" data-updated="'+esc(b.updated_at||'')+'"><div class="booking-top"><div><div class="booking-time">'+esc(b.start_time)+' - '+esc(b.end_time)+'</div><div class="booking-title">'+esc(b.customer_name)+' · '+esc(b.service)+'</div><div class="booking-meta">'+esc(b.date)+' · '+esc(b.duration)+' 分 · NT$'+Number(b.price||0)+'<br>人員：'+esc((b.staff&&b.staff.name)||'-')+' · '+esc(b.customer_phone_masked||'')+' · '+esc(b.customer_type==='member'?'會員':'訪客')+' · '+esc(b.source||'web')+'</div></div><span class="badge">'+esc(b.statusLabel||labels[b.status]||b.status)+'</span></div>'+(b.merchant_note?'<div class="warn">店家備註：'+esc(b.merchant_note)+'</div>':'')+'<div class="booking-actions">'+actions+'</div><div class="note-box"><textarea placeholder="店家內部備註，顧客看不到">'+esc(b.merchant_note||'')+'</textarea><button data-action="note" type="button">儲存備註</button></div></article>';}async function load(){const p=new URLSearchParams({tenant,date:$("ops-date").value||"${escapeAttrValue(today)}",limit:"100"});if($("ops-status").value)p.set("status",$("ops-status").value);if($("ops-staff").value)p.set("staff_id",$("ops-staff").value);if($("ops-service").value)p.set("service_id",$("ops-service").value);if($("ops-keyword").value)p.set("customer_keyword",$("ops-keyword").value);if($("ops-cancelled").checked)p.set("include_cancelled","1");const res=await fetch('/api/merchant/bookings?'+p.toString());const data=await res.json();if(!data.ok){$("ops-list").innerHTML='<p class="muted">載入失敗</p>';return;}const s=data.summary||{};$("ops-summary").innerHTML=['total','pending','confirmed','inService','completed','noShow'].map((k)=>'<div><b>'+Number(s[k]||0)+'</b><span>'+({total:'總數',pending:'待確認',confirmed:'已確認',inService:'服務中',completed:'已完成',noShow:'未到店'}[k])+'</span></div>').join('')+'<div><b>NT$'+Number(s.expectedRevenue||0).toLocaleString('zh-TW')+'</b><span>預計營收</span></div><div><b>NT$'+Number(s.completedRevenue||0).toLocaleString('zh-TW')+'</b><span>完成營收</span></div>';const affected=(data.planLimited&&data.planLimited.affectedBookings)||[];$("ops-plan-limited").innerHTML=affected.length?'<div class="warn"><b>方案調整待處理預約</b><br>有 '+affected.length+' 筆未來預約落在因方案限制停止接新單的人員。可在卡片中改派、取消或聯絡顧客；保留原人員不會讓該人員恢復接新單。</div>':'';$("ops-list").innerHTML=(data.bookings||[]).map(card).join('')||'<p class="muted">沒有符合條件的預約。</p>';}document.addEventListener('click',async(e)=>{const btn=e.target.closest('[data-action]');if(!btn)return;const el=btn.closest('.booking-card');if(!el)return;const id=el.dataset.id;try{if(btn.dataset.action==='status'){await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/status',{status:btn.dataset.value,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='cancel'){const reason=prompt('取消原因','顧客取消')||'';if(!reason)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/status',{status:'cancelled',reason,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='note'){await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/note',{note:el.querySelector('textarea').value,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='reschedule'){const date=prompt('新日期 YYYY-MM-DD',$("ops-date").value);const start=prompt('新開始時間 HH:mm','09:00');if(!date||!start)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/reschedule',{date,start_time:start,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='reassign'){const staff=prompt('輸入新服務人員 ID');if(!staff)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/reassign',{staff_id:staff,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='events'){const res=await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/events',{});alert((res.events||[]).map(ev=>ev.created_at+' '+ev.event_type+' '+(ev.from_status||'')+' → '+(ev.to_status||'')).join('\\n')||'尚無歷程');return;}await load();}catch(err){alert(err.message);}});document.querySelectorAll('#ops-date,#ops-status,#ops-staff,#ops-service,#ops-cancelled').forEach(el=>el.addEventListener('change',load));$('ops-keyword').addEventListener('input',()=>{clearTimeout(window.__opsTimer);window.__opsTimer=setTimeout(load,300);});document.querySelectorAll('[data-day]').forEach(btn=>btn.onclick=()=>{const d=new Date($("ops-date").value||"${escapeAttrValue(today)}");d.setDate(d.getDate()+Number(btn.dataset.day));$("ops-date").value=d.toISOString().slice(0,10);load();});document.querySelector('[data-today]').onclick=()=>{$("ops-date").value="${escapeAttrValue(today)}";load();};load();})();</script>`;
+  const body = `<section class="panel ops"><div class="ops-head"><div><h2>預約營運工作台</h2><p class="muted">查看今日與未來預約，處理確認、到店、服務中、完成、未到店、取消、改期與改派。</p></div><a class="btn" href="${escapeAttrValue(storeSlug ? storePath(storeSlug, "") : `/book?tenant=${encodeURIComponent(tenantId)}`)}" target="_blank">開客戶端</a></div><div class="ops-summary" id="ops-summary"><div><b>0</b><span>總數</span></div><div><b>0</b><span>待確認</span></div><div><b>0</b><span>已確認</span></div><div><b>0</b><span>服務中</span></div><div><b>0</b><span>已完成</span></div><div><b>0</b><span>未到店</span></div></div><div class="ops-filters"><button class="btn" type="button" data-day="-1">前一天</button><button class="btn primary" type="button" data-today>今天</button><button class="btn" type="button" data-day="1">後一天</button><label>日期<input id="ops-date" type="date" value="${escapeAttrValue(today)}"></label><label>狀態<select id="ops-status"><option value="">不含取消</option><option value="pending">待確認</option><option value="confirmed">已確認</option><option value="checked_in">已到店</option><option value="in_service">服務中</option><option value="completed">已完成</option><option value="no_show">未到店</option><option value="cancelled">已取消</option></select></label><label>人員<select id="ops-staff"><option value="">全部人員</option>${staffOptions}</select></label><label>服務<select id="ops-service"><option value="">全部服務</option>${serviceOptions}</select></label><label>顧客<input id="ops-keyword" placeholder="姓名或電話末碼"></label><label class="check-inline"><input id="ops-cancelled" type="checkbox"> 顯示已取消</label></div><div id="ops-plan-limited"></div><div class="ops-list" id="ops-list"><p class="muted">載入中...</p></div></section><style>.ops-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ops-summary{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0}.ops-summary div{border:1px solid var(--line);border-radius:8px;background:#f8faf8;padding:10px}.ops-summary b{display:block;font-size:22px}.ops-summary span{display:block;color:var(--muted);font-size:12px}.ops-filters{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.ops-filters label{display:grid;gap:5px;color:var(--muted);font-size:12px;font-weight:850}.ops-filters input,.ops-filters select{min-height:40px;border:1px solid var(--line);border-radius:8px;padding:8px;background:white}.check-inline{display:flex!important;align-items:center;gap:6px}.booking-card{border:1px solid var(--line);border-radius:8px;background:white;padding:12px;margin-bottom:10px}.booking-top{display:flex;justify-content:space-between;gap:10px}.booking-time{font-size:22px;font-weight:950;color:var(--green)}.booking-title{font-weight:950}.booking-meta{color:var(--muted);line-height:1.45;margin-top:4px}.booking-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.booking-actions button{min-height:34px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 10px;font-weight:850}.booking-actions .primary{background:var(--blue);border-color:var(--blue);color:white}.booking-actions .danger{border-color:#f1b8b8;color:#9b1c1c}.note-box{display:grid;gap:6px;margin-top:8px}.note-box textarea{width:100%;min-height:58px;border:1px solid var(--line);border-radius:8px;padding:8px}.warn{background:#fff4cf;border:1px solid #f1d58a;border-radius:8px;padding:10px;margin-bottom:10px;color:#604600}@media(max-width:760px){.ops-summary{grid-template-columns:repeat(2,1fr)}.ops-filters{grid-template-columns:1fr 1fr}.ops-head{display:block}}</style><script>(function(){const tenant=${JSON.stringify(tenantId)};const $=(id)=>document.getElementById(id);const esc=(v)=>String(v??"").replace(/[&<>"']/g,(m)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const labels={pending:"待確認",confirmed:"已確認",checked_in:"已到店",in_service:"服務中",completed:"已完成",no_show:"未到店",cancelled:"已取消"};async function post(url,body){const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{})});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!data.ok)throw new Error((data.error&&data.error.message)||data.error||"操作失敗");return data;}function actionButton(label,action,value,cls=""){return '<button class="'+cls+'" data-action="'+action+'" data-value="'+value+'" type="button">'+label+'</button>';}function card(b){let actions="";if(b.canConfirm)actions+=actionButton("確認","status","confirmed","primary");if(b.canCheckIn)actions+=actionButton("到店","status","checked_in","primary");if(b.canStartService)actions+=actionButton("開始服務","status","in_service","primary");if(b.canComplete)actions+=actionButton("完成","status","completed","primary");if(b.canNoShow)actions+=actionButton("未到店","status","no_show","");if(b.canCancel)actions+=actionButton("取消","cancel","cancelled","danger");if(b.canReschedule)actions+=actionButton("改期","reschedule","","");if(b.canReassign)actions+=actionButton("改派","reassign","","");actions+=actionButton("歷程","events","","");return '<article class="booking-card" data-id="'+esc(b.booking_id)+'" data-updated="'+esc(b.updated_at||'')+'"><div class="booking-top"><div><div class="booking-time">'+esc(b.start_time)+' - '+esc(b.end_time)+'</div><div class="booking-title">'+esc(b.customer_name)+' · '+esc(b.service)+'</div><div class="booking-meta">'+esc(b.date)+' · '+esc(b.duration)+' 分 · NT$'+Number(b.price||0)+'<br>人員：'+esc((b.staff&&b.staff.name)||'-')+' · '+esc(b.customer_phone_masked||'')+' · '+esc(b.customer_type==='member'?'會員':'訪客')+' · '+esc(b.source||'web')+'</div></div><span class="badge">'+esc(b.statusLabel||labels[b.status]||b.status)+'</span></div>'+(b.merchant_note?'<div class="warn">店家備註：'+esc(b.merchant_note)+'</div>':'')+'<div class="booking-actions">'+actions+'</div><div class="note-box"><textarea placeholder="店家內部備註，顧客看不到">'+esc(b.merchant_note||'')+'</textarea><button data-action="note" type="button">儲存備註</button></div></article>';}async function load(){const p=new URLSearchParams({tenant,date:$("ops-date").value||"${escapeAttrValue(today)}",limit:"100"});if($("ops-status").value)p.set("status",$("ops-status").value);if($("ops-staff").value)p.set("staff_id",$("ops-staff").value);if($("ops-service").value)p.set("service_id",$("ops-service").value);if($("ops-keyword").value)p.set("customer_keyword",$("ops-keyword").value);if($("ops-cancelled").checked)p.set("include_cancelled","1");const res=await fetch('/api/merchant/bookings?'+p.toString());const data=await res.json();if(!data.ok){$("ops-list").innerHTML='<p class="muted">載入失敗</p>';return;}const s=data.summary||{};$("ops-summary").innerHTML=['total','pending','confirmed','inService','completed','noShow'].map((k)=>'<div><b>'+Number(s[k]||0)+'</b><span>'+({total:'總數',pending:'待確認',confirmed:'已確認',inService:'服務中',completed:'已完成',noShow:'未到店'}[k])+'</span></div>').join('')+'<div><b>NT$'+Number(s.expectedRevenue||0).toLocaleString('zh-TW')+'</b><span>預計營收</span></div><div><b>NT$'+Number(s.completedRevenue||0).toLocaleString('zh-TW')+'</b><span>完成營收</span></div>';const affected=(data.planLimited&&data.planLimited.affectedBookings)||[];const currentBookings=data.bookings||[];const visibleIds=new Set(currentBookings.map((booking)=>booking.booking_id));const affectedExtras=affected.filter((booking)=>!visibleIds.has(booking.booking_id));$("ops-plan-limited").innerHTML=affected.length?'<div class="warn"><b>方案調整待處理預約</b><br>有 '+affected.length+' 筆未來預約落在因方案限制停止接新單的人員；下方可直接改派、取消或聯絡顧客。保留原人員不會讓該人員恢復接新單。</div>':'';const listHtml=currentBookings.map(card).join('');const affectedHtml=affectedExtras.length?'<h3 style="margin:18px 0 8px">方案調整待處理預約</h3>'+affectedExtras.map(card).join(''):'';$("ops-list").innerHTML=(listHtml||'<p class="muted">沒有符合條件的預約。</p>')+affectedHtml;}document.addEventListener('click',async(e)=>{const btn=e.target.closest('[data-action]');if(!btn)return;const el=btn.closest('.booking-card');if(!el)return;const id=el.dataset.id;try{if(btn.dataset.action==='status'){await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/status',{status:btn.dataset.value,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='cancel'){const reason=prompt('取消原因','顧客取消')||'';if(!reason)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/status',{status:'cancelled',reason,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='note'){await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/note',{note:el.querySelector('textarea').value,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='reschedule'){const date=prompt('新日期 YYYY-MM-DD',$("ops-date").value);const start=prompt('新開始時間 HH:mm','09:00');if(!date||!start)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/reschedule',{date,start_time:start,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='reassign'){const staff=prompt('輸入新服務人員 ID');if(!staff)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/reassign',{staff_id:staff,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='events'){const res=await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/events',{});alert((res.events||[]).map(ev=>ev.created_at+' '+ev.event_type+' '+(ev.from_status||'')+' → '+(ev.to_status||'')).join('\\n')||'尚無歷程');return;}await load();}catch(err){alert(err.message);}});document.querySelectorAll('#ops-date,#ops-status,#ops-staff,#ops-service,#ops-cancelled').forEach(el=>el.addEventListener('change',load));$('ops-keyword').addEventListener('input',()=>{clearTimeout(window.__opsTimer);window.__opsTimer=setTimeout(load,300);});document.querySelectorAll('[data-day]').forEach(btn=>btn.onclick=()=>{const d=new Date($("ops-date").value||"${escapeAttrValue(today)}");d.setDate(d.getDate()+Number(btn.dataset.day));$("ops-date").value=d.toISOString().slice(0,10);load();});document.querySelector('[data-today]').onclick=()=>{$("ops-date").value="${escapeAttrValue(today)}";load();};load();})();</script>`;
   return pageShell(data.store?.name || store.name, body, "operations", tenantId, storeSlug);
 }
 function renderMerchantPage(data = { store, bookings, services, staffMembers, resourceTypes }, customers = []) {
@@ -5019,13 +5047,20 @@ async function merchantBookingsResponse(request, env, tenantId) {
     LIMIT ? OFFSET ?
   `).bind(...binds, limit, offset).all();
   const bookings = (rows.results || []).map(bookingRowToOperation);
-  const affected = bookings.filter((booking) => {
-    const staff = (booking.staff?.id || "");
-    return staff && booking.status !== "cancelled" && booking.status !== "completed" && booking.status !== "no_show";
-  });
   const limitedStaffRows = await env.DB.prepare("SELECT id, name FROM staff_members WHERE tenant_id = ? AND enabled = 1 AND COALESCE(plan_booking_status, 'active') = 'plan_limited'").bind(tenantId).all();
-  const limitedIds = new Set((limitedStaffRows.results || []).map((row) => row.id));
-  const affectedPlanBookings = bookings.filter((booking) => limitedIds.has(booking.staff?.id || "") && booking.date >= today && !["cancelled", "completed", "no_show"].includes(booking.status));
+  const affectedPlanRows = await env.DB.prepare(`
+    SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
+    FROM bookings b
+    INNER JOIN staff_members sm ON sm.id = b.staff_id AND sm.tenant_id = b.tenant_id
+    LEFT JOIN services s ON s.id = b.service_id AND s.tenant_id = b.tenant_id
+    WHERE b.tenant_id = ?
+      AND sm.enabled = 1
+      AND COALESCE(sm.plan_booking_status, 'active') = 'plan_limited'
+      AND b.booking_date >= ?
+      AND b.status NOT IN ('cancelled', 'completed', 'no_show')
+    ORDER BY b.booking_date ASC, b.start_time ASC
+  `).bind(tenantId, today).all();
+  const affectedPlanBookings = (affectedPlanRows.results || []).map(bookingRowToOperation);
   return Response.json({ ok: true, summary: summarizeMerchantBookings(bookings), bookings, planLimited: { affectedBookings: affectedPlanBookings, staff: limitedStaffRows.results || [] } }, { headers: jsonHeaders });
 }
 
@@ -5095,14 +5130,17 @@ async function updateMerchantBookingStatus(request, env, tenantId, booking, payl
   if (!canTransitionBookingStatus(fromStatus, toStatus)) return merchantBookingError("INVALID_BOOKING_STATUS_TRANSITION", "此預約狀態無法執行這項操作", 409);
   if (fromStatus === toStatus) return Response.json({ ok: true, booking: bookingRowToOperation(booking) }, { headers: jsonHeaders });
   const reason = limitText(payload.reason, 300);
-  const setParts = ["status = ?", "updated_at = datetime('now')"];
-  const binds = [toStatus];
+  const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
+  const updatedAt = bookingMutationTimestamp();
+  const setParts = ["status = ?", "updated_at = ?"];
+  const binds = [toStatus, updatedAt];
   if (toStatus === "checked_in") setParts.push("checked_in_at = COALESCE(checked_in_at, datetime('now'))");
   if (toStatus === "in_service") setParts.push("service_started_at = COALESCE(service_started_at, datetime('now'))");
   if (toStatus === "completed") setParts.push("completed_at = COALESCE(completed_at, datetime('now'))");
   if (toStatus === "cancelled") { setParts.push("cancelled_at = COALESCE(cancelled_at, datetime('now'))", "cancelled_by = COALESCE(cancelled_by, 'merchant')", "cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason)"); binds.push(reason); }
-  binds.push(tenantId, booking.id);
-  const result = await env.DB.prepare(`UPDATE bookings SET ${setParts.join(", ")} WHERE tenant_id = ? AND id = ?`).bind(...binds).run();
+  binds.push(tenantId, booking.id, String(booking.status || ""));
+  if (expectedUpdatedAt) binds.push(expectedUpdatedAt);
+  const result = await env.DB.prepare(`UPDATE bookings SET ${setParts.join(", ")} WHERE tenant_id = ? AND id = ? AND status = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(...binds).run();
   if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
   if (toStatus === "cancelled") await rollbackBookingCustomerPoints(env, tenantId, booking.id, booking.customer_id);
   await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: toStatus === "cancelled" ? "cancelled" : "status_changed", fromStatus, toStatus, actorType: "merchant", actorId: merchantActorIdFromRequest(request), reason });
@@ -5111,7 +5149,9 @@ async function updateMerchantBookingStatus(request, env, tenantId, booking, payl
 
 async function updateMerchantBookingNote(request, env, tenantId, booking, payload) {
   const note = limitText(payload.note, 1000);
-  await env.DB.prepare("UPDATE bookings SET merchant_note = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(note, tenantId, booking.id).run();
+  const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
+  const result = await env.DB.prepare(`UPDATE bookings SET merchant_note = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(note, bookingMutationTimestamp(), tenantId, booking.id, ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])).run();
+  if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
   await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "merchant_note_updated", actorType: "merchant", actorId: merchantActorIdFromRequest(request) });
   return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
 }
@@ -5120,7 +5160,9 @@ async function updateMerchantBookingCustomer(request, env, tenantId, booking, pa
   const name = limitText(payload.customer_name || payload.customerName, 80);
   const phone = limitText(payload.customer_phone || payload.customerPhone, 32);
   if (!name) return merchantBookingError("CUSTOMER_NAME_REQUIRED", "請輸入顧客姓名", 400);
-  await env.DB.prepare("UPDATE bookings SET customer_name = ?, customer_phone = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(name, phone || null, tenantId, booking.id).run();
+  const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
+  const result = await env.DB.prepare(`UPDATE bookings SET customer_name = ?, customer_phone = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(name, phone || null, bookingMutationTimestamp(), tenantId, booking.id, ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])).run();
+  if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
   await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "customer_updated", actorType: "merchant", actorId: merchantActorIdFromRequest(request), metadata: { oldName: booking.customer_name, newName: name, phoneChanged: String(booking.customer_phone || "") !== phone } });
   return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
 }
@@ -5134,6 +5176,7 @@ async function rescheduleMerchantBooking(request, env, tenantId, booking, payloa
   if (!date || !start) return merchantBookingError("BOOKING_RESCHEDULE_INVALID", "請選擇新日期與時間", 400);
   if (`${date} ${start}` < `${todayInTaipei()} 00:00`) return merchantBookingError("BOOKING_PAST_SLOT", "不可改到過去時間", 409);
   const data = await dashboardData(env, date, tenantId);
+  if (!isBusinessOpenOnDate(data.businessHours, date)) return merchantBookingError("BOOKING_SLOT_CONFLICT", "店家當日未營業", 409);
   const service = (data.services || []).find((item) => item.id === booking.service_id);
   const duration = Number(booking.duration_minutes || service?.prices?.[0]?.minutes || 0);
   const end = toTime(toMinutes(start) + duration);
@@ -5142,7 +5185,9 @@ async function rescheduleMerchantBooking(request, env, tenantId, booking, payloa
   const resource = (data.resourceTypes || []).find((item) => item.id === service?.resourceTypeId);
   const otherBookings = (data.bookings || []).filter((item) => item.id !== booking.id);
   if (!isSlotAvailable({ start: toMinutes(start), end: toMinutes(end), businessHours: data.businessHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此時段已被預約或不在營業時間內", 409);
-  await env.DB.prepare("UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, staff_id = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(date, start, end, staffId, tenantId, booking.id).run();
+  const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
+  const result = await env.DB.prepare(`UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, staff_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(date, start, end, staffId, bookingMutationTimestamp(), tenantId, booking.id, ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])).run();
+  if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
   await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "rescheduled", actorType: "merchant", actorId: merchantActorIdFromRequest(request), reason: limitText(payload.reason, 300), metadata: { old_date: booking.booking_date, old_start_time: booking.start_time, old_end_time: booking.end_time, new_date: date, new_start_time: start, new_end_time: end, old_staff_id: booking.staff_id, new_staff_id: staffId } });
   return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
 }
@@ -5158,7 +5203,9 @@ async function reassignMerchantBooking(request, env, tenantId, booking, payload)
   const resource = (data.resourceTypes || []).find((item) => item.id === service?.resourceTypeId);
   const otherBookings = (data.bookings || []).filter((item) => item.id !== booking.id);
   if (!isSlotAvailable({ start: toMinutes(booking.start_time), end: toMinutes(booking.end_time), businessHours: data.businessHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此人員該時段已有預約", 409);
-  await env.DB.prepare("UPDATE bookings SET staff_id = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(staffId, tenantId, booking.id).run();
+  const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
+  const result = await env.DB.prepare(`UPDATE bookings SET staff_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(staffId, bookingMutationTimestamp(), tenantId, booking.id, ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])).run();
+  if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
   await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "staff_reassigned", actorType: "merchant", actorId: merchantActorIdFromRequest(request), reason: limitText(payload.reason, 300), metadata: { old_staff_id: booking.staff_id, new_staff_id: staffId } });
   return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
 }
@@ -5259,6 +5306,7 @@ async function createBooking(request, env, data) {
   const freshData = await dashboardData(env, date, tenantId);
   const freshAccess = freshData.store?.access || evaluateTenantAccess(freshData.store || {});
   if (freshAccess.staffSelectionRequired) return staffSelectionRequiredResponse();
+  if (!isBusinessOpenOnDate(freshData.businessHours, date)) return Response.json({ ok: false, error: "selected slot is no longer available" }, { status: 409, headers: jsonHeaders });
   const bookableFreshStaff = bookableStaffMembers(freshData.staffMembers);
   const requestedStaffId = String(payload.staffId || "any").trim() || "any";
   const freshService = freshData.services.find((item) => item.id === selectedService.id) || selectedService;
