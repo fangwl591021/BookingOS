@@ -14,9 +14,9 @@ Backup path: .local-backups/tenant-manual-closeout-20260711-141004.sql
 | Metric | Count |
 | --- | ---: |
 | Tenants scanned | 4 |
-| No change required | 2 |
+| No change required | 4 |
 | Safe auto-fix tenants | 0 |
-| Manual review tenants | 2 |
+| Manual review tenants | 0 |
 | Blocking error tenants | 0 |
 | Planned safe field fixes | 0 |
 | Applied field fixes | 0 |
@@ -26,20 +26,22 @@ Backup path: .local-backups/tenant-manual-closeout-20260711-141004.sql
 | Code | Count |
 | --- | ---: |
 | ACTIVE_NO_PAID_ORDER | 1 |
-| MISSING_SLUG | 2 |
+| MISSING_SLUG | 0 |
 
 ## Tenant Audit Results
 
 | Tenant | Slug | Status | Access | Plan | Staff | Contract | Billing | Orders | Result | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | demo-tenant<br>安和整復調理 | anhe | active | active | small | 1/2 | 2026-07-11 - 2027-07-10 | annual<br>NT$5000 | paid 0<br>pending 0 | NO_CHANGE_REQUIRED | Manual platform demo activation. Existing paid order history remains an audit note. |
-| trial-mrd14uce<br>米樂按摩 | - | trial | trial | solo | 1/1 | 2026-07-09 - 2026-09-06 | annual<br>NT$3000 | paid 0<br>pending 0 | MANUAL_REVIEW | MISSING_SLUG. Awaiting Tony confirmation before writing slug. |
-| trial-mrdj8djy<br>王師傅整人大師 | - | trial | trial | solo | 1/1 | 2026-07-09 - 2026-09-06 | annual<br>NT$3000 | paid 0<br>pending 0 | MANUAL_REVIEW | MISSING_SLUG. Awaiting Tony confirmation before writing slug. |
+| trial-mrd14uce<br>米樂按摩 | mile-massage | trial | trial | solo | 1/1 | 2026-07-09 - 2026-09-06 | annual<br>NT$3000 | paid 0<br>pending 0 | NO_CHANGE_REQUIRED | Slug finalized in Task 015C closeout. |
+| trial-mrdj8djy<br>王師傅整人大師 | wang-master | trial | trial | solo | 1/1 | 2026-07-09 - 2026-09-06 | annual<br>NT$3000 | paid 0<br>pending 0 | NO_CHANGE_REQUIRED | Slug finalized in Task 015C closeout. |
 | sunny-hair<br>晴美髮藝 | sunny-hair | trial | trial | small | 2/2 | 2026-07-11 - 2026-09-09 | annual<br>NT$5000 | paid 0<br>pending 0 | NO_CHANGE_REQUIRED | Trial end manually aligned to the 60-day rule. |
 
 ## Task 015C Manual Closeout
 
-Backup before mutation: `.local-backups/tenant-manual-closeout-20260711-141004.sql`
+Backup before manual date mutation: `.local-backups/tenant-manual-closeout-20260711-141004.sql`
+
+Backup before slug mutation: `.local-backups/tenant-slug-finalize-20260711-141836.sql`
 
 Applied remote D1 updates:
 
@@ -49,18 +51,18 @@ Applied remote D1 updates:
 | demo-tenant | contract_end | - | 2027-07-10 | Manual platform demo activation |
 | sunny-hair | contract_end | 2026-07-25 | 2026-09-09 | Align existing trial to the 60-day rule by explicit Task 015C instruction |
 
-Pending Tony confirmation before update:
+Final slug closeout:
 
-| Tenant | Store Name | Suggested legal slugs |
-| --- | --- | --- |
-| trial-mrd14uce | 米樂按摩 | `mile-massage`, `mile-massage-banqiao`, `mi-le-massage` |
-| trial-mrdj8djy | 王師傅整人大師 | `wang-master`, `wang-master-therapy`, `wang-zichi` |
+| Tenant | Store Name | Final Slug | Public URL |
+| --- | --- | --- | --- |
+| trial-mrd14uce | 米樂按摩 | `mile-massage` | `/store/mile-massage` |
+| trial-mrdj8djy | 王師傅整人大師 | `wang-master` | `/store/wang-master` |
 
 Rules preserved:
 
 - New trials use 60 days.
 - Legacy tenants are not automatically extended unless explicitly handled by a manual closeout task.
-- Missing slugs are never auto-filled, translated or overwritten without Tony confirmation.
+- Missing slugs are never auto-filled, translated or overwritten without Tony confirmation. Tony confirmed `mile-massage` and `wang-master` on 2026-07-11.
 - No Customer, Booking, Staff, Service, Identity, route or login data was changed.
 ## Planned Safe Fixes
 
@@ -83,3 +85,9 @@ No safe auto-fixes applied in this run.
 - This report is generated from remote D1 read queries.
 - Safe apply mode refuses to run when any BLOCKING_ERROR exists.
 - The current trial rule is 60 days by owner instruction on 2026-07-11.
+
+## Task 015 Status
+
+- Task 015: Closed
+- Task 015B: Closed
+- Task 015C: Closed
