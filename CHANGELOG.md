@@ -1,3 +1,15 @@
+## 2026-07-11 - Task 016B First Batch Onboarding Smoke
+
+### Added
+
+- Added `docs/FIRST_BATCH_ONBOARDING_SMOKE.md` with production first-batch store URL verification, onboarding checklist, and next actions.
+
+### Verified
+
+- `/store/anhe`, `/store/sunny-hair`, `/store/mile-massage`, and `/store/wang-master` all resolve with the correct tenant and no demo fallback.
+- 米樂按摩 and 王師傅整人大師 correctly show setup incomplete because service items are not configured yet.
+- `npm run smoke` passed 12/12.
+- Remote D1 reports no migrations to apply.
 ## 2026-07-11 - Task 016 Supplement Staff Selection Onboarding
 
 ### Changed
