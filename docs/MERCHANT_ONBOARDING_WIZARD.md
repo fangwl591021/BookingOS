@@ -57,3 +57,18 @@ It does not create a customer, point transaction, notification, or official cust
 `plan_limited` staff are retained for history and existing bookings. They do not appear as bookable staff and are not used by system assignment or setup test booking.
 
 If staff selection is required, the wizard blocks setup test and formal go-live.
+## Read And Write Permissions
+
+Onboarding read routes are intentionally separate from write routes.
+
+- `GET /merchant/onboarding` requires an active merchant session with tenant read permission.
+- `GET /api/merchant/onboarding` requires tenant read permission and returns setup progress, missing actions, public URL, services, staff, resources, and store status.
+- All write APIs still require merchant write permission plus tenant capability checks and tenant business-status checks.
+
+Write APIs include template apply, store profile, hours, services, staff, resources, setup test booking, enable booking, and disable booking.
+
+`trial` and `active` tenants can view and write when their role and capabilities allow it.
+
+`grace` and `expired` tenants can view setup status and existing configuration, but the wizard is read-only. The page shows: `目前方案已到期，設定資料僅供查看；續約後可繼續修改。` Direct write API calls return HTTP 403 with `TENANT_READ_ONLY`.
+
+`suspended` and `cancelled` tenants follow the existing merchant access policy. When a valid merchant session is still allowed to reach the wizard, the page is read-only and write APIs remain blocked.
