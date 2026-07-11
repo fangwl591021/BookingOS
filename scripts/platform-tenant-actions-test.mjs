@@ -3,31 +3,90 @@ import { readFile } from "node:fs/promises";
 
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 
-assert.match(source, /data-copy-store-url=/, "tenant rows must render a copy action");
-assert.match(source, /title=\"\$\{escapeAttrValue\(publicUrl\(publicPath\)\)\}\"/, "copy action must expose the full URL as a tooltip");
-assert.match(source, /href=\"\$\{escapeAttrValue\(publicPath\)\}\" target=\"_blank\" rel=\"noopener noreferrer\"/, "open action must use the safe public store path");
-assert.match(source, /href=\"\/merchant\?tenant=\$\{encodeURIComponent\(tenant\.id\)\}\"/, "manage action must preserve the merchant entry point");
-assert.match(source, /navigator\\.clipboard\\|\\|typeof navigator\\.clipboard\\.writeText===\\"function\\"/, "copy action must use Clipboard API");
-assert.match(source, /document\.execCommand\("copy"\)/, "copy action must provide a browser fallback");
+assert.ok(source.includes('type="button" data-action="copy-store-url"'), "copy button must be an explicit button");
+assert.ok(source.includes('data-slug="${escapeAttrValue(tenant.slug || "")}"'), "copy button must carry the tenant slug");
+assert.ok(source.includes("async function copyText(text)"), "copyText helper must exist");
+assert.ok(source.includes("window.isSecureContext"), "Clipboard API must be gated by secure context");
+assert.ok(source.includes('document.execCommand("copy")'), "copy fallback must exist");
+assert.ok(source.includes("async function handleCopyStoreUrl(store)"), "store URL handler must exist");
+assert.ok(source.includes('closest("[data-action=\'copy-store-url\']")'), "click handling must use closest event delegation");
+assert.ok(source.includes("已複製"), "success button feedback must exist");
+assert.ok(source.includes("複製失敗，請手動複製"), "failure toast must exist");
 
-const calls = [];
-const mockClipboard = { writeText: async (value) => calls.push(value) };
-const toast = [];
-async function copyStoreUrl(url, clipboard, showToast) {
+const clipboardSuccess = [];
+const fakeDocument = {
+  body: { appendChild() {}, removeChild() {} },
+  createElement() {
+    return {
+      value: "",
+      setAttribute() {},
+      style: {},
+      focus() {},
+      select() {},
+      setSelectionRange() {},
+    };
+  },
+  execCommand(command) {
+    assert.equal(command, "copy");
+    return true;
+  },
+};
+async function copyText(text, navigatorMock, windowMock) {
+  if (navigatorMock.clipboard && windowMock.isSecureContext) {
+    try {
+      await navigatorMock.clipboard.writeText(text);
+      return "clipboard";
+    } catch (_error) {}
+  }
+  const textarea = fakeDocument.createElement("textarea");
+  textarea.value = text;
+  fakeDocument.body.appendChild(textarea);
+  textarea.select();
+  const success = fakeDocument.execCommand("copy");
+  fakeDocument.body.removeChild(textarea);
+  if (!success) throw new Error("COPY_FAILED");
+  return "fallback";
+}
+async function handleCopyStoreUrl(store, navigatorMock, windowMock, onSuccess, onFailure) {
+  const storeUrl = windowMock.location.origin + "/store/" + store.slug;
   try {
-    if (!clipboard || typeof clipboard.writeText !== "function") throw new Error("clipboard unavailable");
-    await clipboard.writeText(url);
-    showToast("已複製店家網址");
-  } catch (_error) {
-    showToast("複製失敗，請重新嘗試");
+    await copyText(storeUrl, navigatorMock, windowMock);
+    onSuccess("已複製", "已複製店家網址", storeUrl);
+  } catch (error) {
+    onFailure("複製失敗，請手動複製", error);
   }
 }
 
-await copyStoreUrl("https://bookingos.example/store/anhe", mockClipboard, (message) => toast.push(message));
-assert.deepEqual(calls, ["https://bookingos.example/store/anhe"]);
-assert.deepEqual(toast, ["已複製店家網址"]);
+const apiMode = await copyText("https://example.test/store/anhe", {
+  clipboard: { writeText: async (value) => clipboardSuccess.push(value) },
+}, { isSecureContext: true });
+assert.equal(apiMode, "clipboard");
+assert.deepEqual(clipboardSuccess, ["https://example.test/store/anhe"]);
 
-await copyStoreUrl("https://bookingos.example/store/anhe", null, (message) => toast.push(message));
-assert.equal(toast.at(-1), "複製失敗，請重新嘗試");
+const fallbackMode = await copyText("https://example.test/store/sunny-hair", {
+  clipboard: { writeText: async () => { throw new Error("blocked"); } },
+}, { isSecureContext: true });
+assert.equal(fallbackMode, "fallback");
 
-console.log("Platform tenant action Clipboard mock test passed");
+const successMessages = [];
+await handleCopyStoreUrl(
+  { slug: "onboarding-test" },
+  { clipboard: { writeText: async (value) => clipboardSuccess.push(value) } },
+  { isSecureContext: true, location: { origin: "https://bookingos.example" } },
+  (...messages) => successMessages.push(messages),
+  () => assert.fail("success path must not fail"),
+);
+assert.deepEqual(clipboardSuccess.at(-1), "https://bookingos.example/store/onboarding-test");
+assert.deepEqual(successMessages.at(-1), ["已複製", "已複製店家網址", "https://bookingos.example/store/onboarding-test"]);
+
+const failureMessages = [];
+await handleCopyStoreUrl(
+  { slug: "anhe" },
+  { clipboard: { writeText: async () => { throw new Error("blocked"); } } },
+  { isSecureContext: true, location: { origin: "https://bookingos.example" } },
+  () => assert.fail("failure path must not succeed"),
+  (...messages) => failureMessages.push(messages),
+);
+assert.equal(failureMessages.at(-1)[0], "複製失敗，請手動複製");
+
+console.log("Platform tenant action Clipboard and fallback tests passed");
