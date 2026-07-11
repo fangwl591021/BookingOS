@@ -94,6 +94,6 @@ Task 015C closes out the first legacy tenant billing audit. `demo-tenant` is rec
 
 ## Merchant Go-Live Onboarding
 
-Task 016 adds first-store go-live readiness checks. Merchant overview now shows an 8-item setup checklist, public URL preview, setup test booking, and a formal booking open switch.
+Task 017 adds the merchant self-service onboarding wizard at `/merchant/onboarding`. New tenants start with `booking_enabled = 0`; merchants complete store profile, hours, template/service setup, staff bindings, resources, setup test booking, and then open formal booking.
 
-Formal booking requires setup completion and `tenants.booking_enabled = 1`. See `docs/STORE_GO_LIVE_CHECKLIST.md` and `docs/MERCHANT_QUICK_START.md`.
+Formal booking requires setup completion, setup test completion, no staff plan-selection blocker, and `tenants.booking_enabled = 1`. See `docs/MERCHANT_ONBOARDING_WIZARD.md`, `docs/STORE_GO_LIVE_CHECKLIST.md`, and `docs/MERCHANT_QUICK_START.md`.

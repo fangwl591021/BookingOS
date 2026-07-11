@@ -507,6 +507,12 @@ export default {
       return html(renderCustomersPage(await dashboardData(env, todayInTaipei(), activeTenantId), await loadCustomers(env, activeTenantId)));
     }
 
+    if (url.pathname === "/merchant/onboarding") {
+      const merchantData = await dashboardData(env, todayInTaipei(), activeTenantId);
+      merchantData.onboardingSetup = await evaluateTenantSetup(env, activeTenantId);
+      return html(renderMerchantOnboardingPage(merchantData));
+    }
+
     if (url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/merchant") {
       const merchantData = await dashboardData(env, todayInTaipei(), activeTenantId);
       merchantData.onboardingSetup = await evaluateTenantSetup(env, activeTenantId);
@@ -784,12 +790,13 @@ function renderPlatformLoginPage(error = "") {
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 平台登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#06c755;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:#062216}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Platform Console</small></div></div><h1>平台總後台登入</h1><p>請輸入平台管理員帳密後進入總後台。</p>${message}<form method="post" action="/platform-login"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form></main></body></html>`;
 }
 function isMerchantProtectedPath(pathname) {
-  return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/merchant/staff/plan-selection" || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/merchant/onboarding" || pathname.startsWith("/api/merchant/onboarding/") || pathname === "/api/customers" || pathname === "/api/customers/export";
+  return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/merchant/onboarding" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/merchant/staff/plan-selection" || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/merchant/onboarding" || pathname.startsWith("/api/merchant/onboarding/") || pathname === "/api/customers" || pathname === "/api/customers/export";
 }
 
 function merchantRoutePermission(pathname, method = "GET") {
   const write = String(method || "GET").toUpperCase() !== "GET";
   if (pathname === "/" || pathname === "/index.html" || pathname === "/merchant") return "tenant.read";
+  if (pathname === "/merchant/onboarding") return "tenant.settings.write";
   if (pathname === "/settings") return "tenant.settings.write";
   if (pathname === "/schedule") return "schedule.write";
   if (pathname === "/customers") return "crm.read";
@@ -2441,6 +2448,7 @@ function pageShell(title, body, active = "merchant", tenantId = TENANT_ID, store
   const publicBookingPath = storeSlug ? storePath(storeSlug, "") : "/book?tenant=" + encodeURIComponent(tenantId);
   const navLinks = [
     ["merchant", "/merchant", "總覽"],
+    ["onboarding", "/merchant/onboarding", "開店精靈"],
     ["settings", "/settings", "設定"],
     ["schedule", "/schedule", "排班"],
     ["customers", "/customers", "CRM"],
@@ -2449,7 +2457,7 @@ function pageShell(title, body, active = "merchant", tenantId = TENANT_ID, store
   const bookingUrl = publicBookingPath;
   const nav = `${navLinks}<button class="copy-booking-url" type="button" data-booking-url="${escapeAttrValue(bookingUrl)}">複製預約網址</button>`;
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlValue(title)}</title><style>
-    :root{--green:#0f766e;--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#14221d;--muted:#68746d;--blue:#3d6f9f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{text-decoration:none;color:inherit}button{font:inherit}.wrap{max-width:1040px;margin:0 auto;padding:18px}.hero{background:#0f4f43;color:white;border-radius:10px;padding:20px;margin-bottom:14px}.hero h1{margin:0;font-size:28px}.hero p{margin:7px 0 0;color:rgba(255,255,255,.76);line-height:1.5}.nav{display:flex;gap:8px;overflow:auto;margin-bottom:14px}.nav a,.nav button{background:white;border:1px solid var(--line);border-radius:999px;padding:10px 16px;font-weight:900;white-space:nowrap;color:var(--ink);cursor:pointer}.nav a.active{background:var(--green);border-color:var(--green);color:white}.nav button{background:#e7f1ff;border-color:#c7d9f4;color:#234f7c}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.panel{background:white;border:1px solid var(--line);border-radius:8px;padding:16px}.panel h2{margin:0 0 10px;font-size:18px}.muted{color:var(--muted);line-height:1.55}.stat{font-size:30px;font-weight:950;margin-top:6px}.table{width:100%;border-collapse:collapse;font-size:14px}.table th,.table td{border-bottom:1px solid #edf1ec;padding:10px;text-align:left;vertical-align:top}.badge{display:inline-block;border-radius:999px;background:#e7f7ee;color:#0f513f;padding:4px 9px;font-size:12px;font-weight:900}.badge.yellow{background:#fff4cf;color:#755100}.btn{display:inline-grid;place-items:center;min-height:40px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 14px;font-weight:900}.primary{background:var(--blue);border-color:var(--blue);color:white}.onboard-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.progress{height:8px;background:#edf1ec;border-radius:999px;overflow:hidden;margin:10px 0 14px}.progress i{display:block;height:100%;background:var(--green)}.onboard-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.onboard-check{border:1px solid var(--line);border-radius:8px;padding:9px;background:#fffdf7}.onboard-check.ok{background:#f0faf4}.onboard-check b{display:block;font-size:12px;color:#0f513f}.onboard-check span{display:block;font-weight:900;margin-top:2px}.onboard-check small{display:block;color:var(--muted);margin-top:4px;line-height:1.35}.onboard-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}@media(max-width:760px){.onboard-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.grid{grid-template-columns:1fr}.wrap{padding:12px}.hero h1{font-size:24px}}
+    :root{--green:#0f766e;--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#14221d;--muted:#68746d;--blue:#3d6f9f}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{text-decoration:none;color:inherit}button,input,select,textarea{font:inherit}.wrap{max-width:1040px;margin:0 auto;padding:18px}.hero{background:#0f4f43;color:white;border-radius:10px;padding:20px;margin-bottom:14px}.hero h1{margin:0;font-size:28px}.hero p{margin:7px 0 0;color:rgba(255,255,255,.76);line-height:1.5}.nav{display:flex;gap:8px;overflow:auto;margin-bottom:14px}.nav a,.nav button{background:white;border:1px solid var(--line);border-radius:999px;padding:10px 16px;font-weight:900;white-space:nowrap;color:var(--ink);cursor:pointer}.nav a.active{background:var(--green);border-color:var(--green);color:white}.nav button{background:#e7f1ff;border-color:#c7d9f4;color:#234f7c}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.panel{background:white;border:1px solid var(--line);border-radius:8px;padding:16px}.panel h2{margin:0 0 10px;font-size:18px}.muted{color:var(--muted);line-height:1.55}.stat{font-size:30px;font-weight:950;margin-top:6px}.table{width:100%;border-collapse:collapse;font-size:14px}.table th,.table td{border-bottom:1px solid #edf1ec;padding:10px;text-align:left;vertical-align:top}.badge{display:inline-block;border-radius:999px;background:#e7f7ee;color:#0f513f;padding:4px 9px;font-size:12px;font-weight:900}.badge.yellow{background:#fff4cf;color:#755100}.btn{display:inline-grid;place-items:center;min-height:40px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 14px;font-weight:900}.primary{background:var(--blue);border-color:var(--blue);color:white}form.wizard{display:grid;gap:10px}form.wizard label{display:grid;gap:6px;color:var(--muted);font-size:12px;font-weight:850}form.wizard input,form.wizard select,form.wizard textarea{width:100%;min-height:40px;border:1px solid var(--line);border-radius:8px;background:white;padding:8px 10px}form.wizard textarea{min-height:76px;resize:vertical}.wizard-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wizard-actions{display:flex;gap:8px;flex-wrap:wrap}.wizard-list{display:grid;gap:8px}.wizard-item{border:1px solid var(--line);border-radius:8px;background:#f8faf8;padding:10px}.wizard-item small{display:block;color:var(--muted);margin-top:4px}.template-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}@media(max-width:760px){.wizard-grid,.template-grid{grid-template-columns:1fr}}.onboard-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.progress{height:8px;background:#edf1ec;border-radius:999px;overflow:hidden;margin:10px 0 14px}.progress i{display:block;height:100%;background:var(--green)}.onboard-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.onboard-check{border:1px solid var(--line);border-radius:8px;padding:9px;background:#fffdf7}.onboard-check.ok{background:#f0faf4}.onboard-check b{display:block;font-size:12px;color:#0f513f}.onboard-check span{display:block;font-weight:900;margin-top:2px}.onboard-check small{display:block;color:var(--muted);margin-top:4px;line-height:1.35}.onboard-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}@media(max-width:760px){.onboard-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.grid{grid-template-columns:1fr}.wrap{padding:12px}.hero h1{font-size:24px}}
   </style></head><body><main class="wrap"><section class="hero"><h1>${escapeHtmlValue(title)}</h1><p>BookingOS 店家後台</p></section><nav class="nav">${nav}</nav>${body}</main><script>document.querySelectorAll("[data-booking-url]").forEach((button)=>{button.addEventListener("click",async()=>{const url=new URL(button.dataset.bookingUrl,location.origin).href;try{await navigator.clipboard.writeText(url);}catch(error){const input=document.createElement("input");input.value=url;document.body.appendChild(input);input.select();document.execCommand("copy");input.remove();}const original=button.textContent;button.textContent="已複製";setTimeout(()=>{button.textContent=original;},1400);});});document.querySelectorAll("[data-test-booking]").forEach((button)=>button.addEventListener("click",async()=>{const status=document.querySelector("#onboarding-status"); if(status) status.textContent="建立測試預約中..."; const res=await fetch("/api/merchant/onboarding/test-booking",{method:"POST"}); const data=await res.json(); if(status) status.textContent=data.ok?"測試預約已建立，請重新整理查看完成度。":"測試失敗："+((data.error&&data.error.message)||data.error||"請補齊設定");}));document.querySelectorAll("[data-open-booking]").forEach((button)=>button.addEventListener("click",async()=>{const status=document.querySelector("#onboarding-status"); if(status) status.textContent="檢查並開放預約中..."; const res=await fetch("/api/merchant/onboarding/enable-booking",{method:"POST"}); const data=await res.json(); if(status) status.textContent=data.ok?"已開放正式預約。":"尚不能開放："+((data.error&&data.error.message)||data.error||"請補齊設定");}));document.querySelectorAll("[data-copy-onboarding-url]").forEach((button)=>button.addEventListener("click",async()=>{const url=new URL(button.dataset.copyOnboardingUrl,location.origin).href;try{await navigator.clipboard.writeText(url);}catch(error){const input=document.createElement("input");input.value=url;document.body.appendChild(input);input.select();document.execCommand("copy");input.remove();}button.textContent="已複製公開網址";}));document.querySelectorAll("[data-staff-plan-selection]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();const status=form.querySelector("[data-plan-selection-status]");const checked=Array.from(form.querySelectorAll("[name=staffIds]:checked")).map((input)=>input.value);if(status)status.textContent="儲存中...";const res=await fetch("/api/merchant/staff/plan-selection",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({staffIds:checked})});const data=await res.json().catch(()=>({ok:false,error:"回應格式錯誤"}));if(!data.ok){if(status)status.textContent="儲存失敗："+((data.error&&data.error.message)||data.error||"請重新確認");return;}const affected=((data.planImpact||{}).affectedFutureBookings||[]).length;if(status)status.textContent="已儲存可接單人員。"+(affected?" 有 "+affected+" 筆既有未來預約需人工確認。":"");setTimeout(()=>location.reload(),1200);}));</script></body></html>`;
 }
 
@@ -2485,6 +2493,22 @@ function renderOnboardingPanel(setup = null, tenantId = TENANT_ID) {
     return `<label class="check-row"><input type="checkbox" name="staffIds" value="${escapeAttrValue(staff.id)}" ${status === "active" ? "checked" : ""}>${escapeHtmlValue(staff.name || staff.id)}<small>${status === "active" ? "目前可接新預約" : "目前保留既有預約，不接新單"}</small></label>`;
   }).join("");
   return `<section class="panel" style="margin-bottom:12px;border-color:#f1d58a;background:#fffaf0"><h2>人員待選擇</h2><p class="muted">目前方案最多 ${limit} 位服務人員可接新預約。請勾選要保留接新單的人員；未勾選的人員資料與既有預約會保留，但不會出現在客戶端與系統安排。</p><form data-staff-plan-selection style="margin-top:12px"><div class="service-checks">${staffRows}</div><button class="btn primary" type="submit" style="margin-top:12px">儲存可接單人員</button><p class="muted" data-plan-selection-status style="margin-top:8px"></p></form></section>`;
+}
+function renderMerchantOnboardingPage(data = { store, services: [], staffMembers: [], resourceTypes: [], businessHours: {} }) {
+  const tenantId = data.store?.tenantId || TENANT_ID;
+  const setup = data.onboardingSetup || { checks: {}, missingActions: [], staffPlanSelection: {}, completed: 0, total: 0, percentage: 0 };
+  const publicPath = setup.publicPath || (data.store?.slug ? storePath(data.store.slug, "") : `/book?tenant=${encodeURIComponent(tenantId)}`);
+  const closedDays = new Set(data.businessHours?.closedDays || []);
+  const checks = Object.entries(setup.checks || {}).map(([, item]) => `<div class="onboard-check ${item.ok ? "ok" : "miss"}"><b>${item.ok ? "完成" : "待補"}</b><span>${escapeHtmlValue(item.label || "")}</span><small>${escapeHtmlValue(item.action || "")}</small></div>`).join("");
+  const missing = (setup.missingActions || []).map((item) => item.label).join("、") || "目前沒有待處理項目";
+  const resourceOptions = [`<option value="">不指定資源</option>`].concat((data.resourceTypes || []).map((resource) => `<option value="${escapeAttrValue(resource.id)}">${escapeHtmlValue(resource.name)} (${Number(resource.quantity || 1)})</option>`)).join("");
+  const serviceChecks = (data.services || []).map((service) => `<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="serviceIds" value="${escapeAttrValue(service.id)}" checked>${escapeHtmlValue(service.name)}</label>`).join("") || `<p class="muted">請先建立服務，才能新增服務人員。</p>`;
+  const serviceList = (data.services || []).map((service) => `<div class="wizard-item"><b>${escapeHtmlValue(service.name)}</b><small>${escapeHtmlValue(service.category || "未分類")}｜${(service.prices || []).map((price) => `${Number(price.minutes)} 分 NT$${Number(price.price)}`).join("、")}｜資源：${escapeHtmlValue(service.resourceTypeName || service.resourceTypeId || "不指定")}</small></div>`).join("") || `<div class="wizard-item"><b>尚未建立服務</b><small>可以套用範本，或手動新增第一個服務。</small></div>`;
+  const staffList = (data.staffMembers || []).map((staff) => `<div class="wizard-item"><b>${escapeHtmlValue(staff.name)}</b><small>${escapeHtmlValue(staff.role || "服務人員")}｜${staff.planBookingStatus === "plan_limited" ? "因方案限制停止接受新預約" : "可接新預約"}</small></div>`).join("") || `<div class="wizard-item"><b>尚未建立人員</b><small>建立服務後，新增第一位可接單人員。</small></div>`;
+  const resourceList = (data.resourceTypes || []).map((resource) => `<div class="wizard-item"><b>${escapeHtmlValue(resource.name)}</b><small>數量 ${Number(resource.quantity || 1)}</small></div>`).join("") || `<div class="wizard-item"><b>尚未建立資源</b><small>若服務不需要床位或座位，可先建立「不指定」以完成設定。</small></div>`;
+  const staffBlocker = setup.staffPlanSelection?.required ? `<section class="panel" style="border-color:#f1d58a;background:#fffaf0"><h2>必須先確認可接單人員</h2><p class="muted">目前可接單人員超過方案上限，請先選擇可繼續接單的人員。完成前不可建立測試預約，也不可正式開放預約。</p></section>` : "";
+  const body = `${staffBlocker}<section class="panel"><div class="onboard-head"><div><h2>店家自助設定精靈</h2><p class="muted">完成度 ${setup.completed}/${setup.total}，${setup.percentage}%</p></div><span class="badge ${setup.bookingEnabled ? "" : "yellow"}">${setup.bookingEnabled ? "已開放" : "未開放"}</span></div><div class="progress"><i style="width:${Math.max(0, Math.min(100, Number(setup.percentage || 0)))}%"></i></div><div class="onboard-grid">${checks}</div><p class="muted">待處理：${escapeHtmlValue(missing)}</p><div class="onboard-actions"><button class="btn" type="button" data-test-booking="1">建立測試預約</button><button class="btn primary" type="button" data-open-booking="1">開放正式預約</button><button class="btn" type="button" data-close-booking="1">暫停正式預約</button><button class="btn" type="button" data-copy-onboarding-url="${escapeAttrValue(publicPath)}">複製公開網址</button><a class="btn" href="${escapeAttrValue(publicPath)}" target="_blank">預覽客戶端</a></div><p class="muted" id="onboarding-status"></p></section><section class="grid"><div class="panel"><h2>1. 店家資料</h2><form class="wizard" data-onboarding-form data-endpoint="/api/store"><label>店家名稱<input name="name" value="${escapeAttrValue(data.store?.name || "")}" required></label><div class="wizard-grid"><label>電話<input name="phone" value="${escapeAttrValue(data.store?.phone || "")}"></label><label>店家網址 Slug<input value="${escapeAttrValue(data.store?.slug || "尚未設定")}" readonly></label></div><label>地址<input name="address" value="${escapeAttrValue(data.store?.address || "")}"></label><div class="wizard-grid"><label>業態<input name="businessType" value="${escapeAttrValue(data.store?.businessType || "")}" placeholder="整復 / 美髮 / 美甲"></label><label>時區<input name="timezone" value="${escapeAttrValue(data.store?.timezone || "Asia/Taipei")}"></label></div><label>店家介紹<textarea name="intro" placeholder="可先空白，之後再補"></textarea></label><button class="btn primary" type="submit">儲存店家資料</button></form></div><div class="panel"><h2>2. 營業時間</h2><form class="wizard" data-onboarding-form data-endpoint="/api/settings"><div class="wizard-grid"><label>開店<input name="open" type="time" value="${escapeAttrValue(data.businessHours?.open || "09:00")}"></label><label>打烊<input name="close" type="time" value="${escapeAttrValue(data.businessHours?.close || "18:00")}"></label></div><div class="wizard-grid"><label>休息開始<input name="breakStart" type="time" value="${escapeAttrValue(data.businessHours?.breaks?.[0]?.start || "12:00")}"></label><label>休息結束<input name="breakEnd" type="time" value="${escapeAttrValue(data.businessHours?.breaks?.[0]?.end || "13:00")}"></label></div><label>公休日</label><div class="wizard-actions">${["星期一","星期二","星期三","星期四","星期五","星期六","星期日"].map((day) => `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="closedDays" value="${day}" ${closedDays.has(day) ? "checked" : ""}>${day}</label>`).join("")}</div><button class="btn primary" type="submit">儲存營業時間</button></form></div><div class="panel"><h2>3. 套用範本</h2><p class="muted">範本只建立服務、時長與資源建議，不會建立客戶、預約、點數或服務人員。</p><div class="template-grid" style="margin-top:12px">${[["therapy","整復推拿"],["massage","按摩舒壓"],["hair","美髮"],["nail","美甲"],["beauty","美容美睫"],["blank","空白"]].map(([key,label]) => `<button class="btn" type="button" data-template="${key}">${label}</button>`).join("")}</div></div><div class="panel"><h2>4. 服務項目</h2><div class="wizard-list">${serviceList}</div><form class="wizard" data-service-create style="margin-top:12px"><input type="hidden" data-existing-services value="${escapeAttrValue(JSON.stringify(data.services || []))}"><label>服務名稱<input name="name" placeholder="例如 肩頸放鬆"></label><div class="wizard-grid"><label>分類<input name="category" placeholder="放鬆保養"></label><label>點數折抵上限<input name="pointRedeemLimit" type="number" min="0" value="0"></label></div><label>時長與價格<input name="prices" placeholder="60:1200,90:1700"></label><label>資源<select name="resourceTypeId">${resourceOptions}</select></label><button class="btn primary" type="submit">新增服務</button></form></div><div class="panel"><h2>5. 服務人員</h2><div class="wizard-list">${staffList}</div><form class="wizard" data-staff-create style="margin-top:12px"><input type="hidden" data-existing-staff value="${escapeAttrValue(JSON.stringify(data.staffMembers || []))}"><label>姓名<input name="name" placeholder="例如 Tony 師傅"></label><label>職稱<input name="role" placeholder="整復師 / 設計師"></label><label>可服務項目</label><div class="wizard-list">${serviceChecks}</div><button class="btn primary" type="submit" ${(data.services || []).length ? "" : "disabled"}>新增服務人員</button></form></div><div class="panel"><h2>6. 場地資源</h2><div class="wizard-list">${resourceList}</div><form class="wizard" data-resource-create style="margin-top:12px"><input type="hidden" data-existing-resources value="${escapeAttrValue(JSON.stringify(data.resourceTypes || []))}"><div class="wizard-grid"><label>資源名稱<input name="name" placeholder="床位 / 座位"></label><label>數量<input name="quantity" type="number" min="1" value="1"></label></div><button class="btn primary" type="submit">新增資源</button></form></div></section><script>(function(){const status=()=>document.querySelector("#onboarding-status");const show=(msg)=>{const el=status();if(el)el.textContent=msg;};async function postJson(url,payload){const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});const data=await res.json().catch(()=>({ok:false,error:"回應格式錯誤"}));if(!data.ok)throw new Error((data.error&&data.error.message)||data.error||"儲存失敗");return data;}document.querySelectorAll("[data-onboarding-form]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{show("儲存中...");const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.closedDays=fd.getAll("closedDays");await postJson(form.dataset.endpoint,payload);show("已儲存，重新整理中...");setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-template]").forEach((button)=>button.addEventListener("click",async()=>{try{show("套用範本中...");await postJson("/api/merchant/onboarding/apply-template",{template:button.dataset.template});show("範本已套用，重新整理中...");setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-close-booking]").forEach((button)=>button.addEventListener("click",async()=>{try{show("關閉正式預約中...");await postJson("/api/merchant/onboarding/disable-booking",{});show("已暫停正式預約。");setTimeout(()=>location.reload(),800);}catch(error){show(error.message);}}));const parsePrices=(value)=>String(value||"").split(",").map((chunk)=>{const [minutes,price]=chunk.split(":").map((part)=>Number(String(part||"").trim()));return {minutes,price};}).filter((item)=>item.minutes&&item.price>=0);document.querySelectorAll("[data-service-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-services]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入服務名稱");const prices=parsePrices(fd.get("prices"));if(!prices.length)throw new Error("請輸入時長與價格，例如 60:1200");existing.push({name,category:fd.get("category"),resourceTypeId:fd.get("resourceTypeId"),pointRedeemLimit:Number(fd.get("pointRedeemLimit")||0),prices});show("新增服務中...");await postJson("/api/services",{services:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-staff-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-staff]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入服務人員姓名");existing.push({name,role:fd.get("role"),serviceIds:fd.getAll("serviceIds"),crmPermissions:[]});show("新增服務人員中...");await postJson("/api/staff",{staffMembers:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-resource-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-resources]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入資源名稱");existing.push({name,quantity:Number(fd.get("quantity")||1)});show("新增資源中...");await postJson("/api/resources",{resourceTypes:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));})();</script>`;
+  return pageShell(`${data.store?.name || store.name} 開店精靈`, body, "onboarding", tenantId, data.store?.slug || "");
 }
 function renderMerchantPage(data = { store, bookings, services, staffMembers, resourceTypes }, customers = []) {
   const bookingRows = (data.bookings || []).slice(0, 8).map((booking) => `<tr><td>${escapeHtmlValue(booking.start || "-")}</td><td>${escapeHtmlValue(booking.customer || "-")}</td><td>${escapeHtmlValue(booking.service || "-")}</td><td>${escapeHtmlValue(booking.staffName || booking.staffId || "-")}</td><td><span class="badge">${escapeHtmlValue(booking.status || "-")}</span></td></tr>`).join("");
@@ -2927,6 +2951,7 @@ async function ensurePlatformSchema(env) {
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN business_type TEXT").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN logo_url TEXT").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN booking_enabled INTEGER NOT NULL DEFAULT 1").run(); } catch (error) {}
+  try { await env.DB.prepare("ALTER TABLE tenants ADD COLUMN setup_test_completed_at TEXT").run(); } catch (error) {}
   try { await env.DB.prepare("ALTER TABLE staff_members ADD COLUMN plan_booking_status TEXT NOT NULL DEFAULT 'active'").run(); } catch (error) {}
   await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_slug_unique ON tenants(slug) WHERE slug IS NOT NULL AND slug <> ''").run();
   try { await env.DB.prepare("ALTER TABLE tenant_admins ADD COLUMN identity_id TEXT").run(); } catch (error) {}
@@ -3486,7 +3511,7 @@ async function submitTrialTenant(request, env) {
     const tenantId = "trial-" + Date.now().toString(36);
     const today = todayInTaipei();
     const trialEnd = addDays(today, TRIAL_DAYS);
-    await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Taipei', 'trial', ?, ?, ?, 'annual', ?, ?, ?, datetime('now'), datetime('now'))").bind(tenantId, storeName, String(payload.storePhone || "").trim() || null, String(payload.storeAddress || "").trim() || null, today, trialEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
+    await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, booking_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Taipei', 'trial', ?, ?, ?, 'annual', ?, ?, ?, 0, datetime('now'), datetime('now'))").bind(tenantId, storeName, String(payload.storePhone || "").trim() || null, String(payload.storeAddress || "").trim() || null, today, trialEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
     await reconcileTenantStaffLimit(env, tenantId, plan);
     await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, slot_step_minutes) VALUES (?, '09:00', '18:00', '12:00', '13:00', '[\"星期三\"]', 0, 30)").bind(tenantId).run();
     await env.DB.prepare(`
@@ -3535,7 +3560,7 @@ async function approveTenantApplication(request, env) {
     const contractStart = app.contract_start || today;
     const contractEnd = app.contract_end || addDays(today, 365);
     const plan = planById(app.billing_plan_id || "solo");
-    await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Taipei', 'active', ?, ?, ?, 'annual', ?, ?, ?, datetime('now'), datetime('now'))").bind(tenantId, app.store_name, app.store_phone || null, app.store_address || null, contractStart, contractEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
+    await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, booking_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Taipei', 'active', ?, ?, ?, 'annual', ?, ?, ?, 0, datetime('now'), datetime('now'))").bind(tenantId, app.store_name, app.store_phone || null, app.store_address || null, contractStart, contractEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
     await reconcileTenantStaffLimit(env, tenantId, plan);
     await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, slot_step_minutes) VALUES (?, '09:00', '18:00', '12:00', '13:00', '[\"星期三\"]', 0, 30)").bind(tenantId).run();
     await env.DB.prepare(`
@@ -3577,7 +3602,7 @@ async function savePlatformTenant(request, env) {
     if (!/^09\d{8}$/.test(ownerPhone)) return Response.json({ ok: false, error: { code: "OWNER_PHONE_INVALID", message: "owner phone is invalid" } }, { status: 400, headers: jsonHeaders });
     const duplicate = await env.DB.prepare("SELECT id, slug FROM tenants WHERE id = ? OR slug = ? LIMIT 1").bind(tenantId, slug).first();
     if (duplicate?.id) return Response.json({ ok: false, error: { code: duplicate.id === tenantId ? "TENANT_ID_EXISTS" : "STORE_SLUG_EXISTS", message: duplicate.id === tenantId ? "tenant_id 已存在" : "店家網址 slug 已存在" } }, { status: 409, headers: jsonHeaders });
-    await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, slug, business_type, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'annual', ?, ?, ?, datetime('now'), datetime('now'))").bind(tenantId, name, phone || null, address || null, timezone, status, slug, businessType || null, contractStart, contractEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
+    await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, slug, business_type, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, booking_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'annual', ?, ?, ?, 0, datetime('now'), datetime('now'))").bind(tenantId, name, phone || null, address || null, timezone, status, slug, businessType || null, contractStart, contractEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
     await reconcileTenantStaffLimit(env, tenantId, plan);
     await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, slot_step_minutes, point_spend_amount, point_reward_points) VALUES (?, '09:00', '18:00', '12:00', '13:00', '[]', 0, 30, 100, 1)").bind(tenantId).run();
     await env.DB.prepare("INSERT OR IGNORE INTO line_oa_settings (tenant_id, webhook_path, webhook_enabled, login_enabled, registration_enabled, notes, created_at, updated_at) VALUES (?, ?, 0, 0, 0, '待串接 LINE OA', datetime('now'), datetime('now'))").bind(tenantId, "/line-webhook?tenant=" + encodeURIComponent(tenantId)).run();
@@ -4083,12 +4108,12 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
   const boundStaff = bookableSetupStaff.filter((staff) => Array.isArray(staff.serviceIds) && staff.serviceIds.some((id) => serviceIds.has(String(id))));
   const serviceResourceIds = new Set((data.services || []).map((service) => String(service.resourceTypeId || "")).filter(Boolean));
   const resourceIds = new Set((data.resourceTypes || []).map((resource) => String(resource.id || "")).filter(Boolean));
-  const resourcesCoverServices = serviceResourceIds.size === 0 ? (data.resourceTypes || []).length > 0 : Array.from(serviceResourceIds).every((id) => resourceIds.has(id));
+  const resourcesCoverServices = serviceResourceIds.size === 0 ? true : Array.from(serviceResourceIds).every((id) => resourceIds.has(id));
   let testBookingCount = 0;
   let affectedFutureBookingCount = 0;
   if (env.DB) {
     const testRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM bookings WHERE tenant_id = ? AND source = 'setup_test'").bind(tenantId).first();
-    testBookingCount = Number(testRow?.count || 0);
+    testBookingCount = storeData.setupTestCompletedAt ? 1 : Number(testRow?.count || 0);
     if (planLimitedSetupStaff.length) {
       const placeholders = planLimitedSetupStaff.map(() => "?").join(",");
       const affectedRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM bookings WHERE tenant_id = ? AND status != 'cancelled' AND booking_date >= ? AND staff_id IN (${placeholders})`).bind(tenantId, todayInTaipei(), ...planLimitedSetupStaff.map((staff) => staff.id)).first();
@@ -4111,7 +4136,8 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     staffPlanSelection: !staffPlanSelection.required,
     resources: resourcesCoverServices,
     publicStore: Boolean(normalizeStoreSlug(storeData.slug || "") && access.canAcceptBookings),
-    testBooking: testBookingCount > 0
+    testBooking: testBookingCount > 0,
+    bookingEnabled: storeData.bookingEnabled !== false
   };
   const labels = {
     storeProfile: "店家資料",
@@ -4122,7 +4148,8 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     staffPlanSelection: "方案人員接單狀態已確認",
     resources: "場地資源",
     publicStore: "公開網址",
-    testBooking: "測試預約"
+    testBooking: "測試預約",
+    bookingEnabled: "正式預約開關"
   };
   const actions = {
     storeProfile: "到設定填寫店名、電話、地址與 Logo",
@@ -4133,19 +4160,24 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     staffPlanSelection: "目前可接單人員超過方案上限，請先選擇可繼續接單的人員",
     resources: "建立床位、座位或服務空間數量",
     publicStore: "確認店家 slug 與合約狀態",
-    testBooking: "按下測試預約確認流程"
+    testBooking: "按下測試預約確認流程",
+    bookingEnabled: "完成測試後按下開放正式預約"
   };
   const checks = Object.fromEntries(Object.entries(rawChecks).map(([key, ok]) => [key, { ok, label: labels[key], action: actions[key] }]));
   const completed = Object.values(rawChecks).filter(Boolean).length;
   const total = Object.keys(rawChecks).length;
   const missingActions = Object.entries(checks).filter(([, item]) => !item.ok).map(([key, item]) => ({ key, label: item.label, action: item.action }));
-  const operationalReady = Object.entries(rawChecks).filter(([key]) => key !== "testBooking").every(([, ok]) => ok);
+  const readyForTestBooking = Object.entries(rawChecks).filter(([key]) => key !== "testBooking" && key !== "bookingEnabled").every(([, ok]) => ok) && access.canAcceptBookings;
+  const readyForBooking = readyForTestBooking && rawChecks.testBooking && !staffPlanSelection.required;
   return {
     completed,
     total,
+    completedSteps: completed,
+    totalSteps: total,
     percentage: Math.round((completed / total) * 100),
-    readyForBooking: operationalReady,
-    goLiveComplete: completed === total && !staffPlanSelection.required,
+    readyForTestBooking,
+    readyForBooking,
+    goLiveComplete: readyForBooking && storeData.bookingEnabled !== false,
     bookingEnabled: storeData.bookingEnabled !== false,
     publicPath: storePublicPathForTenant({ id: tenantId, slug: storeData.slug || "" }),
     staffPlanSelection,
@@ -4156,7 +4188,7 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
 async function merchantOnboardingResponse(request, env, tenantId = TENANT_ID) {
   const setup = await evaluateTenantSetup(env, tenantId);
   const data = await dashboardData(env, todayInTaipei(), tenantId);
-  return Response.json({ ok: true, setup, store: data.store, services: data.services, staffMembers: data.staffMembers, resourceTypes: data.resourceTypes }, { headers: jsonHeaders });
+  return Response.json({ ok: true, setup, store: data.store, businessHours: data.businessHours, services: data.services, staffMembers: data.staffMembers, resourceTypes: data.resourceTypes }, { headers: jsonHeaders });
 }
 
 function onboardingWriteBlockedResponse(access = {}) {
@@ -4177,7 +4209,15 @@ function onboardingTemplates() {
         { id: "body-care", name: "整復調理", category: "整復推拿", resourceTypeId: "bed", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 1200 }, { minutes: 90, price: 1700 }] },
         { id: "shoulder-neck", name: "肩頸放鬆", category: "放鬆保養", resourceTypeId: "bed", pointRedeemLimit: 0, prices: [{ minutes: 30, price: 700 }, { minutes: 60, price: 1200 }] }
       ],
-      staffMembers: [{ id: "staff-1", name: "服務人員 1", role: "整復師", serviceIds: ["body-care", "shoulder-neck"], crmPermissions: [] }]
+      staffMembers: []
+    },
+    massage: {
+      resources: [{ id: "bed", name: "床位", quantity: 2 }],
+      services: [
+        { id: "foot-massage", name: "腳底按摩", category: "按摩舒壓", resourceTypeId: "bed", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 1200 }, { minutes: 90, price: 1700 }, { minutes: 120, price: 2200 }] },
+        { id: "body-massage", name: "全身按摩", category: "按摩舒壓", resourceTypeId: "bed", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 1200 }, { minutes: 90, price: 1700 }] }
+      ],
+      staffMembers: []
     },
     hair: {
       resources: [{ id: "chair", name: "座位", quantity: 2 }],
@@ -4185,12 +4225,50 @@ function onboardingTemplates() {
         { id: "hair-cut", name: "剪髮", category: "美髮", resourceTypeId: "chair", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 800 }] },
         { id: "hair-care", name: "護髮", category: "美髮", resourceTypeId: "chair", pointRedeemLimit: 0, prices: [{ minutes: 90, price: 1600 }] }
       ],
-      staffMembers: [{ id: "staff-1", name: "服務人員 1", role: "設計師", serviceIds: ["hair-cut", "hair-care"], crmPermissions: [] }]
+      staffMembers: []
+    },
+    nail: {
+      resources: [{ id: "seat", name: "座位", quantity: 2 }],
+      services: [
+        { id: "gel-nail", name: "凝膠美甲", category: "美甲", resourceTypeId: "seat", pointRedeemLimit: 0, prices: [{ minutes: 90, price: 1500 }, { minutes: 120, price: 2200 }] },
+        { id: "nail-care", name: "手足保養", category: "美甲", resourceTypeId: "seat", pointRedeemLimit: 0, prices: [{ minutes: 60, price: 900 }] }
+      ],
+      staffMembers: []
+    },
+    beauty: {
+      resources: [{ id: "room", name: "美容室", quantity: 1 }],
+      services: [
+        { id: "lash", name: "美睫設計", category: "美容美睫", resourceTypeId: "room", pointRedeemLimit: 0, prices: [{ minutes: 90, price: 1800 }] },
+        { id: "facial", name: "臉部保養", category: "美容保養", resourceTypeId: "room", pointRedeemLimit: 0, prices: [{ minutes: 90, price: 2000 }] }
+      ],
+      staffMembers: []
     },
     blank: { resources: [], services: [], staffMembers: [] }
   };
 }
-
+function scopedOnboardingTemplate(template, tenantId = TENANT_ID) {
+  const scope = safeServiceId(tenantId || TENANT_ID);
+  const resourceIdMap = new Map();
+  const resources = (template.resources || []).map((resource) => {
+    const originalId = safeServiceId(resource.id || resource.name || crypto.randomUUID());
+    const scopedId = safeServiceId(`${scope}-${originalId}`);
+    resourceIdMap.set(originalId, scopedId);
+    return { ...resource, id: scopedId };
+  });
+  const serviceIdMap = new Map();
+  const services = (template.services || []).map((service) => {
+    const originalId = safeServiceId(service.id || service.name || crypto.randomUUID());
+    const scopedId = safeServiceId(`${scope}-${originalId}`);
+    serviceIdMap.set(originalId, scopedId);
+    const originalResourceId = safeServiceId(service.resourceTypeId || "");
+    return { ...service, id: scopedId, resourceTypeId: originalResourceId ? (resourceIdMap.get(originalResourceId) || "") : "" };
+  });
+  const staffMembers = (template.staffMembers || []).map((staff) => {
+    const originalId = safeServiceId(staff.id || staff.name || crypto.randomUUID());
+    return { ...staff, id: safeServiceId(`${scope}-${originalId}`), serviceIds: (staff.serviceIds || []).map((id) => serviceIdMap.get(safeServiceId(id))).filter(Boolean) };
+  });
+  return { resources, services, staffMembers };
+}
 async function applyOnboardingTemplate(request, env, tenantId = TENANT_ID) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   const writable = await assertOnboardingWritable(env, tenantId);
@@ -4201,9 +4279,22 @@ async function applyOnboardingTemplate(request, env, tenantId = TENANT_ID) {
   }
   const payload = await request.json().catch(() => ({}));
   const template = onboardingTemplates()[String(payload.template || "blank")] || onboardingTemplates().blank;
-  if (template.resources.length) await saveResourceTypes(new Request(request.url, { method: "POST", body: JSON.stringify({ resourceTypes: template.resources }) }), env, tenantId);
-  if (template.services.length) await saveServices(new Request(request.url, { method: "POST", body: JSON.stringify({ services: template.services }) }), env, tenantId);
-  if (template.staffMembers.length) await saveStaffMembers(new Request(request.url, { method: "POST", body: JSON.stringify({ staffMembers: template.staffMembers }) }), env, tenantId);
+  const scoped = scopedOnboardingTemplate(template, tenantId);
+  if (scoped.resources.length) {
+    const res = await saveResourceTypes(new Request(request.url, { method: "POST", body: JSON.stringify({ resourceTypes: scoped.resources }) }), env, tenantId);
+    const data = await res.clone().json().catch(() => ({}));
+    if (!data.ok) return res;
+  }
+  if (scoped.services.length) {
+    const res = await saveServices(new Request(request.url, { method: "POST", body: JSON.stringify({ services: scoped.services }) }), env, tenantId);
+    const data = await res.clone().json().catch(() => ({}));
+    if (!data.ok) return res;
+  }
+  if (scoped.staffMembers.length) {
+    const res = await saveStaffMembers(new Request(request.url, { method: "POST", body: JSON.stringify({ staffMembers: scoped.staffMembers }) }), env, tenantId);
+    const data = await res.clone().json().catch(() => ({}));
+    if (!data.ok) return res;
+  }
   return Response.json({ ok: true, setup: await evaluateTenantSetup(env, tenantId) }, { headers: jsonHeaders });
 }
 
@@ -4212,6 +4303,8 @@ async function createOnboardingTestBooking(request, env, tenantId = TENANT_ID) {
   const writable = await assertOnboardingWritable(env, tenantId);
   if (!writable.ok) return onboardingWriteBlockedResponse(writable.access);
   if (writable.access.staffSelectionRequired) return staffSelectionRequiredResponse();
+  const setup = await evaluateTenantSetup(env, tenantId);
+  if (!setup.readyForTestBooking) return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "請先完成基本設定，再建立測試預約", missingActions: setup.missingActions } }, { status: 409, headers: jsonHeaders });
   const data = await dashboardData(env, todayInTaipei(), tenantId);
   const service = (data.services || [])[0];
   const activeStaff = bookableStaffMembers(data.staffMembers || []);
@@ -4227,6 +4320,7 @@ async function createOnboardingTestBooking(request, env, tenantId = TENANT_ID) {
     INSERT INTO bookings (id, tenant_id, customer_id, staff_id, service_id, service_name, duration_minutes, price, booking_date, start_time, end_time, customer_name, customer_phone, status, source, note)
     VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, '系統測試顧客', 'setup-test', 'cancelled', 'setup_test', 'setup_test: onboarding verification')
   `).bind(bookingId, tenantId, staff.id, service.id, service.name, duration, Number(price.price || 0), date, start, end).run();
+  await env.DB.prepare("UPDATE tenants SET setup_test_completed_at = COALESCE(setup_test_completed_at, datetime('now')), updated_at = datetime('now') WHERE id = ?").bind(tenantId).run();
   return Response.json({ ok: true, bookingId, setup: await evaluateTenantSetup(env, tenantId) }, { headers: jsonHeaders });
 }
 async function setTenantBookingEnabled(request, env, tenantId = TENANT_ID, enabled = true) {
@@ -4238,9 +4332,6 @@ async function setTenantBookingEnabled(request, env, tenantId = TENANT_ID, enabl
   if (enabled && setup.staffPlanSelection?.required) return staffSelectionRequiredResponse();
   if (enabled && !setup.readyForBooking) {
     return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "店家基本設定尚未完成，不能開放正式預約", missingActions: setup.missingActions } }, { status: 409, headers: jsonHeaders });
-  }
-  if (enabled && !setup.goLiveComplete) {
-    return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "上線檢查尚未完成，不能開放正式預約", missingActions: setup.missingActions } }, { status: 409, headers: jsonHeaders });
   }
   const result = await env.DB.prepare("UPDATE tenants SET booking_enabled = ?, updated_at = datetime('now') WHERE id = ?").bind(enabled ? 1 : 0, tenantId).run();
   return Response.json({ ok: true, changes: result.meta?.changes ?? null, setup: await evaluateTenantSetup(env, tenantId) }, { headers: jsonHeaders });
@@ -4263,10 +4354,10 @@ async function setTenantBookingEnabled(request, env, tenantId = TENANT_ID, enabl
 }
 
 async function loadStore(env, tenantId = TENANT_ID) {
-  const row = await env.DB.prepare("SELECT t.name, t.phone, t.address, t.logo_url, t.slug, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.staff_limit, t.booking_enabled, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1 AND COALESCE(sm.plan_booking_status, 'active') = 'active') AS active_booking_staff_count FROM tenants t WHERE t.id = ?").bind(tenantId).first();
+  const row = await env.DB.prepare("SELECT t.name, t.phone, t.address, t.logo_url, t.slug, t.business_type, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.staff_limit, t.booking_enabled, t.setup_test_completed_at, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1 AND COALESCE(sm.plan_booking_status, 'active') = 'active') AS active_booking_staff_count FROM tenants t WHERE t.id = ?").bind(tenantId).first();
   if (row) {
     const access = evaluateTenantAccess(row);
-    return { name: row.name, phone: row.phone, address: row.address, logoUrl: row.logo_url || "", slug: row.slug || "", status: row.status || "active", contractStart: row.contract_start || "", contractEnd: row.contract_end || "", billingPlanId: row.billing_plan_id || "solo", staffLimit: access.staffLimit, activeStaffCount: access.activeStaffCount, activeBookingStaffCount: access.activeBookingStaffCount, bookingEnabled: Number(row.booking_enabled ?? 1) !== 0, tenantAccess: access, access, tenantId };
+    return { name: row.name, phone: row.phone, address: row.address, logoUrl: row.logo_url || "", slug: row.slug || "", businessType: row.business_type || "", timezone: row.timezone || "Asia/Taipei", status: row.status || "active", contractStart: row.contract_start || "", contractEnd: row.contract_end || "", billingPlanId: row.billing_plan_id || "solo", staffLimit: access.staffLimit, activeStaffCount: access.activeStaffCount, activeBookingStaffCount: access.activeBookingStaffCount, bookingEnabled: Number(row.booking_enabled ?? 1) !== 0, setupTestCompletedAt: row.setup_test_completed_at || "", tenantAccess: access, access, tenantId };
   }
   return isDefaultDemoTenant(env, tenantId) ? { ...store, tenantId, access: evaluateTenantAccess({ status: "active", billing_plan_id: "solo", staff_limit: 1 }) } : { name: "", phone: "", address: "", logoUrl: "", slug: "", status: "not_found", contractStart: "", contractEnd: "", billingPlanId: "solo", staffLimit: 1, tenantId, access: evaluateTenantAccess({ status: "not_found" }) };
 }
@@ -4559,7 +4650,7 @@ async function saveResourceTypes(request, env, tenantId = TENANT_ID) {
     const incoming = Array.isArray(payload.resourceTypes) ? payload.resourceTypes : [];
     const cleaned = incoming.map((resource, index) => {
       const name = String(resource.name || "").trim();
-      const id = safeServiceId(resource.id || name || crypto.randomUUID());
+      const id = safeServiceId(resource.id || `${tenantId}-${name}` || crypto.randomUUID());
       const quantity = normalizePositiveInt(resource.quantity, 1);
       return { id, name, quantity, sortOrder: Number(resource.sortOrder ?? index) };
     }).filter((resource) => resource.name);
@@ -4581,13 +4672,18 @@ async function saveStaffMembers(request, env, tenantId = TENANT_ID) {
     const incoming = Array.isArray(payload.staffMembers) ? payload.staffMembers : [];
     const cleaned = incoming.map((staff, index) => {
       const name = String(staff.name || "").trim();
-      const id = safeServiceId(staff.id || name || crypto.randomUUID());
+      const id = safeServiceId(staff.id || `${tenantId}-${name}` || crypto.randomUUID());
       const serviceIds = Array.isArray(staff.serviceIds) ? staff.serviceIds.map((id) => safeServiceId(id)).filter(Boolean) : null;
       const crmPermissions = Array.isArray(staff.crmPermissions) ? staff.crmPermissions.map((item) => String(item || "").trim()).filter((item) => item === "staff" || item === "store") : [];
       const hasPlanStatus = Object.prototype.hasOwnProperty.call(staff, "planBookingStatus") || Object.prototype.hasOwnProperty.call(staff, "plan_booking_status");
       return { id, name, role: clean(staff.role), serviceIds, crmPermissions, sortOrder: Number(staff.sortOrder ?? index), planBookingStatus: hasPlanStatus ? normalizeStaffPlanBookingStatus(staff.planBookingStatus || staff.plan_booking_status) : null };
     }).filter((staff) => staff.name);
     if (!cleaned.length) return Response.json({ ok: false, error: "at least one staff member is required" }, { status: 400, headers: jsonHeaders });
+    const serviceRows = await env.DB.prepare("SELECT id FROM services WHERE tenant_id = ? AND enabled = 1").bind(tenantId).all();
+    const validServiceIds = new Set((serviceRows.results || []).map((row) => String(row.id)));
+    if (!validServiceIds.size) return Response.json({ ok: false, error: { code: "SERVICE_REQUIRED_BEFORE_STAFF", message: "請先建立至少一個服務項目，再新增服務人員" } }, { status: 409, headers: jsonHeaders });
+    const invalidServiceBinding = cleaned.some((staff) => Array.isArray(staff.serviceIds) && staff.serviceIds.some((id) => !validServiceIds.has(String(id))));
+    if (invalidServiceBinding) return Response.json({ ok: false, error: { code: "STAFF_SERVICE_INVALID", message: "服務人員綁定了不存在或不屬於本店的服務" } }, { status: 400, headers: jsonHeaders });
     const limit = await tenantStaffLimit(env, tenantId);
     const existingRows = await env.DB.prepare("SELECT id, enabled, COALESCE(plan_booking_status, 'active') AS plan_booking_status FROM staff_members WHERE tenant_id = ?").bind(tenantId).all();
     const existingStatus = new Map((existingRows.results || []).map((row) => [String(row.id), normalizeStaffPlanBookingStatus(row.plan_booking_status)]));
@@ -4640,13 +4736,28 @@ async function saveServices(request, env, tenantId = TENANT_ID) {
     const cleaned = incoming.map((service, index) => {
       const name = String(service.name || "").trim();
       const category = clean(service.category);
-      const id = safeServiceId(service.id || name || crypto.randomUUID());
-      const prices = Array.isArray(service.prices) ? service.prices.map((item) => ({ minutes: Number(item.minutes), price: Number(item.price) })).filter((item) => item.minutes > 0 && item.price >= 0) : [];
+      const id = safeServiceId(service.id || `${tenantId}-${name}` || crypto.randomUUID());
+      const prices = Array.isArray(service.prices) ? service.prices.map((item) => ({ minutes: Number(item.minutes), price: Number(item.price) })).filter((item) => item.minutes >= 15 && item.minutes <= 480 && item.price >= 0) : [];
       const pointRedeemLimit = normalizeNonNegativeInt(service.pointRedeemLimit, 0);
       const resourceTypeId = clean(service.resourceTypeId);
       return { id, name, category, resourceTypeId, pointRedeemLimit, sortOrder: Number(service.sortOrder ?? index), prices };
     }).filter((service) => service.name && service.prices.length);
     if (!cleaned.length) return Response.json({ ok: false, error: "at least one service is required" }, { status: 400, headers: jsonHeaders });
+    const resourceIds = Array.from(new Set(cleaned.map((service) => service.resourceTypeId).filter(Boolean)));
+    if (resourceIds.length) {
+      const placeholders = resourceIds.map(() => "?").join(",");
+      const rows = await env.DB.prepare(`SELECT id FROM resource_types WHERE tenant_id = ? AND enabled = 1 AND id IN (${placeholders})`).bind(tenantId, ...resourceIds).all();
+      const validResources = new Set((rows.results || []).map((row) => String(row.id)));
+      if (resourceIds.some((id) => !validResources.has(id))) return Response.json({ ok: false, error: { code: "SERVICE_RESOURCE_INVALID", message: "服務綁定了不存在或不屬於本店的資源" } }, { status: 400, headers: jsonHeaders });
+    }
+    const incomingIds = new Set(cleaned.map((service) => service.id));
+    const existingServices = await env.DB.prepare("SELECT id FROM services WHERE tenant_id = ? AND enabled = 1").bind(tenantId).all();
+    const disablingIds = (existingServices.results || []).map((row) => String(row.id)).filter((id) => !incomingIds.has(id));
+    if (disablingIds.length) {
+      const placeholders = disablingIds.map(() => "?").join(",");
+      const futureRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM bookings WHERE tenant_id = ? AND status != 'cancelled' AND booking_date >= ? AND service_id IN (${placeholders})`).bind(tenantId, todayInTaipei(), ...disablingIds).first();
+      if (Number(futureRow?.count || 0) > 0) return Response.json({ ok: false, error: { code: "SERVICE_HAS_FUTURE_BOOKINGS", message: "服務已有未來預約，請先人工處理預約後再停用" } }, { status: 409, headers: jsonHeaders });
+    }
     await env.DB.prepare("UPDATE services SET enabled = 0, updated_at = datetime('now') WHERE tenant_id = ?").bind(tenantId).run();
     await env.DB.prepare("UPDATE service_durations SET enabled = 0, updated_at = datetime('now') WHERE tenant_id = ?").bind(tenantId).run();
     for (const service of cleaned) {
@@ -4672,9 +4783,11 @@ async function saveStoreProfile(request, env, tenantId = TENANT_ID) {
     const phone = clean(payload.phone);
     const address = clean(payload.address);
     const logoDataUrl = clean(payload.logoDataUrl);
+    const businessType = clean(payload.businessType || payload.business_type);
+    const timezone = clean(payload.timezone || "Asia/Taipei") || "Asia/Taipei";
     if (!name) return Response.json({ ok: false, error: "store name is required" }, { status: 400, headers: jsonHeaders });
     if (logoDataUrl && (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(logoDataUrl) || logoDataUrl.length > 400000)) return Response.json({ ok: false, error: "logo image is invalid or too large" }, { status: 400, headers: jsonHeaders });
-    await env.DB.prepare("UPDATE tenants SET name = ?, phone = ?, address = ?, logo_url = ?, updated_at = datetime('now') WHERE id = ?").bind(name, phone, address, logoDataUrl, tenantId).run();
+    await env.DB.prepare("UPDATE tenants SET name = ?, phone = ?, address = ?, logo_url = COALESCE(NULLIF(?, ''), logo_url), business_type = ?, timezone = ?, updated_at = datetime('now') WHERE id = ?").bind(name, phone, address, logoDataUrl, businessType || null, timezone, tenantId).run();
     return Response.json({ ok: true, store: await loadStore(env, tenantId) }, { headers: jsonHeaders });
   } catch (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });

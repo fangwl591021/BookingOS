@@ -4,24 +4,34 @@ This guide is for the first store setup.
 
 ## 1. Open Store Backend
 
-Login to the merchant backend and open `總覽`.
+Login to the merchant backend and open `開店精靈`.
 
-The first card is `歡迎使用預約服務通`. It shows the go-live progress.
+The wizard shows go-live progress, missing actions, public URL preview, setup test booking, and the formal booking switch.
 
 ## 2. Fill Store Profile
 
-Go to `設定` and fill:
+In the wizard, fill:
 
 - store name
 - phone
 - address
-- logo, if available
+- business type
+- timezone
+- logo later from settings, if available
+
+The store slug is display-only. Merchants cannot change it.
 
 ## 3. Set Business Hours
 
-Set open time, close time, break time, closed days, and point reward ratio.
+Set open time, close time, break time, and closed days.
 
-## 4. Create Resources
+## 4. Apply a Template or Create Services
+
+Templates can create starter services, durations, and resource suggestions for therapy, massage, hair, nail, and beauty.
+
+Templates do not create staff, customers, bookings, points, or LINE settings.
+
+## 5. Create Resources
 
 Create the physical capacity unit:
 
@@ -32,25 +42,17 @@ Create the physical capacity unit:
 
 Set quantity to the number of customers that can be served at the same time for that resource.
 
-## 5. Create Services
-
-Create each service with:
-
-- service name
-- category
-- duration and price
-- point redemption limit
-- resource type, if the service needs a specific resource
+If services do not need a resource, they can remain unassigned.
 
 ## 6. Create Staff
 
-Create staff members and select which services each staff member can perform.
+Create staff members only after at least one service exists.
 
-Do not leave all service bindings ambiguous during go-live setup.
+Select which services each staff member can perform. The wizard does not allow staff-service bindings to point at another tenant's services.
 
 ## 7. Preview Public URL
 
-Use `複製公開網址` or `預覽客戶端` from the overview checklist.
+Use `複製公開網址` or `預覽客戶端` from the wizard.
 
 Do not send the booking URL to customers until the checklist is complete and booking is opened.
 
@@ -58,10 +60,10 @@ Do not send the booking URL to customers until the checklist is complete and boo
 
 Click `建立測試預約`.
 
-The test booking does not create real customer points and does not notify customers.
+The test booking does not create real customer points and does not notify customers. It records setup completion through `setup_test_completed_at`.
 
 ## 9. Open Formal Booking
 
-When progress is 8/8, click `開放正式預約`.
+Click `開放正式預約` after the wizard shows the setup is ready.
 
 After this, customers can book from the public store URL.

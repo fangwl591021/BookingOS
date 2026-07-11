@@ -1,34 +1,33 @@
 # BookingOS Store Go-Live Checklist
 
-Task 016 defines the minimum requirements before a tenant can be considered ready for first public booking.
+Task 017 uses `evaluateTenantSetup(env, tenantId)` as the shared backend calculation for merchant onboarding, platform operations, and booking enablement.
 
-## Backend Source of Truth
-
-Use `evaluateTenantSetup(env, tenantId)` as the shared backend calculation for merchant onboarding, platform operations, and booking enablement.
-
-The checklist has 8 items:
+## Checklist Items
 
 1. Store profile: name, phone, address.
 2. Business hours: open and close time.
 3. Services: at least one enabled service with at least one enabled duration and price.
-4. Staff: at least one enabled staff member.
+4. Staff: at least one active bookable staff member.
 5. Staff-service binding: at least one staff member explicitly bound to an enabled service.
-6. Resources: at least one enabled resource, and resource-linked services must point to enabled resources.
-7. Public store: tenant has a slug and tenant status allows accepting bookings.
-8. Test booking: at least one `source = 'setup_test'` booking exists.
+6. Resources: resource-linked services must point to enabled resources. Services without a resource do not require a resource record.
+7. Staff plan selection: no pending downgrade staff-selection requirement.
+8. Public store: tenant has a slug and tenant status allows accepting bookings.
+9. Test booking: `tenants.setup_test_completed_at` is set, or a legacy `source = 'setup_test'` booking exists.
+10. Formal booking switch: `tenants.booking_enabled = 1`.
 
 ## Booking Open Rule
 
-Formal booking requires both:
+New tenants are created with `booking_enabled = 0`.
 
-- operational setup complete: items 1 to 7
-- tenant `booking_enabled = 1`
+Opening booking from the onboarding wizard requires setup readiness, setup test completion, no staff plan-selection blocker, and at least one active staff member with service binding.
 
-Opening booking from the onboarding button requires the full 8/8 checklist, including a setup test booking. Existing stores that are already open are not blocked by the historical absence of a setup-test record.
+Existing bookings are never deleted by onboarding.
 
-If operational setup is incomplete, `/api/bookings` returns `TENANT_SETUP_INCOMPLETE`.
+If setup is incomplete, `/api/bookings` returns `TENANT_SETUP_INCOMPLETE`.
 
-If operational setup is complete but booking is not opened, `/api/bookings` returns `TENANT_BOOKING_NOT_OPEN`.
+If setup is complete but booking is not opened, `/api/bookings` returns `TENANT_BOOKING_NOT_OPEN`.
+
+If staff plan selection is pending, public and manual booking creation returns `STAFF_PLAN_SELECTION_REQUIRED`.
 
 ## Test Booking Rule
 
@@ -41,7 +40,7 @@ The onboarding test booking uses:
 - no point transaction
 - no notification
 
-It is only used to verify the store setup path.
+It sets `tenants.setup_test_completed_at` and is only used to verify the store setup path.
 
 ## Tenant Safety
 
@@ -58,3 +57,7 @@ The platform tenant list must show:
 - missing checklist items
 - booking open state
 - tenant operational status
+- staff over-limit state
+- pending staff plan selection
+- `plan_limited` staff count
+- affected future booking count
