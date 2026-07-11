@@ -8,6 +8,7 @@ assert.match(source, /title=\"\$\{escapeAttrValue\(publicUrl\(publicPath\)\)\}\"
 assert.match(source, /href=\"\$\{escapeAttrValue\(publicPath\)\}\" target=\"_blank\" rel=\"noopener noreferrer\"/, "open action must use the safe public store path");
 assert.match(source, /href=\"\/merchant\?tenant=\$\{encodeURIComponent\(tenant\.id\)\}\"/, "manage action must preserve the merchant entry point");
 assert.match(source, /navigator\\.clipboard\\|\\|typeof navigator\\.clipboard\\.writeText===\\"function\\"/, "copy action must use Clipboard API");
+assert.match(source, /document\.execCommand\("copy"\)/, "copy action must provide a browser fallback");
 
 const calls = [];
 const mockClipboard = { writeText: async (value) => calls.push(value) };
