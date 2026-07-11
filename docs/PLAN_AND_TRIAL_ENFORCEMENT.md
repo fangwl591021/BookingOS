@@ -40,7 +40,7 @@ New trial tenants are created as:
 
 - `status = trial`
 - `contract_start = today in Asia/Taipei`
-- `contract_end = today + 14 days`
+- `contract_end = today + 60 days`
 - selected plan values copied to tenant billing fields
 
 Trial tenants have full access until the end date. Expired trials have no grace period.
