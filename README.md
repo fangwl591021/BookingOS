@@ -90,3 +90,4 @@ Task 015 centralizes tenant business access in `evaluateTenantAccess(tenant, now
 Public availability and booking creation return `TENANT_BOOKING_DISABLED` when a tenant cannot accept bookings. Staff limits are enforced on save without automatically deleting or disabling existing staff during downgrades.
 
 See `docs/PLAN_AND_TRIAL_ENFORCEMENT.md`.
+Task 015C closes out the first legacy tenant billing audit. `demo-tenant` is recorded as the active platform demo store for 2026-07-11 through 2027-07-10. `sunny-hair` remains a trial tenant through 2026-09-09 under the 60-day rule. Two legacy trial tenants still require Tony-approved slugs before public store URLs are assigned.

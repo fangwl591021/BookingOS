@@ -45,6 +45,16 @@ New trial tenants are created as:
 
 Trial tenants have full access until the end date. Expired trials have no grace period.
 
+
+## Legacy Tenant Closeout
+
+New trial tenants use a 60-day trial period. Existing tenants are not automatically extended by a rule change; any legacy date correction must be explicit, backed up, and recorded.
+
+Task 015C manually closed out the Task 015B audit items:
+
+- `demo-tenant` is the platform demo store and is active from 2026-07-11 through 2027-07-10.
+- `sunny-hair` keeps `contract_start = 2026-07-11`; its trial end was corrected to 2026-09-09 using the 60-day date rule.
+- `trial-mrd14uce` and `trial-mrdj8djy` still require Tony-approved slugs before public `/store/{slug}` URLs are written.
 ## Contract and Renewal Rules
 
 Active tenants have full access until `contract_end`.
