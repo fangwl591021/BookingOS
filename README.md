@@ -97,3 +97,6 @@ Task 015C closes out the first legacy tenant billing audit. `demo-tenant` is rec
 Task 017 adds the merchant self-service onboarding wizard at `/merchant/onboarding`. New tenants start with `booking_enabled = 0`; merchants complete store profile, hours, template/service setup, staff bindings, resources, setup test booking, and then open formal booking.
 
 Formal booking requires setup completion, setup test completion, no staff plan-selection blocker, and `tenants.booking_enabled = 1`. See `docs/MERCHANT_ONBOARDING_WIZARD.md`, `docs/STORE_GO_LIVE_CHECKLIST.md`, and `docs/MERCHANT_QUICK_START.md`.
+## Merchant Booking Operations
+
+Task 018 adds `/merchant/operations` for daily booking operations. It provides booking filters, status transitions, merchant notes, contact edits, reschedule/reassign APIs, booking events, and plan-limited staff handling. See `docs/MERCHANT_BOOKING_OPERATIONS.md`.

@@ -1,4 +1,4 @@
-const jsonHeaders = {
+﻿const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
@@ -424,6 +424,13 @@ export default {
     if (url.pathname === "/api/merchant/onboarding/enable-booking" && request.method === "POST") {
       return setTenantBookingEnabled(request, env, activeTenantId, true);
     }
+    const merchantBookingAction = parseMerchantBookingActionPath(url.pathname);
+    if (url.pathname === "/api/merchant/bookings" && request.method === "GET") {
+      return merchantBookingsResponse(request, env, activeTenantId);
+    }
+    if (merchantBookingAction && request.method === "POST") {
+      return merchantBookingActionResponse(request, env, activeTenantId, merchantBookingAction);
+    }
     if (url.pathname === "/api/merchant/onboarding/disable-booking" && request.method === "POST") {
       return setTenantBookingEnabled(request, env, activeTenantId, false);
     }
@@ -507,6 +514,9 @@ export default {
       return html(renderCustomersPage(await dashboardData(env, todayInTaipei(), activeTenantId), await loadCustomers(env, activeTenantId)));
     }
 
+    if (url.pathname === "/merchant/operations") {
+      return html(renderMerchantOperationsPage(await dashboardData(env, url.searchParams.get("date") || todayInTaipei(), activeTenantId)));
+    }
     if (url.pathname === "/merchant/onboarding") {
       const merchantData = await dashboardData(env, todayInTaipei(), activeTenantId);
       merchantData.onboardingSetup = await evaluateTenantSetup(env, activeTenantId);
@@ -687,6 +697,7 @@ function apiRouteMethods(pathname) {
     "/api/merchant/onboarding/test-booking": ["POST"],
     "/api/merchant/onboarding/enable-booking": ["POST"],
     "/api/merchant/onboarding/disable-booking": ["POST"],
+    "/api/merchant/bookings": ["GET"],
     "/api/customers/export": ["GET"],
     "/api/customers": ["GET"],
     "/api/customer-profile": ["GET"],
@@ -697,6 +708,7 @@ function apiRouteMethods(pathname) {
     "/api/bookings": ["POST"]
   };
   if (pathname.startsWith("/api/resources/")) return ["GET", "POST"];
+  if (pathname.startsWith("/api/merchant/bookings/")) return ["POST"];
   return routes[pathname] || null;
 }
 
@@ -790,13 +802,14 @@ function renderPlatformLoginPage(error = "") {
   return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BookingOS 平台登入</title><style>:root{--bg:#eef2ed;--panel:#fff;--line:#dfe5dd;--ink:#17211d;--muted:#68746d;--green:#06c755;--rail:#10231d}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(420px,calc(100vw - 32px));background:white;border:1px solid var(--line);border-radius:10px;padding:24px;box-shadow:0 18px 50px rgba(16,35,29,.08)}.brand{display:flex;align-items:center;gap:12px;margin-bottom:22px}.mark{width:44px;height:44px;border-radius:10px;background:var(--green);display:grid;place-items:center;font-weight:950;color:#062216}.brand b{font-size:22px}.brand small{display:block;color:var(--muted);margin-top:2px}h1{font-size:24px;margin:0 0 6px}p{margin:0 0 18px;color:var(--muted);line-height:1.5}form{display:grid;gap:12px}label{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}input{width:100%;min-height:46px;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}button{min-height:46px;border:0;border-radius:8px;background:var(--rail);color:white;font-weight:950;font:inherit;cursor:pointer}.line-login{width:100%;background:#06c755;color:#062216;margin:0 0 12px}.divider{text-align:center;color:var(--muted);font-size:12px;margin:2px 0 12px}.line-status{min-height:18px;color:#0f513f;font-size:12px;font-weight:850;margin:0 0 10px}.error{background:#fde2e2;color:#9b1c1c;border:1px solid #f2b8b8;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-weight:850}</style></head><body><main class="card"><div class="brand"><div class="mark">B</div><div><b>BookingOS</b><small>Platform Console</small></div></div><h1>平台總後台登入</h1><p>請輸入平台管理員帳密後進入總後台。</p>${message}<form method="post" action="/platform-login"><label>帳號<input name="account" autocomplete="username" autofocus required></label><label>密碼<input name="password" type="password" autocomplete="current-password" required></label><button type="submit">登入</button></form></main></body></html>`;
 }
 function isMerchantProtectedPath(pathname) {
-  return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/merchant/onboarding" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/merchant/staff/plan-selection" || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/merchant/onboarding" || pathname.startsWith("/api/merchant/onboarding/") || pathname === "/api/customers" || pathname === "/api/customers/export";
+  return pathname === "/" || pathname === "/index.html" || pathname === "/merchant" || pathname === "/merchant/onboarding" || pathname === "/merchant/operations" || pathname === "/settings" || pathname === "/schedule" || pathname === "/customers" || pathname === "/api/dashboard" || pathname === "/api/store" || pathname === "/api/settings" || pathname === "/api/services" || pathname === "/api/staff" || pathname === "/api/merchant/staff/plan-selection" || pathname === "/api/merchant/bookings" || pathname.startsWith("/api/merchant/bookings/") || pathname === "/api/resources" || pathname.startsWith("/api/resources/") || pathname === "/api/merchant/onboarding" || pathname.startsWith("/api/merchant/onboarding/") || pathname === "/api/customers" || pathname === "/api/customers/export";
 }
 
 function merchantRoutePermission(pathname, method = "GET") {
   const write = String(method || "GET").toUpperCase() !== "GET";
   if (pathname === "/" || pathname === "/index.html" || pathname === "/merchant") return "tenant.read";
   if (pathname === "/merchant/onboarding") return "tenant.read";
+  if (pathname === "/merchant/operations") return "booking.read";
   if (pathname === "/settings") return "tenant.settings.write";
   if (pathname === "/schedule") return "schedule.write";
   if (pathname === "/customers") return "crm.read";
@@ -806,6 +819,9 @@ function merchantRoutePermission(pathname, method = "GET") {
   if (pathname === "/api/services") return write ? "service.write" : "tenant.read";
   if (pathname === "/api/staff") return write ? "staff.write" : "tenant.read";
   if (pathname === "/api/merchant/staff/plan-selection") return "staff.write";
+  if (pathname === "/api/merchant/bookings") return "booking.read";
+  if (pathname.startsWith("/api/merchant/bookings/") && pathname.endsWith("/events")) return "booking.read";
+  if (pathname.startsWith("/api/merchant/bookings/")) return "booking.write";
   if (pathname === "/api/resources" || pathname.startsWith("/api/resources/")) return write ? "tenant.settings.write" : "tenant.read";
   if (pathname === "/api/merchant/onboarding") return write ? "tenant.settings.write" : "tenant.read";
   if (pathname.startsWith("/api/merchant/onboarding/")) return "tenant.settings.write";
@@ -819,6 +835,8 @@ function merchantRouteCapability(pathname, method = "GET") {
   if (pathname === "/customers" || pathname === "/api/customers") return TENANT_CAPABILITIES.VIEW_CUSTOMERS;
   if (pathname === "/api/customers/export") return TENANT_CAPABILITIES.EXPORT_DATA;
   if (!write && (pathname === "/merchant/onboarding" || pathname === "/api/merchant/onboarding")) return null;
+  if (pathname === "/merchant/operations" || pathname === "/api/merchant/bookings") return TENANT_CAPABILITIES.VIEW_BOOKINGS;
+  if (pathname.startsWith("/api/merchant/bookings/")) return TENANT_CAPABILITIES.VIEW_BOOKINGS;
   if (!write) return TENANT_CAPABILITIES.VIEW_DASHBOARD;
   if (pathname === "/api/store") return TENANT_CAPABILITIES.MANAGE_STORE;
   if (pathname === "/api/settings" || pathname === "/api/resources" || pathname.startsWith("/api/resources/")) return TENANT_CAPABILITIES.MANAGE_SCHEDULE;
@@ -1241,6 +1259,125 @@ function staffSelectionRequiredResponse() {
   }, { status: 409, headers: jsonHeaders });
 }
 
+function parseMerchantBookingActionPath(pathname = "") {
+  const match = String(pathname || "").match(/^\/api\/merchant\/bookings\/([^/]+)\/(status|reschedule|reassign|note|customer|events)$/);
+  return match ? { bookingId: decodeURIComponent(match[1]), action: match[2] } : null;
+}
+
+const BOOKING_STATUSES = Object.freeze(["pending", "confirmed", "checked_in", "in_service", "completed", "no_show", "cancelled"]);
+const BOOKING_STATUS_LABELS = Object.freeze({ pending: "待確認", confirmed: "已確認", checked_in: "已到店", in_service: "服務中", completed: "已完成", no_show: "未到店", cancelled: "已取消" });
+const BOOKING_TRANSITIONS = Object.freeze({
+  pending: new Set(["confirmed", "cancelled"]),
+  confirmed: new Set(["checked_in", "no_show", "cancelled"]),
+  checked_in: new Set(["in_service", "completed", "cancelled"]),
+  in_service: new Set(["completed"]),
+  completed: new Set(),
+  no_show: new Set(),
+  cancelled: new Set()
+});
+
+function normalizeBookingStatus(status) {
+  const raw = String(status || "confirmed").trim().toLowerCase();
+  const aliases = { "已確認": "confirmed", "待確認": "pending", "已取消": "cancelled", "取消": "cancelled", "完成": "completed", "已完成": "completed", "未到店": "no_show", "已到店": "checked_in", "服務中": "in_service" };
+  const normalized = aliases[raw] || raw;
+  return BOOKING_STATUSES.includes(normalized) ? normalized : "confirmed";
+}
+
+function bookingStatusLabel(status) {
+  return BOOKING_STATUS_LABELS[normalizeBookingStatus(status)] || String(status || "-");
+}
+
+function canTransitionBookingStatus(fromStatus, toStatus) {
+  const from = normalizeBookingStatus(fromStatus);
+  const to = normalizeBookingStatus(toStatus);
+  if (from === to) return true;
+  return Boolean(BOOKING_TRANSITIONS[from]?.has(to));
+}
+
+function bookingActionFlags(status) {
+  const value = normalizeBookingStatus(status);
+  const terminal = value === "completed" || value === "cancelled" || value === "no_show";
+  return {
+    canConfirm: !terminal && canTransitionBookingStatus(value, "confirmed") && value !== "confirmed",
+    canCheckIn: !terminal && canTransitionBookingStatus(value, "checked_in") && value !== "checked_in",
+    canStartService: !terminal && canTransitionBookingStatus(value, "in_service") && value !== "in_service",
+    canComplete: !terminal && canTransitionBookingStatus(value, "completed") && value !== "completed",
+    canNoShow: !terminal && canTransitionBookingStatus(value, "no_show") && value !== "no_show",
+    canCancel: !terminal && canTransitionBookingStatus(value, "cancelled") && value !== "cancelled",
+    canReschedule: value === "pending" || value === "confirmed",
+    canReassign: value === "pending" || value === "confirmed"
+  };
+}
+
+function merchantBookingError(code, message, status = 400) {
+  return Response.json({ ok: false, error: { code, message } }, { status, headers: jsonHeaders });
+}
+
+async function appendBookingEvent(env, { tenantId, bookingId, eventType, fromStatus = null, toStatus = null, actorType = "merchant", actorId = "", reason = "", metadata = null }) {
+  if (!env.DB || !tenantId || !bookingId) return;
+  try {
+    await env.DB.prepare(`
+      INSERT INTO booking_events (id, tenant_id, booking_id, event_type, from_status, to_status, actor_type, actor_id, reason, metadata_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).bind(crypto.randomUUID(), tenantId, bookingId, eventType, fromStatus, toStatus, actorType, actorId || null, reason || null, metadata ? JSON.stringify(metadata) : null).run();
+  } catch (_error) {}
+}
+
+function bookingRowToOperation(row = {}) {
+  const status = normalizeBookingStatus(row.status);
+  return {
+    booking_id: row.id,
+    date: row.booking_date,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    status,
+    statusLabel: bookingStatusLabel(status),
+    service: row.service_name || "",
+    service_id: row.service_id || "",
+    duration: Number(row.duration_minutes || 0),
+    price: Number(row.price || 0),
+    staff: { id: row.staff_id || "", name: row.staff_name || row.staff_id || "" },
+    resource_type_id: row.resource_type_id || "",
+    customer_id: row.customer_id || "",
+    customer_name: row.customer_name || "",
+    customer_phone_masked: maskCustomerPhone(row.customer_phone || ""),
+    customer_type: row.customer_id ? "member" : "guest",
+    source: row.source || "web",
+    merchant_note: row.merchant_note || "",
+    note: row.note || "",
+    created_at: row.created_at || "",
+    updated_at: row.updated_at || "",
+    checked_in_at: row.checked_in_at || "",
+    service_started_at: row.service_started_at || "",
+    completed_at: row.completed_at || "",
+    cancelled_at: row.cancelled_at || "",
+    cancel_reason: row.cancel_reason || "",
+    ...bookingActionFlags(status)
+  };
+}
+
+function summarizeMerchantBookings(bookings = []) {
+  const summary = { total: bookings.length, pending: 0, confirmed: 0, checkedIn: 0, inService: 0, completed: 0, noShow: 0, cancelled: 0, expectedRevenue: 0, completedRevenue: 0 };
+  for (const booking of bookings) {
+    const status = normalizeBookingStatus(booking.status);
+    if (status === "pending") summary.pending += 1;
+    if (status === "confirmed") summary.confirmed += 1;
+    if (status === "checked_in") summary.checkedIn += 1;
+    if (status === "in_service") summary.inService += 1;
+    if (status === "completed") summary.completed += 1;
+    if (status === "no_show") summary.noShow += 1;
+    if (status === "cancelled") summary.cancelled += 1;
+    if (status !== "cancelled") summary.expectedRevenue += Number(booking.price || 0);
+    if (status === "completed") summary.completedRevenue += Number(booking.price || 0);
+  }
+  return summary;
+}
+
+function merchantActorIdFromRequest(request) {
+  const cookie = request.headers.get("cookie") || "";
+  const match = cookie.match(/(?:^|;\s*)bookingos_merchant=([^;]+)/);
+  return match ? "merchant_session" : "merchant";
+}
 function maskCustomerPhone(phone) {
   const digits = String(phone || "").replace(/\D/g, "");
   if (digits.length < 7) return phone ? "***" : "";
@@ -2452,6 +2589,7 @@ function pageShell(title, body, active = "merchant", tenantId = TENANT_ID, store
   const publicBookingPath = storeSlug ? storePath(storeSlug, "") : "/book?tenant=" + encodeURIComponent(tenantId);
   const navLinks = [
     ["merchant", "/merchant", "總覽"],
+    ["operations", "/merchant/operations", "預約營運"],
     ["onboarding", "/merchant/onboarding", "開店精靈"],
     ["settings", "/settings", "設定"],
     ["schedule", "/schedule", "排班"],
@@ -2519,6 +2657,15 @@ function renderMerchantOnboardingPage(data = { store, services: [], staffMembers
   const staffBlocker = setup.staffPlanSelection?.required ? `<section class="panel" style="border-color:#f1d58a;background:#fffaf0"><h2>必須先確認可接單人員</h2><p class="muted">目前可接單人員超過方案上限，請先選擇可繼續接單的人員。完成前不可建立測試預約，也不可正式開放預約。</p></section>` : "";
   const body = `${staffBlocker}${readOnlyNotice}<section class="panel"><div class="onboard-head"><div><h2>店家自助設定精靈</h2><p class="muted">完成度 ${setup.completed}/${setup.total}，${setup.percentage}%</p></div><span class="badge ${setup.bookingEnabled ? "" : "yellow"}">${setup.bookingEnabled ? "已開放" : "未開放"}</span></div><div class="progress"><i style="width:${Math.max(0, Math.min(100, Number(setup.percentage || 0)))}%"></i></div><div class="onboard-grid">${checks}</div><p class="muted">待處理：${escapeHtmlValue(missing)}</p>${onboardingActions}<p class="muted" id="onboarding-status"></p></section><section class="grid"><div class="panel"><h2>1. 店家資料</h2><form class="wizard" data-onboarding-form data-endpoint="/api/store"><label>店家名稱<input name="name" value="${escapeAttrValue(data.store?.name || "")}" required></label><div class="wizard-grid"><label>電話<input name="phone" value="${escapeAttrValue(data.store?.phone || "")}"></label><label>店家網址 Slug<input value="${escapeAttrValue(data.store?.slug || "尚未設定")}" readonly></label></div><label>地址<input name="address" value="${escapeAttrValue(data.store?.address || "")}"></label><div class="wizard-grid"><label>業態<input name="businessType" value="${escapeAttrValue(data.store?.businessType || "")}" placeholder="整復 / 美髮 / 美甲"></label><label>時區<input name="timezone" value="${escapeAttrValue(data.store?.timezone || "Asia/Taipei")}"></label></div><label>店家介紹<textarea name="intro" placeholder="可先空白，之後再補"></textarea></label><button class="btn primary" type="submit">儲存店家資料</button></form></div><div class="panel"><h2>2. 營業時間</h2><form class="wizard" data-onboarding-form data-endpoint="/api/settings"><div class="wizard-grid"><label>開店<input name="open" type="time" value="${escapeAttrValue(data.businessHours?.open || "09:00")}"></label><label>打烊<input name="close" type="time" value="${escapeAttrValue(data.businessHours?.close || "18:00")}"></label></div><div class="wizard-grid"><label>休息開始<input name="breakStart" type="time" value="${escapeAttrValue(data.businessHours?.breaks?.[0]?.start || "12:00")}"></label><label>休息結束<input name="breakEnd" type="time" value="${escapeAttrValue(data.businessHours?.breaks?.[0]?.end || "13:00")}"></label></div><label>公休日</label><div class="wizard-actions">${["星期一","星期二","星期三","星期四","星期五","星期六","星期日"].map((day) => `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="closedDays" value="${day}" ${closedDays.has(day) ? "checked" : ""}>${day}</label>`).join("")}</div><button class="btn primary" type="submit">儲存營業時間</button></form></div><div class="panel"><h2>3. 套用範本</h2><p class="muted">範本只建立服務、時長與資源建議，不會建立客戶、預約、點數或服務人員。</p><div class="template-grid" style="margin-top:12px">${[["therapy","整復推拿"],["massage","按摩舒壓"],["hair","美髮"],["nail","美甲"],["beauty","美容美睫"],["blank","空白"]].map(([key,label]) => `<button class="btn" type="button" data-template="${key}">${label}</button>`).join("")}</div></div><div class="panel"><h2>4. 服務項目</h2><div class="wizard-list">${serviceList}</div><form class="wizard" data-service-create style="margin-top:12px"><input type="hidden" data-existing-services value="${escapeAttrValue(JSON.stringify(data.services || []))}"><label>服務名稱<input name="name" placeholder="例如 肩頸放鬆"></label><div class="wizard-grid"><label>分類<input name="category" placeholder="放鬆保養"></label><label>點數折抵上限<input name="pointRedeemLimit" type="number" min="0" value="0"></label></div><label>時長與價格<input name="prices" placeholder="60:1200,90:1700"></label><label>資源<select name="resourceTypeId">${resourceOptions}</select></label><button class="btn primary" type="submit">新增服務</button></form></div><div class="panel"><h2>5. 服務人員</h2><div class="wizard-list">${staffList}</div><form class="wizard" data-staff-create style="margin-top:12px"><input type="hidden" data-existing-staff value="${escapeAttrValue(JSON.stringify(data.staffMembers || []))}"><label>姓名<input name="name" placeholder="例如 Tony 師傅"></label><label>職稱<input name="role" placeholder="整復師 / 設計師"></label><label>可服務項目</label><div class="wizard-list">${serviceChecks}</div><button class="btn primary" type="submit" ${(data.services || []).length ? "" : "disabled"}>新增服務人員</button></form></div><div class="panel"><h2>6. 場地資源</h2><div class="wizard-list">${resourceList}</div><form class="wizard" data-resource-create style="margin-top:12px"><input type="hidden" data-existing-resources value="${escapeAttrValue(JSON.stringify(data.resourceTypes || []))}"><div class="wizard-grid"><label>資源名稱<input name="name" placeholder="床位 / 座位"></label><label>數量<input name="quantity" type="number" min="1" value="1"></label></div><button class="btn primary" type="submit">新增資源</button></form></div></section><script>${readOnlyScript}(function(){const status=()=>document.querySelector("#onboarding-status");const show=(msg)=>{const el=status();if(el)el.textContent=msg;};async function postJson(url,payload){const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});const data=await res.json().catch(()=>({ok:false,error:"回應格式錯誤"}));if(!data.ok)throw new Error((data.error&&data.error.message)||data.error||"儲存失敗");return data;}document.querySelectorAll("[data-onboarding-form]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{show("儲存中...");const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.closedDays=fd.getAll("closedDays");await postJson(form.dataset.endpoint,payload);show("已儲存，重新整理中...");setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-template]").forEach((button)=>button.addEventListener("click",async()=>{try{show("套用範本中...");await postJson("/api/merchant/onboarding/apply-template",{template:button.dataset.template});show("範本已套用，重新整理中...");setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-close-booking]").forEach((button)=>button.addEventListener("click",async()=>{try{show("關閉正式預約中...");await postJson("/api/merchant/onboarding/disable-booking",{});show("已暫停正式預約。");setTimeout(()=>location.reload(),800);}catch(error){show(error.message);}}));const parsePrices=(value)=>String(value||"").split(",").map((chunk)=>{const [minutes,price]=chunk.split(":").map((part)=>Number(String(part||"").trim()));return {minutes,price};}).filter((item)=>item.minutes&&item.price>=0);document.querySelectorAll("[data-service-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-services]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入服務名稱");const prices=parsePrices(fd.get("prices"));if(!prices.length)throw new Error("請輸入時長與價格，例如 60:1200");existing.push({name,category:fd.get("category"),resourceTypeId:fd.get("resourceTypeId"),pointRedeemLimit:Number(fd.get("pointRedeemLimit")||0),prices});show("新增服務中...");await postJson("/api/services",{services:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-staff-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-staff]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入服務人員姓名");existing.push({name,role:fd.get("role"),serviceIds:fd.getAll("serviceIds"),crmPermissions:[]});show("新增服務人員中...");await postJson("/api/staff",{staffMembers:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-resource-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-resources]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入資源名稱");existing.push({name,quantity:Number(fd.get("quantity")||1)});show("新增資源中...");await postJson("/api/resources",{resourceTypes:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));})();</script>`;
   return pageShell(`${data.store?.name || store.name} 開店精靈`, body, "onboarding", tenantId, data.store?.slug || "");
+}
+function renderMerchantOperationsPage(data = { store, services: [], staffMembers: [] }) {
+  const tenantId = data.store?.tenantId || TENANT_ID;
+  const storeSlug = data.store?.slug || "";
+  const today = todayInTaipei();
+  const staffOptions = (data.staffMembers || []).map((staff) => `<option value="${escapeAttrValue(staff.id)}">${escapeHtmlValue(staff.name)}</option>`).join("");
+  const serviceOptions = (data.services || []).map((service) => `<option value="${escapeAttrValue(service.id)}">${escapeHtmlValue(service.name)}</option>`).join("");
+  const body = `<section class="panel ops"><div class="ops-head"><div><h2>預約營運工作台</h2><p class="muted">查看今日與未來預約，處理確認、到店、服務中、完成、未到店、取消、改期與改派。</p></div><a class="btn" href="${escapeAttrValue(storeSlug ? storePath(storeSlug, "") : `/book?tenant=${encodeURIComponent(tenantId)}`)}" target="_blank">開客戶端</a></div><div class="ops-summary" id="ops-summary"><div><b>0</b><span>總數</span></div><div><b>0</b><span>待確認</span></div><div><b>0</b><span>已確認</span></div><div><b>0</b><span>服務中</span></div><div><b>0</b><span>已完成</span></div><div><b>0</b><span>未到店</span></div></div><div class="ops-filters"><button class="btn" type="button" data-day="-1">前一天</button><button class="btn primary" type="button" data-today>今天</button><button class="btn" type="button" data-day="1">後一天</button><label>日期<input id="ops-date" type="date" value="${escapeAttrValue(today)}"></label><label>狀態<select id="ops-status"><option value="">不含取消</option><option value="pending">待確認</option><option value="confirmed">已確認</option><option value="checked_in">已到店</option><option value="in_service">服務中</option><option value="completed">已完成</option><option value="no_show">未到店</option><option value="cancelled">已取消</option></select></label><label>人員<select id="ops-staff"><option value="">全部人員</option>${staffOptions}</select></label><label>服務<select id="ops-service"><option value="">全部服務</option>${serviceOptions}</select></label><label>顧客<input id="ops-keyword" placeholder="姓名或電話末碼"></label><label class="check-inline"><input id="ops-cancelled" type="checkbox"> 顯示已取消</label></div><div id="ops-plan-limited"></div><div class="ops-list" id="ops-list"><p class="muted">載入中...</p></div></section><style>.ops-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.ops-summary{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:14px 0}.ops-summary div{border:1px solid var(--line);border-radius:8px;background:#f8faf8;padding:10px}.ops-summary b{display:block;font-size:22px}.ops-summary span{display:block;color:var(--muted);font-size:12px}.ops-filters{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.ops-filters label{display:grid;gap:5px;color:var(--muted);font-size:12px;font-weight:850}.ops-filters input,.ops-filters select{min-height:40px;border:1px solid var(--line);border-radius:8px;padding:8px;background:white}.check-inline{display:flex!important;align-items:center;gap:6px}.booking-card{border:1px solid var(--line);border-radius:8px;background:white;padding:12px;margin-bottom:10px}.booking-top{display:flex;justify-content:space-between;gap:10px}.booking-time{font-size:22px;font-weight:950;color:var(--green)}.booking-title{font-weight:950}.booking-meta{color:var(--muted);line-height:1.45;margin-top:4px}.booking-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.booking-actions button{min-height:34px;border-radius:8px;border:1px solid var(--line);background:white;padding:0 10px;font-weight:850}.booking-actions .primary{background:var(--blue);border-color:var(--blue);color:white}.booking-actions .danger{border-color:#f1b8b8;color:#9b1c1c}.note-box{display:grid;gap:6px;margin-top:8px}.note-box textarea{width:100%;min-height:58px;border:1px solid var(--line);border-radius:8px;padding:8px}.warn{background:#fff4cf;border:1px solid #f1d58a;border-radius:8px;padding:10px;margin-bottom:10px;color:#604600}@media(max-width:760px){.ops-summary{grid-template-columns:repeat(2,1fr)}.ops-filters{grid-template-columns:1fr 1fr}.ops-head{display:block}}</style><script>(function(){const tenant=${JSON.stringify(tenantId)};const $=(id)=>document.getElementById(id);const esc=(v)=>String(v??"").replace(/[&<>"']/g,(m)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));const labels={pending:"待確認",confirmed:"已確認",checked_in:"已到店",in_service:"服務中",completed:"已完成",no_show:"未到店",cancelled:"已取消"};async function post(url,body){const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body||{})});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!data.ok)throw new Error((data.error&&data.error.message)||data.error||"操作失敗");return data;}function actionButton(label,action,value,cls=""){return '<button class="'+cls+'" data-action="'+action+'" data-value="'+value+'" type="button">'+label+'</button>';}function card(b){let actions="";if(b.canConfirm)actions+=actionButton("確認","status","confirmed","primary");if(b.canCheckIn)actions+=actionButton("到店","status","checked_in","primary");if(b.canStartService)actions+=actionButton("開始服務","status","in_service","primary");if(b.canComplete)actions+=actionButton("完成","status","completed","primary");if(b.canNoShow)actions+=actionButton("未到店","status","no_show","");if(b.canCancel)actions+=actionButton("取消","cancel","cancelled","danger");if(b.canReschedule)actions+=actionButton("改期","reschedule","","");if(b.canReassign)actions+=actionButton("改派","reassign","","");actions+=actionButton("歷程","events","","");return '<article class="booking-card" data-id="'+esc(b.booking_id)+'" data-updated="'+esc(b.updated_at||'')+'"><div class="booking-top"><div><div class="booking-time">'+esc(b.start_time)+' - '+esc(b.end_time)+'</div><div class="booking-title">'+esc(b.customer_name)+' · '+esc(b.service)+'</div><div class="booking-meta">'+esc(b.date)+' · '+esc(b.duration)+' 分 · NT$'+Number(b.price||0)+'<br>人員：'+esc((b.staff&&b.staff.name)||'-')+' · '+esc(b.customer_phone_masked||'')+' · '+esc(b.customer_type==='member'?'會員':'訪客')+' · '+esc(b.source||'web')+'</div></div><span class="badge">'+esc(b.statusLabel||labels[b.status]||b.status)+'</span></div>'+(b.merchant_note?'<div class="warn">店家備註：'+esc(b.merchant_note)+'</div>':'')+'<div class="booking-actions">'+actions+'</div><div class="note-box"><textarea placeholder="店家內部備註，顧客看不到">'+esc(b.merchant_note||'')+'</textarea><button data-action="note" type="button">儲存備註</button></div></article>';}async function load(){const p=new URLSearchParams({tenant,date:$("ops-date").value||"${escapeAttrValue(today)}",limit:"100"});if($("ops-status").value)p.set("status",$("ops-status").value);if($("ops-staff").value)p.set("staff_id",$("ops-staff").value);if($("ops-service").value)p.set("service_id",$("ops-service").value);if($("ops-keyword").value)p.set("customer_keyword",$("ops-keyword").value);if($("ops-cancelled").checked)p.set("include_cancelled","1");const res=await fetch('/api/merchant/bookings?'+p.toString());const data=await res.json();if(!data.ok){$("ops-list").innerHTML='<p class="muted">載入失敗</p>';return;}const s=data.summary||{};$("ops-summary").innerHTML=['total','pending','confirmed','inService','completed','noShow'].map((k)=>'<div><b>'+Number(s[k]||0)+'</b><span>'+({total:'總數',pending:'待確認',confirmed:'已確認',inService:'服務中',completed:'已完成',noShow:'未到店'}[k])+'</span></div>').join('')+'<div><b>NT$'+Number(s.expectedRevenue||0).toLocaleString('zh-TW')+'</b><span>預計營收</span></div><div><b>NT$'+Number(s.completedRevenue||0).toLocaleString('zh-TW')+'</b><span>完成營收</span></div>';const affected=(data.planLimited&&data.planLimited.affectedBookings)||[];$("ops-plan-limited").innerHTML=affected.length?'<div class="warn"><b>方案調整待處理預約</b><br>有 '+affected.length+' 筆未來預約落在因方案限制停止接新單的人員。可在卡片中改派、取消或聯絡顧客；保留原人員不會讓該人員恢復接新單。</div>':'';$("ops-list").innerHTML=(data.bookings||[]).map(card).join('')||'<p class="muted">沒有符合條件的預約。</p>';}document.addEventListener('click',async(e)=>{const btn=e.target.closest('[data-action]');if(!btn)return;const el=btn.closest('.booking-card');if(!el)return;const id=el.dataset.id;try{if(btn.dataset.action==='status'){await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/status',{status:btn.dataset.value,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='cancel'){const reason=prompt('取消原因','顧客取消')||'';if(!reason)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/status',{status:'cancelled',reason,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='note'){await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/note',{note:el.querySelector('textarea').value,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='reschedule'){const date=prompt('新日期 YYYY-MM-DD',$("ops-date").value);const start=prompt('新開始時間 HH:mm','09:00');if(!date||!start)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/reschedule',{date,start_time:start,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='reassign'){const staff=prompt('輸入新服務人員 ID');if(!staff)return;await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/reassign',{staff_id:staff,expected_updated_at:el.dataset.updated});}if(btn.dataset.action==='events'){const res=await post('/api/merchant/bookings/'+encodeURIComponent(id)+'/events',{});alert((res.events||[]).map(ev=>ev.created_at+' '+ev.event_type+' '+(ev.from_status||'')+' → '+(ev.to_status||'')).join('\\n')||'尚無歷程');return;}await load();}catch(err){alert(err.message);}});document.querySelectorAll('#ops-date,#ops-status,#ops-staff,#ops-service,#ops-cancelled').forEach(el=>el.addEventListener('change',load));$('ops-keyword').addEventListener('input',()=>{clearTimeout(window.__opsTimer);window.__opsTimer=setTimeout(load,300);});document.querySelectorAll('[data-day]').forEach(btn=>btn.onclick=()=>{const d=new Date($("ops-date").value||"${escapeAttrValue(today)}");d.setDate(d.getDate()+Number(btn.dataset.day));$("ops-date").value=d.toISOString().slice(0,10);load();});document.querySelector('[data-today]').onclick=()=>{$("ops-date").value="${escapeAttrValue(today)}";load();};load();})();</script>`;
+  return pageShell(data.store?.name || store.name, body, "operations", tenantId, storeSlug);
 }
 function renderMerchantPage(data = { store, bookings, services, staffMembers, resourceTypes }, customers = []) {
   const bookingRows = (data.bookings || []).slice(0, 8).map((booking) => `<tr><td>${escapeHtmlValue(booking.start || "-")}</td><td>${escapeHtmlValue(booking.customer || "-")}</td><td>${escapeHtmlValue(booking.service || "-")}</td><td>${escapeHtmlValue(booking.staffName || booking.staffId || "-")}</td><td><span class="badge">${escapeHtmlValue(booking.status || "-")}</span></td></tr>`).join("");
@@ -3830,7 +3977,7 @@ async function replyReferralShare(env, event) {
   const setting = await platformLineSettings(env);
   const referralUrl = referralLiffUrlFor(userId, setting, env);
   const qrUrl = referralQrUrl(referralUrl);
-  const shareUrl = lineShareUrl(`掃碼加入 BookingOS 會員` + "\n" + referralUrl);
+  const shareUrl = lineShareUrl(`掃碼加入 BookingOS 會員` + "\\n" + referralUrl);
   const flex = {
     type: "flex",
     altText: "掃碼加入會員",
@@ -4421,7 +4568,7 @@ async function loadBookings(env, date, tenantId) {
     WHERE b.tenant_id = ? AND b.booking_date = ? AND b.status != 'cancelled'
     ORDER BY b.start_time
   `).bind(tenantId, date).all();
-  const statusMap = { confirmed: "已確認", pending: "待確認", cancelled: "已取消" };
+  const statusMap = { pending: "待確認", confirmed: "已確認", checked_in: "已到店", in_service: "服務中", completed: "已完成", no_show: "未到店", cancelled: "已取消" };
   return (rows.results || []).map((row) => ({
     id: row.id,
     staffId: row.staff_id,
@@ -4829,6 +4976,197 @@ async function saveSettings(request, env, tenantId = TENANT_ID) {
   }
 }
 
+async function loadMerchantBookingById(env, tenantId, bookingId) {
+  return env.DB.prepare(`
+    SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
+    FROM bookings b
+    LEFT JOIN staff_members sm ON sm.id = b.staff_id AND sm.tenant_id = b.tenant_id
+    LEFT JOIN services s ON s.id = b.service_id AND s.tenant_id = b.tenant_id
+    WHERE b.tenant_id = ? AND b.id = ?
+  `).bind(tenantId, bookingId).first();
+}
+
+async function merchantBookingsResponse(request, env, tenantId) {
+  if (!env.DB) return merchantBookingError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  const url = new URL(request.url);
+  const today = todayInTaipei();
+  const date = url.searchParams.get("date") || "";
+  const dateFrom = url.searchParams.get("date_from") || date || today;
+  const dateTo = url.searchParams.get("date_to") || date || dateFrom;
+  const status = normalizeBookingStatus(url.searchParams.get("status") || "");
+  const statusRaw = String(url.searchParams.get("status") || "").trim();
+  const staffId = String(url.searchParams.get("staff_id") || "").trim();
+  const serviceId = String(url.searchParams.get("service_id") || "").trim();
+  const keyword = String(url.searchParams.get("customer_keyword") || "").trim();
+  const includeCancelled = ["1", "true", "yes"].includes(String(url.searchParams.get("include_cancelled") || "").toLowerCase());
+  const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 100)));
+  const page = Math.max(1, Number(url.searchParams.get("page") || 1));
+  const offset = (page - 1) * limit;
+  const clauses = ["b.tenant_id = ?", "b.booking_date >= ?", "b.booking_date <= ?"];
+  const binds = [tenantId, dateFrom, dateTo];
+  if (!includeCancelled && !statusRaw) clauses.push("b.status != 'cancelled'");
+  if (statusRaw) { clauses.push("b.status = ?"); binds.push(status); }
+  if (staffId) { clauses.push("b.staff_id = ?"); binds.push(staffId); }
+  if (serviceId) { clauses.push("b.service_id = ?"); binds.push(serviceId); }
+  if (keyword) { clauses.push("(b.customer_name LIKE ? OR b.customer_phone LIKE ?)"); binds.push(`%${keyword}%`, `%${keyword}%`); }
+  const rows = await env.DB.prepare(`
+    SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
+    FROM bookings b
+    LEFT JOIN staff_members sm ON sm.id = b.staff_id AND sm.tenant_id = b.tenant_id
+    LEFT JOIN services s ON s.id = b.service_id AND s.tenant_id = b.tenant_id
+    WHERE ${clauses.join(" AND ")}
+    ORDER BY b.booking_date ASC, b.start_time ASC
+    LIMIT ? OFFSET ?
+  `).bind(...binds, limit, offset).all();
+  const bookings = (rows.results || []).map(bookingRowToOperation);
+  const affected = bookings.filter((booking) => {
+    const staff = (booking.staff?.id || "");
+    return staff && booking.status !== "cancelled" && booking.status !== "completed" && booking.status !== "no_show";
+  });
+  const limitedStaffRows = await env.DB.prepare("SELECT id, name FROM staff_members WHERE tenant_id = ? AND enabled = 1 AND COALESCE(plan_booking_status, 'active') = 'plan_limited'").bind(tenantId).all();
+  const limitedIds = new Set((limitedStaffRows.results || []).map((row) => row.id));
+  const affectedPlanBookings = bookings.filter((booking) => limitedIds.has(booking.staff?.id || "") && booking.date >= today && !["cancelled", "completed", "no_show"].includes(booking.status));
+  return Response.json({ ok: true, summary: summarizeMerchantBookings(bookings), bookings, planLimited: { affectedBookings: affectedPlanBookings, staff: limitedStaffRows.results || [] } }, { headers: jsonHeaders });
+}
+
+async function merchantBookingTenantAccess(env, tenantId) {
+  const storeData = await loadStore(env, tenantId);
+  return storeData.access || evaluateTenantAccess(storeData || {});
+}
+
+function canRunMerchantBookingAction(access = {}, action = "", payload = {}) {
+  const status = String(access.operationalStatus || "active");
+  if (action === "events") return true;
+  if (status === "active" || status === "trial") return true;
+  if (status === "grace" || status === "expired") {
+    if (action === "status") return ["checked_in", "in_service", "completed", "cancelled"].includes(normalizeBookingStatus(payload.status));
+    return ["reassign", "note", "customer"].includes(action);
+  }
+  if (status === "suspended" || status === "cancelled") {
+    if (action === "status") return ["completed", "cancelled"].includes(normalizeBookingStatus(payload.status));
+    return false;
+  }
+  return false;
+}
+async function merchantBookingActionResponse(request, env, tenantId, route) {
+  if (!env.DB) return merchantBookingError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
+  const payload = await request.json().catch(() => ({}));
+  const booking = await loadMerchantBookingById(env, tenantId, route.bookingId);
+  if (!booking) return merchantBookingError("BOOKING_NOT_FOUND", "Booking not found", 404);
+  if (payload.expected_updated_at && String(payload.expected_updated_at) !== String(booking.updated_at || "")) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
+  const tenantAccess = await merchantBookingTenantAccess(env, tenantId);
+  if (!canRunMerchantBookingAction(tenantAccess, route.action, payload)) return merchantBookingError("TENANT_BOOKING_ACTION_READ_ONLY", "目前方案狀態不允許執行這項預約操作", 403);
+  if (route.action === "status") return updateMerchantBookingStatus(request, env, tenantId, booking, payload);
+  if (route.action === "note") return updateMerchantBookingNote(request, env, tenantId, booking, payload);
+  if (route.action === "customer") return updateMerchantBookingCustomer(request, env, tenantId, booking, payload);
+  if (route.action === "reschedule") return rescheduleMerchantBooking(request, env, tenantId, booking, payload);
+  if (route.action === "reassign") return reassignMerchantBooking(request, env, tenantId, booking, payload);
+  if (route.action === "events") return merchantBookingEventsResponse(env, tenantId, booking.id);
+  return merchantBookingError("BOOKING_ACTION_NOT_FOUND", "Booking action not found", 404);
+}
+
+async function rollbackBookingCustomerPoints(env, tenantId, bookingId, customerId) {
+  if (!customerId) return;
+  await env.DB.prepare("UPDATE customers SET total_bookings = CASE WHEN total_bookings > 0 THEN total_bookings - 1 ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, customerId).run();
+  const earned = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'earn'").bind(tenantId, customerId, bookingId).first();
+  const revoked = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'revoke'").bind(tenantId, customerId, bookingId).first();
+  const revokePoints = Math.max(0, Number(earned?.points || 0) + Number(revoked?.points || 0));
+  if (revokePoints > 0) {
+    await env.DB.prepare(`
+      INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
+      VALUES (?, ?, ?, ?, 'revoke', ?, '取消預約扣回贈點', datetime('now'))
+    `).bind(crypto.randomUUID(), tenantId, customerId, bookingId, -revokePoints).run();
+    await env.DB.prepare("UPDATE customers SET points_balance = points_balance - ?, total_points_earned = CASE WHEN total_points_earned >= ? THEN total_points_earned - ? ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(revokePoints, revokePoints, revokePoints, tenantId, customerId).run();
+  }
+  const redeemed = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'redeem'").bind(tenantId, customerId, bookingId).first();
+  const refunded = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'refund'").bind(tenantId, customerId, bookingId).first();
+  const refundPoints = Math.max(0, Math.abs(Number(redeemed?.points || 0)) - Number(refunded?.points || 0));
+  if (refundPoints > 0) {
+    await env.DB.prepare(`
+      INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
+      VALUES (?, ?, ?, ?, 'refund', ?, '取消預約退回折抵點數', datetime('now'))
+    `).bind(crypto.randomUUID(), tenantId, customerId, bookingId, refundPoints).run();
+    await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_used = CASE WHEN total_points_used >= ? THEN total_points_used - ? ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(refundPoints, refundPoints, refundPoints, tenantId, customerId).run();
+  }
+}
+async function updateMerchantBookingStatus(request, env, tenantId, booking, payload) {
+  const fromStatus = normalizeBookingStatus(booking.status);
+  const toStatus = normalizeBookingStatus(payload.status);
+  if (!canTransitionBookingStatus(fromStatus, toStatus)) return merchantBookingError("INVALID_BOOKING_STATUS_TRANSITION", "此預約狀態無法執行這項操作", 409);
+  if (fromStatus === toStatus) return Response.json({ ok: true, booking: bookingRowToOperation(booking) }, { headers: jsonHeaders });
+  const reason = limitText(payload.reason, 300);
+  const setParts = ["status = ?", "updated_at = datetime('now')"];
+  const binds = [toStatus];
+  if (toStatus === "checked_in") setParts.push("checked_in_at = COALESCE(checked_in_at, datetime('now'))");
+  if (toStatus === "in_service") setParts.push("service_started_at = COALESCE(service_started_at, datetime('now'))");
+  if (toStatus === "completed") setParts.push("completed_at = COALESCE(completed_at, datetime('now'))");
+  if (toStatus === "cancelled") { setParts.push("cancelled_at = COALESCE(cancelled_at, datetime('now'))", "cancelled_by = COALESCE(cancelled_by, 'merchant')", "cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason)"); binds.push(reason); }
+  binds.push(tenantId, booking.id);
+  const result = await env.DB.prepare(`UPDATE bookings SET ${setParts.join(", ")} WHERE tenant_id = ? AND id = ?`).bind(...binds).run();
+  if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
+  if (toStatus === "cancelled") await rollbackBookingCustomerPoints(env, tenantId, booking.id, booking.customer_id);
+  await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: toStatus === "cancelled" ? "cancelled" : "status_changed", fromStatus, toStatus, actorType: "merchant", actorId: merchantActorIdFromRequest(request), reason });
+  return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
+}
+
+async function updateMerchantBookingNote(request, env, tenantId, booking, payload) {
+  const note = limitText(payload.note, 1000);
+  await env.DB.prepare("UPDATE bookings SET merchant_note = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(note, tenantId, booking.id).run();
+  await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "merchant_note_updated", actorType: "merchant", actorId: merchantActorIdFromRequest(request) });
+  return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
+}
+
+async function updateMerchantBookingCustomer(request, env, tenantId, booking, payload) {
+  const name = limitText(payload.customer_name || payload.customerName, 80);
+  const phone = limitText(payload.customer_phone || payload.customerPhone, 32);
+  if (!name) return merchantBookingError("CUSTOMER_NAME_REQUIRED", "請輸入顧客姓名", 400);
+  await env.DB.prepare("UPDATE bookings SET customer_name = ?, customer_phone = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(name, phone || null, tenantId, booking.id).run();
+  await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "customer_updated", actorType: "merchant", actorId: merchantActorIdFromRequest(request), metadata: { oldName: booking.customer_name, newName: name, phoneChanged: String(booking.customer_phone || "") !== phone } });
+  return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
+}
+
+async function rescheduleMerchantBooking(request, env, tenantId, booking, payload) {
+  const status = normalizeBookingStatus(booking.status);
+  if (!(status === "pending" || status === "confirmed")) return merchantBookingError("INVALID_BOOKING_STATUS_TRANSITION", "此預約狀態無法執行這項操作", 409);
+  const date = String(payload.date || "").slice(0, 10);
+  const start = normalizeTime(payload.start_time || payload.startTime || "");
+  const staffId = String(payload.staff_id || payload.staffId || booking.staff_id || "").trim();
+  if (!date || !start) return merchantBookingError("BOOKING_RESCHEDULE_INVALID", "請選擇新日期與時間", 400);
+  if (`${date} ${start}` < `${todayInTaipei()} 00:00`) return merchantBookingError("BOOKING_PAST_SLOT", "不可改到過去時間", 409);
+  const data = await dashboardData(env, date, tenantId);
+  const service = (data.services || []).find((item) => item.id === booking.service_id);
+  const duration = Number(booking.duration_minutes || service?.prices?.[0]?.minutes || 0);
+  const end = toTime(toMinutes(start) + duration);
+  const staff = bookableStaffMembers(data.staffMembers).find((item) => item.id === staffId && staffCanProvideService(item, booking.service_id));
+  if (!staff) return merchantBookingError("BOOKING_STAFF_INVALID", "服務人員不可接此預約", 409);
+  const resource = (data.resourceTypes || []).find((item) => item.id === service?.resourceTypeId);
+  const otherBookings = (data.bookings || []).filter((item) => item.id !== booking.id);
+  if (!isSlotAvailable({ start: toMinutes(start), end: toMinutes(end), businessHours: data.businessHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此時段已被預約或不在營業時間內", 409);
+  await env.DB.prepare("UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, staff_id = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(date, start, end, staffId, tenantId, booking.id).run();
+  await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "rescheduled", actorType: "merchant", actorId: merchantActorIdFromRequest(request), reason: limitText(payload.reason, 300), metadata: { old_date: booking.booking_date, old_start_time: booking.start_time, old_end_time: booking.end_time, new_date: date, new_start_time: start, new_end_time: end, old_staff_id: booking.staff_id, new_staff_id: staffId } });
+  return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
+}
+
+async function reassignMerchantBooking(request, env, tenantId, booking, payload) {
+  const status = normalizeBookingStatus(booking.status);
+  if (!(status === "pending" || status === "confirmed")) return merchantBookingError("INVALID_BOOKING_STATUS_TRANSITION", "此預約狀態無法執行這項操作", 409);
+  const staffId = String(payload.staff_id || payload.staffId || "").trim();
+  const data = await dashboardData(env, booking.booking_date, tenantId);
+  const staff = bookableStaffMembers(data.staffMembers).find((item) => item.id === staffId && staffCanProvideService(item, booking.service_id));
+  if (!staff) return merchantBookingError("BOOKING_STAFF_INVALID", "服務人員不可接此預約", 409);
+  const service = (data.services || []).find((item) => item.id === booking.service_id);
+  const resource = (data.resourceTypes || []).find((item) => item.id === service?.resourceTypeId);
+  const otherBookings = (data.bookings || []).filter((item) => item.id !== booking.id);
+  if (!isSlotAvailable({ start: toMinutes(booking.start_time), end: toMinutes(booking.end_time), businessHours: data.businessHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此人員該時段已有預約", 409);
+  await env.DB.prepare("UPDATE bookings SET staff_id = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(staffId, tenantId, booking.id).run();
+  await appendBookingEvent(env, { tenantId, bookingId: booking.id, eventType: "staff_reassigned", actorType: "merchant", actorId: merchantActorIdFromRequest(request), reason: limitText(payload.reason, 300), metadata: { old_staff_id: booking.staff_id, new_staff_id: staffId } });
+  return Response.json({ ok: true, booking: bookingRowToOperation(await loadMerchantBookingById(env, tenantId, booking.id)) }, { headers: jsonHeaders });
+}
+
+async function merchantBookingEventsResponse(env, tenantId, bookingId) {
+  const rows = await env.DB.prepare("SELECT event_type, from_status, to_status, actor_type, reason, metadata_json, created_at FROM booking_events WHERE tenant_id = ? AND booking_id = ? ORDER BY created_at ASC").bind(tenantId, bookingId).all();
+  return Response.json({ ok: true, events: rows.results || [] }, { headers: jsonHeaders });
+}
 async function cancelBooking(request, env, tenantId) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
@@ -4849,8 +5187,11 @@ async function cancelBooking(request, env, tenantId) {
       if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
       responseProfilePhone = phone;
     }
-    if (booking.status !== "cancelled") {
-      await env.DB.prepare("UPDATE bookings SET status = 'cancelled', updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, bookingId).run();
+    const currentStatus = normalizeBookingStatus(booking.status);
+    if (currentStatus === "completed") return customerJsonError("INVALID_BOOKING_STATUS_TRANSITION", "已完成預約不可取消", 409);
+    if (currentStatus !== "cancelled") {
+      await env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, ?), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(customerSession.ok ? "customer" : "guest", limitText(payload.reason || "顧客取消", 300), tenantId, bookingId).run();
+      await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType: customerSession.ok ? "customer" : "customer", actorId: authorizedCustomerId || "guest", reason: limitText(payload.reason || "顧客取消", 300) });
       if (booking.customer_id) {
         const earned = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'earn'").bind(tenantId, booking.customer_id, bookingId).first();
         const revokePoints = Math.max(0, Number(earned?.points || 0));
@@ -4970,7 +5311,7 @@ async function createBooking(request, env, data) {
   const bookingId = crypto.randomUUID();
   await env.DB.prepare(`
     INSERT INTO bookings (id, tenant_id, customer_id, staff_id, service_id, service_name, duration_minutes, price, booking_date, start_time, end_time, customer_name, customer_phone, status, source, note)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
   `).bind(bookingId, tenantId, customerId, selectedStaffId, selectedService.id, selectedService.name, duration, payableAmount, date, start, end, name, rawPhone || '現場未留', source, payload.note || null).run();
 
   await env.DB.prepare("UPDATE customers SET total_bookings = total_bookings + 1, last_booking_at = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(`${date} ${start}`, tenantId, customerId).run();
@@ -4991,6 +5332,8 @@ async function createBooking(request, env, data) {
     `).bind(crypto.randomUUID(), tenantId, customerId, bookingId, earnedPoints, `預約消費贈點：${selectedService.name}`).run();
     await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_earned = total_points_earned + ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(earnedPoints, earnedPoints, tenantId, customerId).run();
   }
+
+  await appendBookingEvent(env, { tenantId, bookingId, eventType: "created", toStatus: "pending", actorType: customerSession.ok ? "customer" : "customer", actorId: customerId, metadata: { source, staff_id: selectedStaffId, service_id: selectedService.id } });
 
   if (referrer?.id && referrer.id !== customerId) {
     await env.DB.prepare(`

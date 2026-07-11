@@ -67,3 +67,10 @@ The test booking does not create real customer points and does not notify custom
 Click `開放正式預約` after the wizard shows the setup is ready.
 
 After this, customers can book from the public store URL.
+## 10. Daily Booking Operations
+
+After formal booking is open, use `預約營運` in the merchant backend.
+
+The workspace shows today's bookings, status counts, expected revenue, completed revenue, filters by date/status/staff/service/customer keyword, and cards for each booking.
+
+Merchants can confirm bookings, mark arrival, start service, complete service, mark no-show, cancel, reschedule, reassign staff, save internal notes, and view event history. Internal merchant notes are not shown to customers.
