@@ -72,3 +72,7 @@ Write APIs include template apply, store profile, hours, services, staff, resour
 `grace` and `expired` tenants can view setup status and existing configuration, but the wizard is read-only. The page shows: `目前方案已到期，設定資料僅供查看；續約後可繼續修改。` Direct write API calls return HTTP 403 with `TENANT_READ_ONLY`.
 
 `suspended` and `cancelled` tenants follow the existing merchant access policy. When a valid merchant session is still allowed to reach the wizard, the page is read-only and write APIs remain blocked.
+
+## Sprint 1 Clean Foundation
+
+Sprint 1 replaces the old single daily-hours editor with the weekly onboarding model documented in docs/STORE_ONBOARDING_FOUNDATION.md. weekly_hours_json is now the only runtime business-hours source. The onboarding entry redirects draft tenants to the wizard; completed tenants continue to the normal merchant dashboard. Service, Staff, LINE, and Promotion remain placeholders in this sprint.

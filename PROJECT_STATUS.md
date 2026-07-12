@@ -217,3 +217,11 @@
 - Remote migration 0013_customer_identity_unique.sql applied; migrations now report no pending.
 - Smoke passed: health 200, member protected redirect, member-login page, customer session 401 without cookie, missing/invalid/line_user_id-only LIFF token rejected, public booking page 200, platform login 200, merchant login 200, invalid LINE webhook signature 401.
 - Real Customer LIFF success-path live test remains pending because it requires LINE App ID Token from Tony.
+
+## Store Onboarding Foundation 2026-07-12
+
+- Sprint 1 adds the clean Store / Brand / Business onboarding wizard.
+- New tenants use onboarding_status = draft until required Store, Brand, contact, address, and seven-day weekly-hours data are valid.
+- business_settings.weekly_hours_json is the sole runtime business-hours source; old daily columns are retained as historical schema only and are no longer read or written.
+- Availability, booking creation, rescheduling, and booking enablement are blocked until onboarding is completed.
+- Local parser tests and the existing 12-check smoke suite pass before remote migration.

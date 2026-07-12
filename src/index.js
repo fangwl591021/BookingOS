@@ -1,3 +1,4 @@
+import { WEEKDAY_KEYS, WEEKDAY_LABELS, defaultWeeklyHours, normalizeWeeklyHours, validateWeeklyHours, hasCompleteWeeklyHours, weekdayKeyForDate, dayHoursForDate } from "./weekly-hours.js";
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
@@ -316,6 +317,10 @@ export default {
       const capabilityCheck = capability ? requireTenantCapability(auth, capability) : { ok: true };
       if (!capabilityCheck.ok) return merchantAuthFailureResponse(request, capabilityCheck, auth.tenantId);
       activeTenantId = auth.tenantId;
+      const merchantEntryStore = await loadStore(env, activeTenantId);
+      if ((url.pathname === "/" || url.pathname === "/index.html" || url.pathname === "/merchant") && merchantEntryStore.onboardingStatus === "draft") {
+        return Response.redirect(new URL("/merchant/onboarding", request.url), 302);
+      }
     }
 
     if (url.pathname === "/platform-line-webhook") {
@@ -413,6 +418,7 @@ export default {
       if (request.method === "POST") return saveResourceTypes(request, env, activeTenantId);
     }
     if (url.pathname === "/api/merchant/onboarding") {
+      if (request.method === "POST") return completeStoreOnboarding(request, env, activeTenantId);
       return merchantOnboardingResponse(request, env, activeTenantId);
     }
     if (url.pathname === "/api/merchant/onboarding/apply-template" && request.method === "POST") {
@@ -519,7 +525,7 @@ export default {
     }
     if (url.pathname === "/merchant/onboarding") {
       const merchantData = await dashboardData(env, todayInTaipei(), activeTenantId);
-      merchantData.onboardingSetup = await evaluateTenantSetup(env, activeTenantId);
+      merchantData.onboarding = await evaluateStoreOnboarding(env, activeTenantId);
       return html(renderMerchantOnboardingPage(merchantData));
     }
 
@@ -562,14 +568,7 @@ function isDefaultDemoTenant(env = {}, tenantId = TENANT_ID) {
 }
 
 function fallbackBusinessHours() {
-  return {
-    open: "09:00",
-    close: "18:00",
-    breaks: [{ start: "12:00", end: "13:00", label: "午休" }],
-    closedDays: [],
-    allowOvertimeBooking: false,
-    pointReward: { spendAmount: 100, rewardPoints: 1 }
-  };
+  return { weeklyHours: defaultWeeklyHours(), complete: false, invalid: false, allowOvertimeBooking: false, pointReward: { spendAmount: 100, rewardPoints: 1 } };
 }
 function isValidStoreSlug(slug = "") {
   const normalized = normalizeStoreSlug(slug);
@@ -692,7 +691,7 @@ function apiRouteMethods(pathname) {
     "/api/staff": ["GET", "POST"],
     "/api/merchant/staff/plan-selection": ["POST"],
     "/api/resources": ["GET", "POST"],
-    "/api/merchant/onboarding": ["GET"],
+    "/api/merchant/onboarding": ["GET", "POST"],
     "/api/merchant/onboarding/apply-template": ["POST"],
     "/api/merchant/onboarding/test-booking": ["POST"],
     "/api/merchant/onboarding/enable-booking": ["POST"],
@@ -841,6 +840,7 @@ function merchantRouteCapability(pathname, method = "GET") {
   if (pathname.startsWith("/api/merchant/bookings/") && pathname.endsWith("/events")) return null;
   if (pathname.startsWith("/api/merchant/bookings/")) return TENANT_CAPABILITIES.VIEW_BOOKINGS;
   if (!write) return TENANT_CAPABILITIES.VIEW_DASHBOARD;
+  if (pathname === "/api/merchant/onboarding") return TENANT_CAPABILITIES.MANAGE_STORE;
   if (pathname === "/api/store") return TENANT_CAPABILITIES.MANAGE_STORE;
   if (pathname === "/api/settings" || pathname === "/api/resources" || pathname.startsWith("/api/resources/")) return TENANT_CAPABILITIES.MANAGE_SCHEDULE;
   if (pathname.startsWith("/api/merchant/onboarding/")) return TENANT_CAPABILITIES.MANAGE_STORE;
@@ -2443,6 +2443,8 @@ function availabilityResponse(url, data = { businessHours, bookings, staffMember
   const serviceId = url.searchParams.get("serviceId") || data.services?.[0]?.id || services[0].id;
   const date = url.searchParams.get("date") || todayInTaipei();
   const access = data.store?.access || evaluateTenantAccess(data.store || {});
+  if (data.store?.onboardingStatus !== "completed") return Response.json({ ok: false, error: { code: "ONBOARDING_INCOMPLETE", message: "店家尚未完成開店設定" }, slots: [] }, { status: 409, headers: jsonHeaders });
+  if (data.businessHours?.invalid) { return Response.json({ ok: false, error: { code: "BUSINESS_HOURS_INVALID", message: "營業時間設定無效" }, slots: [] }, { status: 503, headers: jsonHeaders }); }
   if (!access.canAcceptBookings) {
     return Response.json({ ok: false, error: { code: "TENANT_BOOKING_DISABLED", message: tenantAccessMessage(access) }, slots: [] }, { status: 403, headers: jsonHeaders });
   }
@@ -2460,13 +2462,15 @@ function availabilityResponse(url, data = { businessHours, bookings, staffMember
   if (!isBusinessOpenOnDate(data.businessHours, date)) {
     return Response.json({ ok: true, tenantId: data.store?.tenantId || TENANT_ID, staffId, serviceId, date, duration, slots: [] }, { headers: jsonHeaders });
   }
+  const dateHours = dayHoursForDate(data.businessHours?.weeklyHours || data.businessHours, date);
+  if (dateHours.closed || !dateHours.open || !dateHours.close) return Response.json({ ok: true, tenantId: data.store?.tenantId || TENANT_ID, staffId, serviceId, date, duration, slots: [] }, { headers: jsonHeaders });
   const resourceList = Array.isArray(data.resourceTypes) ? data.resourceTypes : [];
   const selectedService = serviceList.find((service) => service.id === serviceId) || serviceList[0];
   const capableStaff = filterStaffByService(activeStaff, selectedService?.id || serviceId);
   const selectedResource = resourceList.find((resource) => resource.id === selectedService?.resourceTypeId);
   const resourceCapacity = Math.max(1, Number(selectedResource?.quantity || 1));
   const slots = findAvailableSlots({
-    businessHours: data.businessHours,
+    businessHours: dateHours,
     bookings: data.bookings,
     staffMembers: capableStaff,
     staffId,
@@ -2553,11 +2557,9 @@ function weekdayLabelForDate(dateText) {
 }
 
 function isBusinessOpenOnDate(businessHours = {}, dateText = "") {
-  const closedDays = Array.isArray(businessHours.closedDays) ? businessHours.closedDays : [];
-  const weekday = weekdayLabelForDate(dateText);
-  return !weekday || !closedDays.includes(weekday);
+  const day = dayHoursForDate(businessHours.weeklyHours || businessHours, dateText);
+  return !day.invalid && !day.closed && Boolean(day.open && day.close);
 }
-
 function dateKeyFromUtcDate(date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
 }
@@ -2664,29 +2666,22 @@ function renderOnboardingPanel(setup = null, tenantId = TENANT_ID) {
   }).join("");
   return `<section class="panel" style="margin-bottom:12px;border-color:#f1d58a;background:#fffaf0"><h2>人員待選擇</h2><p class="muted">目前方案最多 ${limit} 位服務人員可接新預約。請勾選要保留接新單的人員；未勾選的人員資料與既有預約會保留，但不會出現在客戶端與系統安排。</p><form data-staff-plan-selection style="margin-top:12px"><div class="service-checks">${staffRows}</div><button class="btn primary" type="submit" style="margin-top:12px">儲存可接單人員</button><p class="muted" data-plan-selection-status style="margin-top:8px"></p></form></section>`;
 }
-function renderMerchantOnboardingPage(data = { store, services: [], staffMembers: [], resourceTypes: [], businessHours: {} }) {
+function renderMerchantOnboardingPage(data = { store: {}, businessHours: {} }) {
   const tenantId = data.store?.tenantId || TENANT_ID;
-  const setup = data.onboardingSetup || { checks: {}, missingActions: [], staffPlanSelection: {}, completed: 0, total: 0, percentage: 0 };
-  const publicPath = setup.publicPath || (data.store?.slug ? storePath(data.store.slug, "") : `/book?tenant=${encodeURIComponent(tenantId)}`);
-  const closedDays = new Set(data.businessHours?.closedDays || []);
-  const checks = Object.entries(setup.checks || {}).map(([, item]) => `<div class="onboard-check ${item.ok ? "ok" : "miss"}"><b>${item.ok ? "完成" : "待補"}</b><span>${escapeHtmlValue(item.label || "")}</span><small>${escapeHtmlValue(item.action || "")}</small></div>`).join("");
-  const missing = (setup.missingActions || []).map((item) => item.label).join("、") || "目前沒有待處理項目";
-  const resourceOptions = [`<option value="">不指定資源</option>`].concat((data.resourceTypes || []).map((resource) => `<option value="${escapeAttrValue(resource.id)}">${escapeHtmlValue(resource.name)} (${Number(resource.quantity || 1)})</option>`)).join("");
-  const serviceChecks = (data.services || []).map((service) => `<label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="serviceIds" value="${escapeAttrValue(service.id)}" checked>${escapeHtmlValue(service.name)}</label>`).join("") || `<p class="muted">請先建立服務，才能新增服務人員。</p>`;
-  const serviceList = (data.services || []).map((service) => `<div class="wizard-item"><b>${escapeHtmlValue(service.name)}</b><small>${escapeHtmlValue(service.category || "未分類")}｜${(service.prices || []).map((price) => `${Number(price.minutes)} 分 NT$${Number(price.price)}`).join("、")}｜資源：${escapeHtmlValue(service.resourceTypeName || service.resourceTypeId || "不指定")}</small></div>`).join("") || `<div class="wizard-item"><b>尚未建立服務</b><small>可以套用範本，或手動新增第一個服務。</small></div>`;
-  const staffList = (data.staffMembers || []).map((staff) => `<div class="wizard-item"><b>${escapeHtmlValue(staff.name)}</b><small>${escapeHtmlValue(staff.role || "服務人員")}｜${staff.planBookingStatus === "plan_limited" ? "因方案限制停止接受新預約" : "可接新預約"}</small></div>`).join("") || `<div class="wizard-item"><b>尚未建立人員</b><small>建立服務後，新增第一位可接單人員。</small></div>`;
-  const resourceList = (data.resourceTypes || []).map((resource) => `<div class="wizard-item"><b>${escapeHtmlValue(resource.name)}</b><small>數量 ${Number(resource.quantity || 1)}</small></div>`).join("") || `<div class="wizard-item"><b>尚未建立資源</b><small>若服務不需要床位或座位，可先建立「不指定」以完成設定。</small></div>`;
-  const access = data.store?.access || data.store?.tenantAccess || evaluateTenantAccess(data.store || {});
-  const readOnly = !(access.operationalStatus === "active" || access.operationalStatus === "trial");
-  const readOnlyMessage = access.operationalStatus === "grace" || access.operationalStatus === "expired" ? "目前方案已到期，設定資料僅供查看；續約後可繼續修改。" : "目前店家狀態僅供查看，請聯絡平台處理。";
-  const readOnlyNotice = readOnly ? `<section class="panel" style="margin-bottom:12px;border-color:#f1d58a;background:#fffaf0"><h2>設定唯讀</h2><p class="muted">${escapeHtmlValue(readOnlyMessage)}</p></section>` : "";
-  const onboardingActions = readOnly ? `<div class="onboard-actions"><button class="btn" type="button" data-copy-onboarding-url="${escapeAttrValue(publicPath)}">複製公開網址</button><a class="btn" href="${escapeAttrValue(publicPath)}" target="_blank">預覽客戶端</a></div>` : `<div class="onboard-actions"><button class="btn" type="button" data-test-booking="1">建立測試預約</button><button class="btn primary" type="button" data-open-booking="1">開放正式預約</button><button class="btn" type="button" data-close-booking="1">暫停正式預約</button><button class="btn" type="button" data-copy-onboarding-url="${escapeAttrValue(publicPath)}">複製公開網址</button><a class="btn" href="${escapeAttrValue(publicPath)}" target="_blank">預覽客戶端</a></div>`;
-  const readOnlyScript = readOnly ? `document.querySelectorAll("form input,form textarea,form select,form button,[data-template],[data-test-booking],[data-open-booking],[data-close-booking]").forEach((el)=>{el.disabled=true;});` : "";
-  const staffBlocker = setup.staffPlanSelection?.required ? `<section class="panel" style="border-color:#f1d58a;background:#fffaf0"><h2>必須先確認可接單人員</h2><p class="muted">目前可接單人員超過方案上限，請先選擇可繼續接單的人員。完成前不可建立測試預約，也不可正式開放預約。</p></section>` : "";
-  const body = `${staffBlocker}${readOnlyNotice}<section class="panel"><div class="onboard-head"><div><h2>店家自助設定精靈</h2><p class="muted">完成度 ${setup.completed}/${setup.total}，${setup.percentage}%</p></div><span class="badge ${setup.bookingEnabled ? "" : "yellow"}">${setup.bookingEnabled ? "已開放" : "未開放"}</span></div><div class="progress"><i style="width:${Math.max(0, Math.min(100, Number(setup.percentage || 0)))}%"></i></div><div class="onboard-grid">${checks}</div><p class="muted">待處理：${escapeHtmlValue(missing)}</p>${onboardingActions}<p class="muted" id="onboarding-status"></p></section><section class="grid"><div class="panel"><h2>1. 店家資料</h2><form class="wizard" data-onboarding-form data-endpoint="/api/store"><label>店家名稱<input name="name" value="${escapeAttrValue(data.store?.name || "")}" required></label><div class="wizard-grid"><label>電話<input name="phone" value="${escapeAttrValue(data.store?.phone || "")}"></label><label>店家網址 Slug<input value="${escapeAttrValue(data.store?.slug || "尚未設定")}" readonly></label></div><label>地址<input name="address" value="${escapeAttrValue(data.store?.address || "")}"></label><div class="wizard-grid"><label>業態<input name="businessType" value="${escapeAttrValue(data.store?.businessType || "")}" placeholder="整復 / 美髮 / 美甲"></label><label>時區<input name="timezone" value="${escapeAttrValue(data.store?.timezone || "Asia/Taipei")}"></label></div><label>店家介紹<textarea name="intro" placeholder="可先空白，之後再補"></textarea></label><button class="btn primary" type="submit">儲存店家資料</button></form></div><div class="panel"><h2>2. 營業時間</h2><form class="wizard" data-onboarding-form data-endpoint="/api/settings"><div class="wizard-grid"><label>開店<input name="open" type="time" value="${escapeAttrValue(data.businessHours?.open || "09:00")}"></label><label>打烊<input name="close" type="time" value="${escapeAttrValue(data.businessHours?.close || "18:00")}"></label></div><div class="wizard-grid"><label>休息開始<input name="breakStart" type="time" value="${escapeAttrValue(data.businessHours?.breaks?.[0]?.start || "12:00")}"></label><label>休息結束<input name="breakEnd" type="time" value="${escapeAttrValue(data.businessHours?.breaks?.[0]?.end || "13:00")}"></label></div><label>公休日</label><div class="wizard-actions">${["星期一","星期二","星期三","星期四","星期五","星期六","星期日"].map((day) => `<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="closedDays" value="${day}" ${closedDays.has(day) ? "checked" : ""}>${day}</label>`).join("")}</div><button class="btn primary" type="submit">儲存營業時間</button></form></div><div class="panel"><h2>3. 套用範本</h2><p class="muted">範本只建立服務、時長與資源建議，不會建立客戶、預約、點數或服務人員。</p><div class="template-grid" style="margin-top:12px">${[["therapy","整復推拿"],["massage","按摩舒壓"],["hair","美髮"],["nail","美甲"],["beauty","美容美睫"],["blank","空白"]].map(([key,label]) => `<button class="btn" type="button" data-template="${key}">${label}</button>`).join("")}</div></div><div class="panel"><h2>4. 服務項目</h2><div class="wizard-list">${serviceList}</div><form class="wizard" data-service-create style="margin-top:12px"><input type="hidden" data-existing-services value="${escapeAttrValue(JSON.stringify(data.services || []))}"><label>服務名稱<input name="name" placeholder="例如 肩頸放鬆"></label><div class="wizard-grid"><label>分類<input name="category" placeholder="放鬆保養"></label><label>點數折抵上限<input name="pointRedeemLimit" type="number" min="0" value="0"></label></div><label>時長與價格<input name="prices" placeholder="60:1200,90:1700"></label><label>資源<select name="resourceTypeId">${resourceOptions}</select></label><button class="btn primary" type="submit">新增服務</button></form></div><div class="panel"><h2>5. 服務人員</h2><div class="wizard-list">${staffList}</div><form class="wizard" data-staff-create style="margin-top:12px"><input type="hidden" data-existing-staff value="${escapeAttrValue(JSON.stringify(data.staffMembers || []))}"><label>姓名<input name="name" placeholder="例如 Tony 師傅"></label><label>職稱<input name="role" placeholder="整復師 / 設計師"></label><label>可服務項目</label><div class="wizard-list">${serviceChecks}</div><button class="btn primary" type="submit" ${(data.services || []).length ? "" : "disabled"}>新增服務人員</button></form></div><div class="panel"><h2>6. 場地資源</h2><div class="wizard-list">${resourceList}</div><form class="wizard" data-resource-create style="margin-top:12px"><input type="hidden" data-existing-resources value="${escapeAttrValue(JSON.stringify(data.resourceTypes || []))}"><div class="wizard-grid"><label>資源名稱<input name="name" placeholder="床位 / 座位"></label><label>數量<input name="quantity" type="number" min="1" value="1"></label></div><button class="btn primary" type="submit">新增資源</button></form></div></section><script>${readOnlyScript}(function(){const status=()=>document.querySelector("#onboarding-status");const show=(msg)=>{const el=status();if(el)el.textContent=msg;};async function postJson(url,payload){const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});const data=await res.json().catch(()=>({ok:false,error:"回應格式錯誤"}));if(!data.ok)throw new Error((data.error&&data.error.message)||data.error||"儲存失敗");return data;}document.querySelectorAll("[data-onboarding-form]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{show("儲存中...");const fd=new FormData(form);const payload=Object.fromEntries(fd.entries());payload.closedDays=fd.getAll("closedDays");await postJson(form.dataset.endpoint,payload);show("已儲存，重新整理中...");setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-template]").forEach((button)=>button.addEventListener("click",async()=>{try{show("套用範本中...");await postJson("/api/merchant/onboarding/apply-template",{template:button.dataset.template});show("範本已套用，重新整理中...");setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-close-booking]").forEach((button)=>button.addEventListener("click",async()=>{try{show("關閉正式預約中...");await postJson("/api/merchant/onboarding/disable-booking",{});show("已暫停正式預約。");setTimeout(()=>location.reload(),800);}catch(error){show(error.message);}}));const parsePrices=(value)=>String(value||"").split(",").map((chunk)=>{const [minutes,price]=chunk.split(":").map((part)=>Number(String(part||"").trim()));return {minutes,price};}).filter((item)=>item.minutes&&item.price>=0);document.querySelectorAll("[data-service-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-services]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入服務名稱");const prices=parsePrices(fd.get("prices"));if(!prices.length)throw new Error("請輸入時長與價格，例如 60:1200");existing.push({name,category:fd.get("category"),resourceTypeId:fd.get("resourceTypeId"),pointRedeemLimit:Number(fd.get("pointRedeemLimit")||0),prices});show("新增服務中...");await postJson("/api/services",{services:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-staff-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-staff]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入服務人員姓名");existing.push({name,role:fd.get("role"),serviceIds:fd.getAll("serviceIds"),crmPermissions:[]});show("新增服務人員中...");await postJson("/api/staff",{staffMembers:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));document.querySelectorAll("[data-resource-create]").forEach((form)=>form.addEventListener("submit",async(e)=>{e.preventDefault();try{const existing=JSON.parse(form.querySelector("[data-existing-resources]").value||"[]");const fd=new FormData(form);const name=String(fd.get("name")||"").trim();if(!name)throw new Error("請輸入資源名稱");existing.push({name,quantity:Number(fd.get("quantity")||1)});show("新增資源中...");await postJson("/api/resources",{resourceTypes:existing});setTimeout(()=>location.reload(),700);}catch(error){show(error.message);}}));})();</script>`;
-  return pageShell(`${data.store?.name || store.name} 開店精靈`, body, "onboarding", tenantId, data.store?.slug || "");
-}
-function renderMerchantOperationsPage(data = { store, services: [], staffMembers: [] }) {
+  const onboarding = data.onboarding || {};
+  const storeData = data.store || {};
+  const weeklyHours = data.businessHours?.weeklyHours || defaultWeeklyHours();
+  const initialStep = Math.max(1, Math.min(8, Number(onboarding.currentStep || 1)));
+  const stepNames = ["Store", "Brand", "Business", "Service", "Staff", "LINE", "Promotion", "Finish"];
+  const steps = stepNames.map((name, index) => '<button type="button" class="wizard-step" data-step-target="' + (index + 1) + '"><span>' + (index + 1) + '</span>' + name + '</button>').join("");
+  const days = WEEKDAY_KEYS.map((key) => {
+    const day = weeklyHours[key] || { closed: true, open: "", close: "", breakStart: "", breakEnd: "" };
+    return '<div class="day-card" data-day="' + key + '"><label class="day-title"><input type="checkbox" data-day-closed ' + (day.closed ? "checked" : "") + '>' + WEEKDAY_LABELS[key] + '</label><div class="wizard-grid"><label>開店<input type="time" data-day-open value="' + escapeAttrValue(day.open || "") + '"></label><label>打烊<input type="time" data-day-close value="' + escapeAttrValue(day.close || "") + '"></label></div><div class="wizard-grid"><label>休息開始<input type="time" data-day-break-start value="' + escapeAttrValue(day.breakStart || "") + '"></label><label>休息結束<input type="time" data-day-break-end value="' + escapeAttrValue(day.breakEnd || "") + '"></label></div></div>';
+  }).join("");
+  const script = '<script>(function(){const root=document.querySelector(".onboarding-wizard");if(!root)return;let step=Math.max(1,Math.min(8,Number(root.dataset.initialStep||1)));const message=root.querySelector("[data-wizard-message]");const panels=[...root.querySelectorAll("[data-wizard-panel]")];const steps=[...root.querySelectorAll("[data-step-target]")];const show=(text)=>{if(message)message.textContent=text||"";};const setStep=(value)=>{step=Math.max(1,Math.min(8,value));panels.forEach((p)=>p.classList.toggle("active",Number(p.dataset.wizardPanel)===step));steps.forEach((s)=>s.classList.toggle("active",Number(s.dataset.stepTarget)===step));root.querySelector("[data-wizard-prev]").style.visibility=step===1?"hidden":"visible";root.querySelector("[data-wizard-next]").style.display=step===8?"none":"inline-grid";root.querySelector("[data-wizard-finish]").style.display=step===8?"inline-grid":"none";};const collectStore=()=>({name:root.querySelector("[data-store-name]").value.trim(),slug:root.querySelector("[data-store-slug]").value.trim(),timezone:root.querySelector("[data-store-timezone]").value.trim(),brandName:root.querySelector("[data-brand-name]").value.trim(),primaryColor:root.querySelector("[data-primary-color]").value.trim(),logoUrl:root.querySelector("[data-logo-url]").value.trim(),phone:root.querySelector("[data-store-phone]").value.trim(),email:root.querySelector("[data-store-email]").value.trim(),address:root.querySelector("[data-store-address]").value.trim()});const collectHours=()=>{const result={};root.querySelectorAll("[data-day]").forEach((card)=>{result[card.dataset.day]={closed:card.querySelector("[data-day-closed]").checked,open:card.querySelector("[data-day-open]").value,close:card.querySelector("[data-day-close]").value,breakStart:card.querySelector("[data-day-break-start]").value,breakEnd:card.querySelector("[data-day-break-end]").value};});return result;};const post=async(url,body)=>{const res=await fetch(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const data=await res.json().catch(()=>({ok:false,error:{message:"回應格式錯誤"}}));if(!res.ok||!data.ok)throw new Error(data.error?.message||data.error||"儲存失敗");return data;};const save=async()=>{if(step===1||step===2){await post("/api/store",collectStore());return;}if(step===3){await post("/api/settings",{weeklyHours:collectHours()});return;}};root.querySelector("[data-wizard-prev]").addEventListener("click",()=>setStep(step-1));root.querySelector("[data-wizard-next]").addEventListener("click",async()=>{try{show("儲存中...");if(step<=3)await save();setStep(step+1);show("已儲存");}catch(error){show(error.message);}});root.querySelector("[data-wizard-draft]").addEventListener("click",async()=>{try{show("儲存草稿中...");if(step<=3)await save();show("草稿已儲存");}catch(error){show(error.message);}});root.querySelector("[data-wizard-finish]").addEventListener("click",async()=>{try{show("完成開店檢查中...");await post("/api/merchant/onboarding",{});show("已完成開店，前往店家管理");setTimeout(()=>{location.href="/merchant";},500);}catch(error){show(error.message);}});root.querySelectorAll("[data-day-closed]").forEach((checkbox)=>{const card=checkbox.closest("[data-day]");const sync=()=>card.querySelectorAll("input[type=time]").forEach((input)=>{input.disabled=checkbox.checked;});checkbox.addEventListener("change",sync);sync();});setStep(step);})();</script>';
+  const body = '<section class="panel onboarding-wizard" data-initial-step="' + initialStep + '"><div class="onboard-head"><div><h2>歡迎使用 BookingOS</h2><p class="muted">開始建立你的第一家店</p></div><span class="badge yellow" data-onboarding-status>' + escapeHtmlValue(onboarding.status || "draft") + '</span></div><div class="wizard-progress">' + steps + '</div><p class="muted" data-wizard-message></p><form data-wizard-form><section data-wizard-panel="1" class="wizard-panel"><h3>Step 1 · Store</h3><p class="muted">先建立店家網址與基本識別資料。</p><label>店家名稱<input name="name" data-store-name value="' + escapeAttrValue(storeData.name || "") + '" required></label><div class="wizard-grid"><label>Slug<input name="slug" data-store-slug value="' + escapeAttrValue(storeData.slug || "") + '" placeholder="例如 anhe" required><small class="muted">只能使用小寫英數與連字號。</small></label><label>Timezone<input name="timezone" data-store-timezone value="' + escapeAttrValue(storeData.timezone || "Asia/Taipei") + '" required></label></div></section><section data-wizard-panel="2" class="wizard-panel"><h3>Step 2 · Brand</h3><p class="muted">設定客戶預約頁看到的品牌資料。</p><label>品牌名稱<input name="brandName" data-brand-name value="' + escapeAttrValue(storeData.brandName || "") + '" required></label><div class="wizard-grid"><label>Primary Color<input name="primaryColor" data-primary-color value="' + escapeAttrValue(storeData.primaryColor || "#176b5b") + '" placeholder="#176b5b" required></label><label>Logo URL<input name="logoUrl" data-logo-url value="' + escapeAttrValue(storeData.logoUrl || "") + '" placeholder="可先留白"></label></div><div class="wizard-grid"><label>電話<input name="phone" data-store-phone value="' + escapeAttrValue(storeData.phone || "") + '"></label><label>Email<input name="email" data-store-email type="email" value="' + escapeAttrValue(storeData.email || "") + '"></label></div><label>地址<input name="address" data-store-address value="' + escapeAttrValue(storeData.address || "") + '" required></label><p class="muted">電話或 Email 至少填寫一項。</p></section><section data-wizard-panel="3" class="wizard-panel"><h3>Step 3 · Business</h3><p class="muted">每一天都要設定營業或休息狀態；休息時間不可超出營業時間。</p><div class="day-list">' + days + '</div></section><section data-wizard-panel="4" class="wizard-panel placeholder-panel"><h3>Step 4 · Service</h3><p>此功能將於後續步驟開放</p><span>Coming Soon</span></section><section data-wizard-panel="5" class="wizard-panel placeholder-panel"><h3>Step 5 · Staff</h3><p>此功能將於後續步驟開放</p><span>Coming Soon</span></section><section data-wizard-panel="6" class="wizard-panel placeholder-panel"><h3>Step 6 · LINE</h3><p>此功能將於後續步驟開放</p><span>Coming Soon</span></section><section data-wizard-panel="7" class="wizard-panel placeholder-panel"><h3>Step 7 · Promotion</h3><p>此功能將於後續步驟開放</p><span>Coming Soon</span></section><section data-wizard-panel="8" class="wizard-panel finish-panel"><h3>Step 8 · Finish</h3><p>恭喜！你的店已經建立完成</p><p class="muted">完成 Store、Brand 與 Business 後，才能完成開店。</p><a class="btn" href="' + escapeAttrValue(storePublicPathForTenant({ id: tenantId, slug: storeData.slug || "" })) + '" target="_blank" rel="noopener noreferrer">查看店家頁面</a></section><div class="wizard-actions"><button type="button" class="btn" data-wizard-prev>上一步</button><button type="button" class="btn" data-wizard-draft>儲存草稿</button><a class="btn" href="/merchant">取消</a><button type="button" class="btn primary" data-wizard-next>下一步</button><button type="button" class="btn primary" data-wizard-finish>完成開店</button></div></form></section><style>.onboarding-wizard{max-width:900px;margin:0 auto}.wizard-progress{display:grid;grid-template-columns:repeat(8,minmax(70px,1fr));gap:6px;margin:16px 0;overflow:auto}.wizard-step{border:1px solid var(--line);background:white;border-radius:8px;min-height:42px;color:var(--muted);font-weight:850}.wizard-step span{display:block;font-size:12px}.wizard-step.active{background:var(--brand);border-color:var(--brand);color:white}.wizard-panel{display:none;padding:8px 0}.wizard-panel.active{display:block}.wizard-panel h3{font-size:24px;margin:8px 0}.wizard-panel label{display:grid;gap:6px;margin:12px 0;color:var(--muted);font-weight:850}.wizard-panel input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:white}.wizard-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.day-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.day-card{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--soft)}.day-title{display:flex!important;grid-template-columns:none!important;align-items:center;gap:8px}.day-title input{width:auto!important;min-height:auto!important}.placeholder-panel{min-height:240px;align-content:center;text-align:center}.placeholder-panel span{display:inline-block;color:var(--blue);font-weight:950}.finish-panel{text-align:center;min-height:240px}.wizard-actions{display:flex;flex-wrap:wrap;gap:8px;border-top:1px solid var(--line);padding-top:16px;margin-top:18px}.wizard-actions a{text-decoration:none}.wizard-actions [data-wizard-finish]{display:none}@media(max-width:680px){.wizard-progress{grid-template-columns:repeat(8,76px)}.wizard-grid,.day-list{grid-template-columns:1fr}.wizard-step{font-size:12px}.wizard-actions>*{flex:1 1 42%}}</style>' + script;
+  return pageShell("店家開店精靈", body, "onboarding", tenantId, storeData.slug || "");
+}function renderMerchantOperationsPage(data = { store, services: [], staffMembers: [] }) {
   const tenantId = data.store?.tenantId || TENANT_ID;
   const storeSlug = data.store?.slug || "";
   const today = todayInTaipei();
@@ -2829,8 +2824,8 @@ function renderSettingsPage(data = { store, businessHours, services, staffMember
   const body = `<style>
     .settings-stack{display:grid;gap:12px}.settings-section{background:white;border:1px solid var(--line);border-radius:8px;overflow:hidden}.settings-section:nth-child(even){background:#fffaf0}.settings-section summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;font-size:19px;font-weight:950}.settings-section summary::-webkit-details-marker{display:none}.settings-section summary span{color:var(--green);font-size:13px}.settings-body{border-top:1px solid var(--line);padding:16px 18px}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.form-grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}.field{display:grid;gap:6px;color:var(--muted);font-size:13px;font-weight:850}.settings-body input,.settings-body select,.settings-body textarea{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font:inherit;background:white;color:var(--ink)}.settings-body textarea{min-height:82px;resize:vertical}.check-row{display:flex;align-items:center;gap:8px;font-weight:850;color:var(--ink)}.check-row input{width:auto;min-height:auto}.item-list{display:grid;gap:10px;margin-top:12px}.edit-item{border:1px solid var(--line);border-radius:8px;padding:12px;background:rgba(255,255,255,.72)}.edit-item:nth-child(odd){background:#f2fbf6}.edit-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px}.edit-head b{font-size:17px}.mini-actions{display:flex;gap:8px;flex-wrap:wrap}.small-btn{min-height:34px;border:1px solid var(--line);border-radius:8px;background:white;padding:0 10px;font-weight:900;cursor:pointer}.danger{color:#9b1c1c}.save-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}.save-btn{min-height:44px;border:0;border-radius:8px;background:var(--blue);color:white;padding:0 18px;font-weight:950;cursor:pointer}.notice-box{background:#e7f7ee;color:#0f513f;border:1px solid #bfe8d0;border-radius:8px;padding:11px 12px;font-weight:850;line-height:1.5}.hint-box{background:#fff7df;border:1px solid #f1d58a;color:#5f4500;border-radius:8px;padding:11px 12px;line-height:1.5}.price-lines{display:grid;gap:8px}.price-line{display:grid;grid-template-columns:1fr 1fr auto;gap:8px}.service-checks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.logo-preview{width:64px;height:64px;border-radius:10px;border:1px solid var(--line);object-fit:cover;background:#f6f8f5}@media(max-width:760px){.form-grid,.form-grid.three,.service-checks{grid-template-columns:1fr}.settings-body{padding:14px}.price-line{grid-template-columns:1fr 1fr}.price-line button{grid-column:1/-1}}
   </style>${trialNotice}<div class="settings-stack">
-    <details class="settings-section" open><summary>店家資料 <span>名稱、電話、地址、LOGO</span></summary><div class="settings-body"><div class="form-grid"><label class="field">店家名稱<input id="store-name"></label><label class="field">電話<input id="store-phone"></label></div><label class="field" style="margin-top:12px">地址<input id="store-address"></label><div class="form-grid" style="margin-top:12px"><label class="field">上傳 LOGO<input id="store-logo-file" type="file" accept="image/*"></label><label class="field">目前 LOGO<img id="store-logo-preview" class="logo-preview" alt="LOGO 預覽"></label></div><input id="store-logo-data" type="hidden"><div class="save-row"><button class="save-btn" id="save-store" type="button">儲存店家資料</button><span class="muted" id="store-status"></span></div></div></details>
-    <details class="settings-section"><summary>營業規則 <span>營業時間、打烊規則、贈點比例</span></summary><div class="settings-body"><div class="form-grid"><label class="field">開始營業<input id="open-time" type="time"></label><label class="field">結束營業<input id="close-time" type="time"></label><label class="field">休息開始<input id="break-start" type="time"></label><label class="field">休息結束<input id="break-end" type="time"></label></div><label class="field" style="margin-top:12px">公休日，以逗號分隔<input id="closed-days" placeholder="例如 星期三,星期日"></label><div class="form-grid" style="margin-top:12px"><label class="field">消費金額<input id="point-spend" type="number" min="1"></label><label class="field">贈送點數<input id="point-reward" type="number" min="0"></label></div><label class="check-row" style="margin-top:12px"><input id="allow-overtime" type="checkbox">允許預約時長超過打烊時間</label><div class="hint-box" style="margin-top:12px">關閉時，客戶選擇的時長若超過打烊時間，前台只會保留可完成的 60 或 90 分鐘等選項。</div><div class="save-row"><button class="save-btn" id="save-rules" type="button">儲存營業規則</button><span class="muted" id="rules-status"></span></div></div></details>
+    <details class="settings-section" open><summary>店家資料 <span>名稱、品牌、網址、聯絡資料、LOGO</span></summary><div class="settings-body"><div class="form-grid"><label class="field">店家名稱<input id="store-name"></label><label class="field">品牌名稱<input id="store-brand-name"></label><label class="field">店家網址 Slug<input id="store-slug"></label><label class="field">時區<input id="store-timezone"></label><label class="field">電話<input id="store-phone"></label><label class="field">Email<input id="store-email" type="email"></label><label class="field">品牌主色<input id="store-primary-color" placeholder="#176b5b"></label></div><label class="field" style="margin-top:12px">地址<input id="store-address"></label><div class="form-grid" style="margin-top:12px"><label class="field">上傳 LOGO<input id="store-logo-file" type="file" accept="image/*"></label><label class="field">目前 LOGO<img id="store-logo-preview" class="logo-preview" alt="LOGO 預覽"></label></div><input id="store-logo-data" type="hidden"><div class="save-row"><button class="save-btn" id="save-store" type="button">儲存店家資料</button><span class="muted" id="store-status"></span></div></div></details>
+    <details class="settings-section"><summary>營業規則 <span>每週營業時間、打烊規則、贈點比例</span></summary><div class="settings-body"><div class="notice-box">每週營業時間是正式預約唯一依據。關閉的日期不會產生可預約時段。</div><div id="weekly-hours-list" class="weekly-hours-list"></div><div class="form-grid" style="margin-top:12px"><label class="field">消費金額<input id="point-spend" type="number" min="1"></label><label class="field">贈送點數<input id="point-reward" type="number" min="0"></label></div><label class="check-row" style="margin-top:12px"><input id="allow-overtime" type="checkbox">允許預約時長超過打烊時間</label><div class="hint-box" style="margin-top:12px">關閉時，客戶選擇的時長若超過打烊時間，前台只會保留可完成的服務時長。</div><div class="save-row"><button class="save-btn" id="save-rules" type="button">儲存營業規則</button><span class="muted" id="rules-status"></span></div></div></details>
     <details class="settings-section"><summary>場地資源 <span>床位、座位、房間數</span></summary><div class="settings-body"><div class="notice-box">同時段可接幾組，會先看這裡的數量，再看師傅是否有空。</div><div class="item-list" id="resource-list"></div><div class="save-row"><button class="small-btn" id="add-resource" type="button">複製新增場地</button><button class="save-btn" id="save-resources" type="button">儲存場地資源</button><span class="muted" id="resources-status"></span></div></div></details>
     <details class="settings-section"><summary>服務項目 <span>名稱、時長價格、點數折抵上限</span></summary><div class="settings-body"><div class="hint-box">點數折抵上限：填 0 代表可全額折抵；填數字代表本服務最多可折抵該點數。</div><div class="item-list" id="service-list"></div><div class="save-row"><button class="small-btn" id="add-service" type="button">複製新增服務</button><button class="save-btn" id="save-services" type="button">儲存服務項目</button><span class="muted" id="services-status"></span></div></div></details>
     <details class="settings-section"><summary>服務人員 <span>可服務項目與 CRM 權限</span></summary><div class="settings-body"><div class="notice-box">取消勾選的服務代表該師傅不會此服務；客戶選「系統安排」時，系統會從可做該服務且有空的人員中挑選。目前方案最多可啟用 <b id="staff-limit-label"></b> 位服務人員。</div><div class="item-list" id="staff-list"></div><div class="save-row"><button class="small-btn" id="add-staff" type="button">複製新增人員</button><button class="save-btn" id="save-staff" type="button">儲存服務人員</button><span class="muted" id="staff-status"></span></div></div></details>
@@ -2842,9 +2837,8 @@ function renderSettingsPage(data = { store, businessHours, services, staffMember
   const slug=(v)=>String(v||"").trim().toLowerCase().replace(/[^a-z0-9_-]+/g,"-").replace(/^-+|-+$/g,"").slice(0,48)||("item-"+Date.now().toString(36));
   let logoData=settingsState.store.logoUrl||"";
   function postJson(url,payload,statusId){const el=$(statusId); if(el) el.textContent="儲存中..."; return fetch(url+tenantParam,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)}).then(async(r)=>{const d=await r.json().catch(()=>({ok:false,error:"回應格式錯誤"})); if(!d.ok) throw new Error(d.error||"儲存失敗"); if(el) el.textContent="已儲存"; return d;}).catch((err)=>{if(el) el.textContent="儲存失敗："+err.message;});}
-  function initStore(){$("store-name").value=settingsState.store.name||"";$("store-phone").value=settingsState.store.phone||"";$("store-address").value=settingsState.store.address||"";$("store-logo-data").value=logoData; if(logoData) $("store-logo-preview").src=logoData; $("store-logo-file").addEventListener("change",()=>{const file=$("store-logo-file").files[0]; if(!file) return; const reader=new FileReader(); reader.onload=()=>{logoData=String(reader.result||"");$("store-logo-data").value=logoData;$("store-logo-preview").src=logoData;}; reader.readAsDataURL(file);}); $("save-store").addEventListener("click",()=>postJson("/api/store",{name:$("store-name").value,phone:$("store-phone").value,address:$("store-address").value,logoDataUrl:$("store-logo-data").value},"store-status"));}
-  function initRules(){const h=settingsState.businessHours||{};$("open-time").value=h.open||"09:00";$("close-time").value=h.close||"18:00";$("break-start").value=(h.breaks&&h.breaks[0]&&h.breaks[0].start)||"12:00";$("break-end").value=(h.breaks&&h.breaks[0]&&h.breaks[0].end)||"13:00";$("closed-days").value=(h.closedDays||[]).join(",");$("allow-overtime").checked=!!h.allowOvertimeBooking;$("point-spend").value=(h.pointReward&&h.pointReward.spendAmount)||100;$("point-reward").value=(h.pointReward&&h.pointReward.rewardPoints)||1;$("save-rules").addEventListener("click",()=>postJson("/api/settings",{open:$("open-time").value,close:$("close-time").value,breakStart:$("break-start").value,breakEnd:$("break-end").value,closedDays:$("closed-days").value.split(/[,，]/).map(s=>s.trim()).filter(Boolean),allowOvertimeBooking:$("allow-overtime").checked,pointSpendAmount:$("point-spend").value,pointRewardPoints:$("point-reward").value},"rules-status"));}
-  function resourceCard(resource,i){return '<div class="edit-item" data-resource-index="'+i+'"><div class="edit-head"><b>'+esc(resource.name||"場地")+'</b><button class="small-btn danger" type="button" data-remove-resource="'+i+'">停用</button></div><div class="form-grid"><label class="field">場地名稱<input data-resource-name value="'+esc(resource.name||"")+'"></label><label class="field">數量<input data-resource-qty type="number" min="1" value="'+Number(resource.quantity||1)+'"></label></div><input data-resource-id type="hidden" value="'+esc(resource.id||slug(resource.name))+'"></div>';}
+  function initStore(){$("store-name").value=settingsState.store.name||"";$("store-brand-name").value=settingsState.store.brandName||"";$("store-slug").value=settingsState.store.slug||"";$("store-timezone").value=settingsState.store.timezone||"Asia/Taipei";$("store-phone").value=settingsState.store.phone||"";$("store-email").value=settingsState.store.email||"";$("store-primary-color").value=settingsState.store.primaryColor||"#176b5b";$("store-address").value=settingsState.store.address||"";$("store-logo-data").value=logoData;if(logoData)$("store-logo-preview").src=logoData;$("store-logo-file").addEventListener("change",()=>{const file=$("store-logo-file").files[0];if(!file)return;const reader=new FileReader();reader.onload=()=>{logoData=String(reader.result||"");$("store-logo-data").value=logoData;$("store-logo-preview").src=logoData;};reader.readAsDataURL(file);});$("save-store").addEventListener("click",()=>postJson("/api/store",{name:$("store-name").value,brandName:$("store-brand-name").value,slug:$("store-slug").value,timezone:$("store-timezone").value,phone:$("store-phone").value,email:$("store-email").value,primaryColor:$("store-primary-color").value,address:$("store-address").value,logoDataUrl:$("store-logo-data").value},"store-status"));}
+  function initRules(){const dayKeys=["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];const dayLabels={monday:"星期一",tuesday:"星期二",wednesday:"星期三",thursday:"星期四",friday:"星期五",saturday:"星期六",sunday:"星期日"};const weekly=settingsState.businessHours.weeklyHours||{};$("weekly-hours-list").innerHTML=dayKeys.map((key)=>{const d=weekly[key]||{closed:true,open:"",close:"",breakStart:"",breakEnd:""};return '<div class="hours-day" data-hours-day="'+key+'"><label class="check-row"><input type="checkbox" data-hours-closed '+(d.closed?'checked':'')+'>'+dayLabels[key]+'</label><div class="form-grid"><label class="field">開店<input type="time" data-hours-open value="'+esc(d.open||'')+'"></label><label class="field">打烊<input type="time" data-hours-close value="'+esc(d.close||'')+'"></label><label class="field">休息開始<input type="time" data-hours-break-start value="'+esc(d.breakStart||'')+'"></label><label class="field">休息結束<input type="time" data-hours-break-end value="'+esc(d.breakEnd||'')+'"></label></div></div>';}).join('');document.querySelectorAll('[data-hours-closed]').forEach((checkbox)=>{const card=checkbox.closest('[data-hours-day]');const sync=()=>card.querySelectorAll('input[type=time]').forEach((input)=>{input.disabled=checkbox.checked;});checkbox.addEventListener('change',sync);sync();});const collectWeeklyHours=()=>Object.fromEntries(dayKeys.map((key)=>{const card=document.querySelector('[data-hours-day="'+key+'"]');const closed=card.querySelector('[data-hours-closed]').checked;return [key,{closed,open:closed?'':card.querySelector('[data-hours-open]').value,close:closed?'':card.querySelector('[data-hours-close]').value,breakStart:closed?'':card.querySelector('[data-hours-break-start]').value,breakEnd:closed?'':card.querySelector('[data-hours-break-end]').value}];}));$("allow-overtime").checked=!!settingsState.businessHours.allowOvertimeBooking;$("point-spend").value=(settingsState.businessHours.pointReward&&settingsState.businessHours.pointReward.spendAmount)||100;$("point-reward").value=(settingsState.businessHours.pointReward&&settingsState.businessHours.pointReward.rewardPoints)||1;$("save-rules").addEventListener("click",()=>postJson("/api/settings",{weeklyHours:collectWeeklyHours(),allowOvertimeBooking:$("allow-overtime").checked,pointSpendAmount:$("point-spend").value,pointRewardPoints:$("point-reward").value},"rules-status"));}  function resourceCard(resource,i){return '<div class="edit-item" data-resource-index="'+i+'"><div class="edit-head"><b>'+esc(resource.name||"場地")+'</b><button class="small-btn danger" type="button" data-remove-resource="'+i+'">停用</button></div><div class="form-grid"><label class="field">場地名稱<input data-resource-name value="'+esc(resource.name||"")+'"></label><label class="field">數量<input data-resource-qty type="number" min="1" value="'+Number(resource.quantity||1)+'"></label></div><input data-resource-id type="hidden" value="'+esc(resource.id||slug(resource.name))+'"></div>';}
   function renderResources(){const list=$("resource-list"); list.innerHTML=(settingsState.resourceTypes||[]).map(resourceCard).join(""); list.querySelectorAll("[data-remove-resource]").forEach(btn=>btn.onclick=()=>{settingsState.resourceTypes.splice(Number(btn.dataset.removeResource),1);renderResources();});}
   function collectResources(){return Array.from(document.querySelectorAll("[data-resource-index]")).map((el,i)=>({id:el.querySelector("[data-resource-id]").value||slug(el.querySelector("[data-resource-name]").value),name:el.querySelector("[data-resource-name]").value,quantity:Number(el.querySelector("[data-resource-qty]").value||1),sortOrder:i}));}
   function priceLines(prices){return '<div class="price-lines">'+(prices||[]).map((p)=>'<div class="price-line"><input data-price-min type="number" min="1" value="'+Number(p.minutes||60)+'" placeholder="分鐘"><input data-price-value type="number" min="0" value="'+Number(p.price||0)+'" placeholder="價格"><button class="small-btn danger" data-remove-price type="button">刪除</button></div>').join("")+'</div><button class="small-btn" data-add-price type="button" style="margin-top:8px">增加時長價格</button>';}
@@ -2961,7 +2955,7 @@ function tenantSetupChecklist(tenant = {}) {
     { key: "service", label: "至少一個服務", ok: Number(tenant.service_count || 0) > 0 },
     { key: "staff", label: "至少一位人員", ok: Number(tenant.active_staff_count || 0) > 0 },
     { key: "staffPlanSelection", label: "方案人員接單狀態已確認", ok: !evaluateTenantAccess(tenant).staffSelectionRequired },
-    { key: "hours", label: "營業時間", ok: Boolean(tenant.open_time && tenant.close_time) },
+    { key: "hours", label: "營業時間", ok: Boolean(normalizeWeeklyHours(tenant.weekly_hours_json).ok && normalizeWeeklyHours(tenant.weekly_hours_json).complete) },
     { key: "public", label: "公開預約頁", ok: Boolean(normalizeStoreSlug(tenant.slug || "") && evaluateTenantAccess(tenant).canAcceptBookings) }
   ];
   const done = checks.filter((item) => item.ok).length;
@@ -3344,12 +3338,12 @@ async function ensurePlatformSchema(env) {
 }
 
 async function platformData(env) {
-  if (!env.DB) return { tenants: [{ id: TENANT_ID, slug: "anhe", name: store.name, phone: store.phone, address: store.address, status: "active", customer_count: 0, booking_count: 0, active_staff_count: 0, service_count: 0, setup: tenantSetupChecklist({ id: TENANT_ID, slug: "anhe", name: store.name, phone: store.phone, address: store.address, status: "active", service_count: 0, active_staff_count: 0, open_time: "09:00", close_time: "18:00" }) }], admins: [], applications: [], orders: [], lineSettings: [], platformLineOA: {}, platformContacts: [], platformWebhookLogs: [], overview: {} };
+  if (!env.DB) return { tenants: [{ id: TENANT_ID, slug: "anhe", name: store.name, phone: store.phone, address: store.address, status: "active", customer_count: 0, booking_count: 0, active_staff_count: 0, service_count: 0, setup: tenantSetupChecklist({ id: TENANT_ID, slug: "anhe", name: store.name, phone: store.phone, address: store.address, status: "active", service_count: 0, active_staff_count: 0, weekly_hours_json: JSON.stringify(defaultWeeklyHours()) }) }], admins: [], applications: [], orders: [], lineSettings: [], platformLineOA: {}, platformContacts: [], platformWebhookLogs: [], overview: {} };
   await ensurePlatformSchema(env);
   const monthStart = todayInTaipei().slice(0, 7) + "-01";
   const tenants = await env.DB.prepare(`
     SELECT t.id, t.slug, t.name, t.phone, t.address, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.billing_cycle, t.annual_price, t.staff_limit, t.extra_staff_annual_price, t.booking_enabled, t.created_at, t.updated_at,
-      bs.open_time, bs.close_time,
+      bs.weekly_hours_json, t.onboarding_status, t.onboarding_completed_at,
       (SELECT COUNT(*) FROM customers c WHERE c.tenant_id = t.id) AS customer_count,
       (SELECT COUNT(*) FROM bookings b WHERE b.tenant_id = t.id) AS booking_count,
       (SELECT COUNT(*) FROM bookings b WHERE b.tenant_id = t.id AND b.booking_date >= ?) AS month_booking_count,
@@ -3698,7 +3692,7 @@ async function submitTrialTenant(request, env) {
     const trialEnd = addDays(today, TRIAL_DAYS);
     await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, booking_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Taipei', 'trial', ?, ?, ?, 'annual', ?, ?, ?, 0, datetime('now'), datetime('now'))").bind(tenantId, storeName, String(payload.storePhone || "").trim() || null, String(payload.storeAddress || "").trim() || null, today, trialEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
     await reconcileTenantStaffLimit(env, tenantId, plan);
-    await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, slot_step_minutes) VALUES (?, '09:00', '18:00', '12:00', '13:00', '[\"星期三\"]', 0, 30)").bind(tenantId).run();
+    await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, allow_overtime_booking, slot_step_minutes, weekly_hours_json) VALUES (?, 0, 30, '{}')").bind(tenantId).run();
     await env.DB.prepare(`
       INSERT INTO tenant_admins (id, tenant_id, name, phone, email, role, permissions_json, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'owner', '{}', 'active', datetime('now'), datetime('now'))
@@ -3747,7 +3741,7 @@ async function approveTenantApplication(request, env) {
     const plan = planById(app.billing_plan_id || "solo");
     await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, booking_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Taipei', 'active', ?, ?, ?, 'annual', ?, ?, ?, 0, datetime('now'), datetime('now'))").bind(tenantId, app.store_name, app.store_phone || null, app.store_address || null, contractStart, contractEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
     await reconcileTenantStaffLimit(env, tenantId, plan);
-    await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, slot_step_minutes) VALUES (?, '09:00', '18:00', '12:00', '13:00', '[\"星期三\"]', 0, 30)").bind(tenantId).run();
+    await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, allow_overtime_booking, slot_step_minutes, weekly_hours_json) VALUES (?, 0, 30, '{}')").bind(tenantId).run();
     await env.DB.prepare(`
       INSERT INTO tenant_admins (id, tenant_id, name, phone, email, role, permissions_json, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'owner', '{}', 'active', datetime('now'), datetime('now'))
@@ -3789,7 +3783,7 @@ async function savePlatformTenant(request, env) {
     if (duplicate?.id) return Response.json({ ok: false, error: { code: duplicate.id === tenantId ? "TENANT_ID_EXISTS" : "STORE_SLUG_EXISTS", message: duplicate.id === tenantId ? "tenant_id 已存在" : "店家網址 slug 已存在" } }, { status: 409, headers: jsonHeaders });
     await env.DB.prepare("INSERT INTO tenants (id, name, phone, address, timezone, status, slug, business_type, contract_start, contract_end, billing_plan_id, billing_cycle, annual_price, staff_limit, extra_staff_annual_price, booking_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'annual', ?, ?, ?, 0, datetime('now'), datetime('now'))").bind(tenantId, name, phone || null, address || null, timezone, status, slug, businessType || null, contractStart, contractEnd, plan.id, plan.annualPrice, plan.staffLimit, plan.extraStaffAnnualPrice).run();
     await reconcileTenantStaffLimit(env, tenantId, plan);
-    await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, slot_step_minutes, point_spend_amount, point_reward_points) VALUES (?, '09:00', '18:00', '12:00', '13:00', '[]', 0, 30, 100, 1)").bind(tenantId).run();
+    await env.DB.prepare("INSERT OR IGNORE INTO business_settings (tenant_id, allow_overtime_booking, slot_step_minutes, point_spend_amount, point_reward_points, weekly_hours_json) VALUES (?, 0, 30, 100, 1, '{}')").bind(tenantId).run();
     await env.DB.prepare("INSERT OR IGNORE INTO line_oa_settings (tenant_id, webhook_path, webhook_enabled, login_enabled, registration_enabled, notes, created_at, updated_at) VALUES (?, ?, 0, 0, 0, '待串接 LINE OA', datetime('now'), datetime('now'))").bind(tenantId, "/line-webhook?tenant=" + encodeURIComponent(tenantId)).run();
     const adminId = crypto.randomUUID();
     await env.DB.prepare(`
@@ -4370,12 +4364,35 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     missingActions
   };
 }
-async function merchantOnboardingResponse(request, env, tenantId = TENANT_ID) {
-  const setup = await evaluateTenantSetup(env, tenantId);
-  const data = await dashboardData(env, todayInTaipei(), tenantId);
-  return Response.json({ ok: true, setup, store: data.store, businessHours: data.businessHours, services: data.services, staffMembers: data.staffMembers, resourceTypes: data.resourceTypes }, { headers: jsonHeaders });
+async function evaluateStoreOnboarding(env, tenantId = TENANT_ID) {
+  const [storeData, hours] = await Promise.all([loadStore(env, tenantId), loadBusinessHours(env, tenantId)]);
+  const missingFields = [];
+  if (!String(storeData.name || "").trim()) missingFields.push("store.name");
+  if (!isValidStoreSlug(storeData.slug || "")) missingFields.push("store.slug");
+  if (!String(storeData.timezone || "").trim()) missingFields.push("store.timezone");
+  if (!String(storeData.brandName || "").trim()) missingFields.push("brand.name");
+  if (!/^#[0-9a-f]{6}$/i.test(String(storeData.primaryColor || ""))) missingFields.push("brand.primaryColor");
+  if (!String(storeData.phone || "").trim() && !String(storeData.email || "").trim()) missingFields.push("brand.contact");
+  if (!String(storeData.address || "").trim()) missingFields.push("brand.address");
+  const completeWeek = hasCompleteWeeklyHours(hours.weeklyHours);
+  if (hours.invalid || !hours.complete || !completeWeek) missingFields.push("business.weeklyHours");
+  const status = storeData.onboardingStatus === "completed" ? "completed" : "draft";
+  const completed = status === "completed" && missingFields.length === 0;
+  const currentStep = missingFields.some((field) => field.startsWith("store.")) ? 1 : missingFields.some((field) => field.startsWith("brand.")) ? 2 : missingFields.some((field) => field.startsWith("business.")) ? 3 : 8;
+  return { status: completed ? "completed" : status, completedAt: storeData.onboardingCompletedAt || null, currentStep, missingFields, readyToComplete: missingFields.length === 0, store: storeData, businessHours: hours };
 }
 
+async function completeStoreOnboarding(request, env, tenantId = TENANT_ID) {
+  if (!env.DB) return Response.json({ ok: false, error: { code: "DATABASE_NOT_CONFIGURED", message: "Database is not configured" } }, { status: 503, headers: jsonHeaders });
+  const current = await evaluateStoreOnboarding(env, tenantId);
+  if (!current.readyToComplete) return Response.json({ ok: false, error: { code: "ONBOARDING_INCOMPLETE", message: "請先完成 Store、Brand 與 Business 必要資料", missingFields: current.missingFields, currentStep: current.currentStep } }, { status: 409, headers: jsonHeaders });
+  await env.DB.prepare("UPDATE tenants SET onboarding_status = 'completed', onboarding_completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").bind(tenantId).run();
+  return Response.json({ ok: true, onboarding: await evaluateStoreOnboarding(env, tenantId) }, { headers: jsonHeaders });
+}
+async function merchantOnboardingResponse(request, env, tenantId = TENANT_ID) {
+  const onboarding = await evaluateStoreOnboarding(env, tenantId);
+  return Response.json({ ok: true, onboarding: { status: onboarding.status, completedAt: onboarding.completedAt, currentStep: onboarding.currentStep, missingFields: onboarding.missingFields }, store: onboarding.store, businessHours: onboarding.businessHours }, { headers: jsonHeaders });
+}
 function onboardingWriteBlockedResponse(access = {}) {
   return Response.json({ ok: false, error: { code: "TENANT_READ_ONLY", message: "目前方案狀態僅允許查看資料" } }, { status: 403, headers: jsonHeaders });
 }
@@ -4512,6 +4529,8 @@ async function setTenantBookingEnabled(request, env, tenantId = TENANT_ID, enabl
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   const writable = await assertOnboardingWritable(env, tenantId);
   if (!writable.ok) return onboardingWriteBlockedResponse(writable.access);
+  const onboarding = await evaluateStoreOnboarding(env, tenantId);
+  if (enabled && onboarding.status !== "completed") return Response.json({ ok: false, error: { code: "ONBOARDING_INCOMPLETE", message: "請先完成開店設定", missingFields: onboarding.missingFields } }, { status: 409, headers: jsonHeaders });
   const setup = await evaluateTenantSetup(env, tenantId);
   if (enabled && !writable.access.canAcceptBookings) return tenantBookingDisabledResponse(writable.access);
   if (enabled && setup.staffPlanSelection?.required) return staffSelectionRequiredResponse();
@@ -4539,27 +4558,21 @@ async function setTenantBookingEnabled(request, env, tenantId = TENANT_ID, enabl
 }
 
 async function loadStore(env, tenantId = TENANT_ID) {
-  const row = await env.DB.prepare("SELECT t.name, t.phone, t.address, t.logo_url, t.slug, t.business_type, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.staff_limit, t.booking_enabled, t.setup_test_completed_at, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1 AND COALESCE(sm.plan_booking_status, 'active') = 'active') AS active_booking_staff_count FROM tenants t WHERE t.id = ?").bind(tenantId).first();
+  const row = await env.DB.prepare("SELECT t.name, t.brand_name, t.brand_primary_color, t.phone, t.email, t.address, t.logo_url, t.slug, t.business_type, t.timezone, t.status, t.contract_start, t.contract_end, t.billing_plan_id, t.staff_limit, t.booking_enabled, t.setup_test_completed_at, t.onboarding_status, t.onboarding_completed_at, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1) AS active_staff_count, (SELECT COUNT(*) FROM staff_members sm WHERE sm.tenant_id = t.id AND sm.enabled = 1 AND COALESCE(sm.plan_booking_status, 'active') = 'active') AS active_booking_staff_count FROM tenants t WHERE t.id = ?").bind(tenantId).first();
   if (row) {
     const access = evaluateTenantAccess(row);
-    return { name: row.name, phone: row.phone, address: row.address, logoUrl: row.logo_url || "", slug: row.slug || "", businessType: row.business_type || "", timezone: row.timezone || "Asia/Taipei", status: row.status || "active", contractStart: row.contract_start || "", contractEnd: row.contract_end || "", billingPlanId: row.billing_plan_id || "solo", staffLimit: access.staffLimit, activeStaffCount: access.activeStaffCount, activeBookingStaffCount: access.activeBookingStaffCount, bookingEnabled: Number(row.booking_enabled ?? 1) !== 0, setupTestCompletedAt: row.setup_test_completed_at || "", tenantAccess: access, access, tenantId };
+    return { name: row.name, brandName: row.brand_name || "", primaryColor: row.brand_primary_color || "", phone: row.phone || "", email: row.email || "", address: row.address || "", logoUrl: row.logo_url || "", slug: row.slug || "", businessType: row.business_type || "", timezone: row.timezone || "Asia/Taipei", status: row.status || "active", contractStart: row.contract_start || "", contractEnd: row.contract_end || "", billingPlanId: row.billing_plan_id || "solo", staffLimit: access.staffLimit, activeStaffCount: access.activeStaffCount, activeBookingStaffCount: access.activeBookingStaffCount, bookingEnabled: Number(row.booking_enabled ?? 1) !== 0, setupTestCompletedAt: row.setup_test_completed_at || "", onboardingStatus: row.onboarding_status || "draft", onboardingCompletedAt: row.onboarding_completed_at || "", tenantAccess: access, access, tenantId };
   }
-  return isDefaultDemoTenant(env, tenantId) ? { ...store, tenantId, access: evaluateTenantAccess({ status: "active", billing_plan_id: "solo", staff_limit: 1 }) } : { name: "", phone: "", address: "", logoUrl: "", slug: "", status: "not_found", contractStart: "", contractEnd: "", billingPlanId: "solo", staffLimit: 1, tenantId, access: evaluateTenantAccess({ status: "not_found" }) };
+  return isDefaultDemoTenant(env, tenantId) ? { ...store, brandName: store.name, primaryColor: "#176b5b", email: "", slug: "anhe", timezone: "Asia/Taipei", onboardingStatus: "draft", onboardingCompletedAt: "", tenantId, access: evaluateTenantAccess({ status: "active", billing_plan_id: "solo", staff_limit: 1 }) } : { name: "", brandName: "", primaryColor: "", phone: "", email: "", address: "", logoUrl: "", slug: "", status: "not_found", contractStart: "", contractEnd: "", billingPlanId: "solo", staffLimit: 1, tenantId, onboardingStatus: "draft", onboardingCompletedAt: "", access: evaluateTenantAccess({ status: "not_found" }) };
 }
 
 async function loadBusinessHours(env, tenantId = TENANT_ID) {
-  const row = await env.DB.prepare("SELECT open_time, close_time, break_start, break_end, closed_days_json, allow_overtime_booking, point_spend_amount, point_reward_points FROM business_settings WHERE tenant_id = ?").bind(tenantId).first();
-  if (!row) return isDefaultDemoTenant(env, tenantId) ? businessHours : fallbackBusinessHours();
-  return {
-    open: row.open_time,
-    close: row.close_time,
-    breaks: row.break_start && row.break_end ? [{ start: row.break_start, end: row.break_end, label: "午休" }] : [],
-    closedDays: safeJson(row.closed_days_json, []),
-    allowOvertimeBooking: Boolean(row.allow_overtime_booking),
-    pointReward: { spendAmount: Number(row.point_spend_amount || 100), rewardPoints: Number(row.point_reward_points || 1) }
-  };
+  const row = await env.DB.prepare("SELECT weekly_hours_json, allow_overtime_booking, point_spend_amount, point_reward_points FROM business_settings WHERE tenant_id = ?").bind(tenantId).first();
+  if (!row) return { weeklyHours: defaultWeeklyHours(), invalid: true, allowOvertimeBooking: false, pointReward: { spendAmount: 100, rewardPoints: 1 } };
+  const parsed = normalizeWeeklyHours(row.weekly_hours_json);
+  const currentDay = dayHoursForDate(parsed.ok ? parsed.weeklyHours : defaultWeeklyHours(), todayInTaipei());
+  return { ...currentDay, weeklyHours: parsed.ok ? parsed.weeklyHours : defaultWeeklyHours(), complete: Boolean(parsed.ok && parsed.complete), invalid: !parsed.ok, hoursError: parsed.ok ? null : parsed, allowOvertimeBooking: Boolean(row.allow_overtime_booking), pointReward: { spendAmount: Number(row.point_spend_amount || 100), rewardPoints: Number(row.point_reward_points || 1) } };
 }
-
 async function loadServices(env, tenantId = TENANT_ID) {
   const rows = await env.DB.prepare(`
     SELECT s.id, s.name, s.category, s.resource_type_id, rt.name AS resource_type_name, s.point_redeem_limit, d.minutes, d.price
@@ -4965,17 +4978,25 @@ async function saveStoreProfile(request, env, tenantId = TENANT_ID) {
   try {
     const payload = await request.json();
     const name = clean(payload.name);
-    const phone = clean(payload.phone);
-    const address = clean(payload.address);
-    const logoDataUrl = clean(payload.logoDataUrl);
-    const businessType = clean(payload.businessType || payload.business_type);
+    const slug = normalizeStoreSlug(payload.slug);
     const timezone = clean(payload.timezone || "Asia/Taipei") || "Asia/Taipei";
-    if (!name) return Response.json({ ok: false, error: "store name is required" }, { status: 400, headers: jsonHeaders });
-    if (logoDataUrl && (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(logoDataUrl) || logoDataUrl.length > 400000)) return Response.json({ ok: false, error: "logo image is invalid or too large" }, { status: 400, headers: jsonHeaders });
-    await env.DB.prepare("UPDATE tenants SET name = ?, phone = ?, address = ?, logo_url = COALESCE(NULLIF(?, ''), logo_url), business_type = ?, timezone = ?, updated_at = datetime('now') WHERE id = ?").bind(name, phone, address, logoDataUrl, businessType || null, timezone, tenantId).run();
+    const brandName = clean(payload.brandName || payload.brand_name);
+    const primaryColor = clean(payload.primaryColor || payload.brand_primary_color);
+    const phone = clean(payload.phone);
+    const email = normalizeMerchantEmail(payload.email);
+    const address = clean(payload.address);
+    const logoUrl = clean(payload.logoUrl || payload.logoDataUrl);
+    if (!name) return Response.json({ ok: false, error: { code: "STORE_NAME_REQUIRED", message: "店家名稱為必填" } }, { status: 400, headers: jsonHeaders });
+    if (!slug || !isValidStoreSlug(slug)) return Response.json({ ok: false, error: { code: "STORE_SLUG_INVALID", message: "店家網址格式無效" } }, { status: 400, headers: jsonHeaders });
+    const duplicate = await env.DB.prepare("SELECT id FROM tenants WHERE slug = ? AND id != ?").bind(slug, tenantId).first();
+    if (duplicate?.id) return Response.json({ ok: false, error: { code: "STORE_SLUG_TAKEN", message: "店家網址已被使用" } }, { status: 409, headers: jsonHeaders });
+    if (primaryColor && !/^#[0-9a-f]{6}$/i.test(primaryColor)) return Response.json({ ok: false, error: { code: "BRAND_COLOR_INVALID", message: "品牌主色必須是六碼色碼，例如 #176b5b" } }, { status: 400, headers: jsonHeaders });
+    if (payload.email && !email) return Response.json({ ok: false, error: { code: "STORE_EMAIL_INVALID", message: "Email 格式無效" } }, { status: 400, headers: jsonHeaders });
+    if (logoUrl && !((/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(logoUrl) && logoUrl.length <= 400000) || /^https:\/\/[^\s]+$/i.test(logoUrl))) return Response.json({ ok: false, error: { code: "STORE_LOGO_INVALID", message: "Logo 格式無效或檔案過大" } }, { status: 400, headers: jsonHeaders });
+    await env.DB.prepare("UPDATE tenants SET name = ?, brand_name = ?, brand_primary_color = ?, slug = ?, phone = ?, email = ?, address = ?, logo_url = COALESCE(NULLIF(?, ''), logo_url), business_type = ?, timezone = ?, updated_at = datetime('now') WHERE id = ?").bind(name, brandName || null, primaryColor || null, slug, phone || null, email || null, address || null, logoUrl, clean(payload.businessType || payload.business_type) || null, timezone, tenantId).run();
     return Response.json({ ok: true, store: await loadStore(env, tenantId) }, { headers: jsonHeaders });
   } catch (error) {
-    return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
+    return Response.json({ ok: false, error: { code: "STORE_SAVE_FAILED", message: error.message } }, { status: 500, headers: jsonHeaders });
   }
 }
 
@@ -4983,27 +5004,18 @@ async function saveSettings(request, env, tenantId = TENANT_ID) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
     const payload = await request.json();
-    const open = normalizeTime(payload.open || "09:00");
-    const close = normalizeTime(payload.close || "18:00");
-    const breakStart = normalizeTime(payload.breakStart || "12:00");
-    const breakEnd = normalizeTime(payload.breakEnd || "13:00");
-    const closedDays = Array.isArray(payload.closedDays) ? payload.closedDays : [payload.closedDay || "星期三"];
+    const weeklyHours = payload.weeklyHours || payload.weekly_hours;
+    const validation = validateWeeklyHours(weeklyHours);
+    if (!validation.ok) return Response.json({ ok: false, error: validation }, { status: 400, headers: jsonHeaders });
     const allowOvertime = payload.allowOvertimeBooking || payload.overtimeMode === "yes" ? 1 : 0;
     const pointSpendAmount = normalizePositiveInt(payload.pointSpendAmount, 100);
     const pointRewardPoints = normalizeNonNegativeInt(payload.pointRewardPoints, 1);
-
-    await env.DB.prepare(`
-      UPDATE business_settings
-      SET open_time = ?, close_time = ?, break_start = ?, break_end = ?, closed_days_json = ?, allow_overtime_booking = ?, point_spend_amount = ?, point_reward_points = ?, updated_at = datetime('now')
-      WHERE tenant_id = ?
-    `).bind(open, close, breakStart, breakEnd, JSON.stringify(closedDays), allowOvertime, pointSpendAmount, pointRewardPoints, tenantId).run();
-
-    return Response.json({ ok: true }, { headers: jsonHeaders });
+    await env.DB.prepare("UPDATE business_settings SET weekly_hours_json = ?, allow_overtime_booking = ?, point_spend_amount = ?, point_reward_points = ?, updated_at = datetime('now') WHERE tenant_id = ?").bind(JSON.stringify(validation.weeklyHours), allowOvertime, pointSpendAmount, pointRewardPoints, tenantId).run();
+    return Response.json({ ok: true, weeklyHours: validation.weeklyHours }, { headers: jsonHeaders });
   } catch (error) {
-    return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
+    return Response.json({ ok: false, error: { code: "SETTINGS_SAVE_FAILED", message: error.message } }, { status: 500, headers: jsonHeaders });
   }
 }
-
 async function loadMerchantBookingById(env, tenantId, bookingId) {
   return env.DB.prepare(`
     SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
@@ -5176,6 +5188,8 @@ async function rescheduleMerchantBooking(request, env, tenantId, booking, payloa
   if (!date || !start) return merchantBookingError("BOOKING_RESCHEDULE_INVALID", "請選擇新日期與時間", 400);
   if (`${date} ${start}` < `${todayInTaipei()} 00:00`) return merchantBookingError("BOOKING_PAST_SLOT", "不可改到過去時間", 409);
   const data = await dashboardData(env, date, tenantId);
+  const dateHours = dayHoursForDate(data.businessHours?.weeklyHours, date);
+  if (dateHours.invalid) return merchantBookingError("BUSINESS_HOURS_INVALID", "營業時間設定無效", 503);
   if (!isBusinessOpenOnDate(data.businessHours, date)) return merchantBookingError("BOOKING_SLOT_CONFLICT", "店家當日未營業", 409);
   const service = (data.services || []).find((item) => item.id === booking.service_id);
   const duration = Number(booking.duration_minutes || service?.prices?.[0]?.minutes || 0);
@@ -5184,7 +5198,7 @@ async function rescheduleMerchantBooking(request, env, tenantId, booking, payloa
   if (!staff) return merchantBookingError("BOOKING_STAFF_INVALID", "服務人員不可接此預約", 409);
   const resource = (data.resourceTypes || []).find((item) => item.id === service?.resourceTypeId);
   const otherBookings = (data.bookings || []).filter((item) => item.id !== booking.id);
-  if (!isSlotAvailable({ start: toMinutes(start), end: toMinutes(end), businessHours: data.businessHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此時段已被預約或不在營業時間內", 409);
+  if (!isSlotAvailable({ start: toMinutes(start), end: toMinutes(end), businessHours: dateHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此時段已被預約或不在營業時間內", 409);
   const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
   const result = await env.DB.prepare(`UPDATE bookings SET booking_date = ?, start_time = ?, end_time = ?, staff_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(date, start, end, staffId, bookingMutationTimestamp(), tenantId, booking.id, ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])).run();
   if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
@@ -5197,12 +5211,14 @@ async function reassignMerchantBooking(request, env, tenantId, booking, payload)
   if (!(status === "pending" || status === "confirmed")) return merchantBookingError("INVALID_BOOKING_STATUS_TRANSITION", "此預約狀態無法執行這項操作", 409);
   const staffId = String(payload.staff_id || payload.staffId || "").trim();
   const data = await dashboardData(env, booking.booking_date, tenantId);
+  const dateHours = dayHoursForDate(data.businessHours?.weeklyHours, booking.booking_date);
+  if (dateHours.invalid) return merchantBookingError("BUSINESS_HOURS_INVALID", "營業時間設定無效", 503);
   const staff = bookableStaffMembers(data.staffMembers).find((item) => item.id === staffId && staffCanProvideService(item, booking.service_id));
   if (!staff) return merchantBookingError("BOOKING_STAFF_INVALID", "服務人員不可接此預約", 409);
   const service = (data.services || []).find((item) => item.id === booking.service_id);
   const resource = (data.resourceTypes || []).find((item) => item.id === service?.resourceTypeId);
   const otherBookings = (data.bookings || []).filter((item) => item.id !== booking.id);
-  if (!isSlotAvailable({ start: toMinutes(booking.start_time), end: toMinutes(booking.end_time), businessHours: data.businessHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此人員該時段已有預約", 409);
+  if (!isSlotAvailable({ start: toMinutes(booking.start_time), end: toMinutes(booking.end_time), businessHours: dateHours, bookings: otherBookings, staffMembers: [staff], staffId, resourceTypeId: service?.resourceTypeId || "", resourceCapacity: Math.max(1, Number(resource?.quantity || 1)) })) return merchantBookingError("BOOKING_SLOT_CONFLICT", "此人員該時段已有預約", 409);
   const expectedUpdatedAt = bookingExpectedUpdatedAt(payload);
   const result = await env.DB.prepare(`UPDATE bookings SET staff_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`).bind(staffId, bookingMutationTimestamp(), tenantId, booking.id, ...(expectedUpdatedAt ? [expectedUpdatedAt] : [])).run();
   if (Number(result.meta?.changes || 0) !== 1) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
@@ -5274,6 +5290,8 @@ async function createBooking(request, env, data) {
   const access = data.store?.access || evaluateTenantAccess(data.store || {});
   if (!access.canAcceptBookings) return tenantBookingDisabledResponse(access);
   if (access.staffSelectionRequired) return staffSelectionRequiredResponse();
+  const onboarding = await evaluateStoreOnboarding(env, tenantId);
+  if (onboarding.status !== "completed") return Response.json({ ok: false, error: { code: "ONBOARDING_INCOMPLETE", message: "店家尚未完成開店設定", missingFields: onboarding.missingFields } }, { status: 409, headers: jsonHeaders });
   const tenantSetup = await evaluateTenantSetup(env, tenantId);
   if (!tenantSetup.bookingEnabled) return Response.json({ ok: false, error: { code: "TENANT_BOOKING_NOT_OPEN", message: "店家尚未開放正式預約" } }, { status: 409, headers: jsonHeaders });
   if (!tenantSetup.readyForBooking) return Response.json({ ok: false, error: { code: "TENANT_SETUP_INCOMPLETE", message: "店家尚未完成預約設定", missingActions: tenantSetup.missingActions } }, { status: 409, headers: jsonHeaders });
@@ -5313,7 +5331,7 @@ async function createBooking(request, env, data) {
   const selectedResource = freshData.resourceTypes.find((resource) => resource.id === freshService.resourceTypeId);
   const resourceCapacity = Math.max(1, Number(selectedResource?.quantity || 1));
   const slots = findAvailableSlots({
-    businessHours: freshData.businessHours,
+    businessHours: dayHoursForDate(freshData.businessHours?.weeklyHours, date),
     bookings: freshData.bookings,
     staffMembers: filterStaffByService(bookableFreshStaff, freshService.id),
     staffId: requestedStaffId,

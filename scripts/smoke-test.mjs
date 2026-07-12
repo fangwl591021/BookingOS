@@ -103,10 +103,14 @@ addCheck("merchant login ignores customer intent parameters", async () => {
   }
 });
 
-addCheck("availability endpoint remains public", async () => {
+addCheck("availability endpoint is public and onboarding-gated", async () => {
   const res = await request(`/api/availability?tenant=${encodeURIComponent(tenant)}&date=2026-07-11&serviceId=therapy&duration=60&staffId=any`);
-  assert(res.status === 200, `expected 200, got ${res.status}`);
+  assert(res.status === 200 || res.status === 409, `expected 200 or onboarding 409, got ${res.status}`);
   const data = await res.json();
+  if (res.status === 409) {
+    assert(data?.error?.code === "ONBOARDING_INCOMPLETE", "unexpected onboarding gate response");
+    return;
+  }
   assert(data.ok === true, "availability did not return ok=true");
   assert(Array.isArray(data.slots), "availability slots missing");
 });

@@ -1,3 +1,16 @@
+## 2026-07-12 - Sprint 1 Store Onboarding Foundation
+
+### Added
+
+- Added migration 0019_store_onboarding_foundation.sql.
+- Added shared weekly-hours parser/validator and focused tests.
+- Added Store Onboarding Wizard with Store, Brand, Business, placeholder, and Finish steps.
+
+### Changed
+
+- Added tenant onboarding status and brand fields.
+- Switched runtime availability, booking, rescheduling, and enablement checks to weekly_hours_json.
+- Draft tenants cannot expose slots, create bookings, or enable formal booking.
 ## 2026-07-11 - Task 016B First Batch Onboarding Smoke
 
 ### Added
