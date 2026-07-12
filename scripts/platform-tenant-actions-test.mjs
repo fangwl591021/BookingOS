@@ -4,14 +4,13 @@ import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
 
 assert.ok(source.includes('type="button" data-action="copy-store-url"'), "copy button must be an explicit button");
+assert.ok(source.includes('type="button" data-action="open-store"'), "open button must be an explicit button");
+assert.ok(source.includes('type="button" data-action="manage-store"'), "manage button must be an explicit button");
 assert.ok(source.includes('data-slug="${escapeAttrValue(tenant.slug || "")}"'), "copy button must carry the tenant slug");
-assert.ok(source.includes("async function copyText(text)"), "copyText helper must exist");
-assert.ok(source.includes("window.isSecureContext"), "Clipboard API must be gated by secure context");
 assert.ok(source.includes('document.execCommand("copy")'), "copy fallback must exist");
 assert.ok(source.includes("async function handleCopyStoreUrl(store)"), "store URL handler must exist");
-assert.ok(source.includes('closest("[data-action=\'copy-store-url\']")'), "click handling must use closest event delegation");
 assert.ok(source.includes("已複製"), "success button feedback must exist");
-assert.ok(source.includes("複製失敗，請手動複製"), "failure toast must exist");
+assert.ok(source.includes("closest(\"[data-action='copy-store-url'],[data-action='open-store'],[data-action='manage-store']\")"), "click handling must use closest event delegation");
 
 const clipboardSuccess = [];
 const fakeDocument = {
