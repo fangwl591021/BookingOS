@@ -10,7 +10,7 @@ assert.ok(source.includes('data-slug="${escapeAttrValue(tenant.slug || "")}"'), 
 assert.ok(source.includes('document.execCommand("copy")'), "copy fallback must exist");
 assert.ok(source.includes("async function handleCopyStoreUrl(store)"), "store URL handler must exist");
 assert.ok(source.includes("已複製"), "success button feedback must exist");
-assert.ok(source.includes("closest(\"[data-action='copy-store-url'],[data-action='open-store'],[data-action='manage-store']\")"), "click handling must use closest event delegation");
+assert.ok(source.includes("closest(\"[data-action='copy-store-url']\")"), "copy event delegation must exist"); assert.ok(source.includes("closest(\"[data-action='open-store']\")"), "open event delegation must exist"); assert.ok(source.includes("closest(\"[data-action='manage-store']\")"), "manage event delegation must exist"); assert.ok(source.includes('type="button" data-action="toggle-store-details"'), "details must have an explicit toggle button"); assert.ok(source.includes('tenant-detail" hidden'), "details must start collapsed"); assert.ok(!source.includes('<details class="tenant-card'), "tenant card must not use native whole-card disclosure");
 
 const clipboardSuccess = [];
 const fakeDocument = {
