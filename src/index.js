@@ -401,12 +401,12 @@ export default {
     }
 
     if (url.pathname === "/api/services") {
-      if (request.method === "GET") return Response.json({ ok: true, services: (await dashboardData(env, todayInTaipei(), activeTenantId)).services }, { headers: jsonHeaders });
+      if (request.method === "GET") return Response.json({ ok: true, services: await loadServices(env, activeTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
       if (request.method === "POST") return saveServices(request, env, activeTenantId);
     }
 
     if (url.pathname === "/api/staff") {
-      if (request.method === "GET") return Response.json({ ok: true, staffMembers: (await dashboardData(env, todayInTaipei(), activeTenantId)).staffMembers }, { headers: jsonHeaders });
+      if (request.method === "GET") return Response.json({ ok: true, staffMembers: await loadStaffMembers(env, activeTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
       if (request.method === "POST") return saveStaffMembers(request, env, activeTenantId);
     }
     if (url.pathname === "/api/merchant/staff/plan-selection" && request.method === "POST") {
@@ -513,7 +513,10 @@ export default {
     }
 
     if (url.pathname === "/settings") {
-      return html(renderSettingsPage(await dashboardData(env, todayInTaipei(), activeTenantId)));
+      const settingsData = await dashboardData(env, todayInTaipei(), activeTenantId);
+      settingsData.services = await loadServices(env, activeTenantId, { includeDisabled: true });
+      settingsData.staffMembers = await loadStaffMembers(env, activeTenantId, { includeDisabled: true });
+      return html(renderSettingsPage(settingsData));
     }
 
     if (url.pathname === "/customers") {
@@ -2699,7 +2702,11 @@ function renderMerchantPage(data = { store, bookings, services, staffMembers, re
   const statusNotice = `<section class="panel" style="margin-bottom:12px"><h2>方案與權限</h2><p class="muted">${escapeHtmlValue(tenantStatusLabel(access, data.store || {}))}｜${escapeHtmlValue(plan.name)}｜啟用人員 ${escapeHtmlValue(tenantStaffUsageText(access, data.store || {}))}</p>${!access.canAcceptBookings ? `<p class="muted">${escapeHtmlValue(tenantAccessMessage(access))}</p>` : ""}${access.overLimit ? `<p class="muted">服務人員已超過方案上限，請停用人員或升級方案後再新增。</p>` : ""}${limitedStaffNotice}${access.isTrial ? `<p style="margin-top:10px"><a class="btn primary" href="/apply">申請正式使用</a></p>` : ""}</section>`;
   const onboardingPanel = renderOnboardingPanel(data.onboardingSetup, data.store?.tenantId || TENANT_ID);
   const staffPlanSelectionPanel = renderStaffPlanSelectionPanel(data);
-  const body = `${onboardingPanel}${staffPlanSelectionPanel}${statusNotice}<section class="grid"><div class="panel"><h2>今日預約</h2><div class="stat">${(data.bookings || []).length}</div><p class="muted">目前載入的預約筆數</p></div><div class="panel"><h2>會員</h2><div class="stat">${customers.length}</div><p class="muted">CRM 客戶資料</p><p style="margin-top:10px"><a class="btn" href="/api/customers/export?tenant=${encodeURIComponent(data.store?.tenantId || TENANT_ID)}">下載名單</a></p></div><div class="panel"><h2>服務項目</h2><div class="stat">${(data.services || []).length}</div><p class="muted">店家可預約服務</p></div></section><section class="panel" style="margin-top:12px"><h2>預約列表</h2><table class="table"><thead><tr><th>時間</th><th>客戶</th><th>服務</th><th>人員</th><th>狀態</th></tr></thead><tbody>${bookingRows || `<tr><td colspan="5">目前沒有預約資料</td></tr>`}</tbody></table></section>${data.dataError ? `<section class="panel" style="margin-top:12px"><h2>資料提醒</h2><p class="muted">${escapeHtmlValue(data.dataError)}</p></section>` : ""}`;
+  if (data.onboardingSetup && !data.onboardingSetup.readyForBooking) {
+    const missingReadiness = Object.values(data.onboardingSetup.checks || {}).filter((item) => !item.ok).map((item) => '<li>□ ' + escapeHtmlValue(item.label || "") + '<small>' + escapeHtmlValue(item.action || "") + '</small></li>').join("") || '<li>□ 尚未完成開店檢查</li>';
+    const body = statusNotice + staffPlanSelectionPanel + '<section class="panel" style="margin-bottom:12px;border-color:#f1d58a;background:#fffaf0"><h2>Booking Not Ready</h2><p class="muted">完成開店尚缺：</p><ul class="readiness-list">' + missingReadiness + '</ul><p class="muted">完成後即可正式接受預約。</p><p><a class="btn primary" href="/settings">前往設定</a> <a class="btn" href="/merchant/onboarding">開店精靈</a></p></section><style>.readiness-list{display:grid;gap:8px;padding-left:0;list-style:none}.readiness-list li{border:1px solid var(--line);border-radius:8px;padding:10px;background:white}.readiness-list small{display:block;color:var(--muted);margin-top:3px}</style>';
+    return pageShell(data.store?.name || store.name, body, "merchant", data.store?.tenantId || TENANT_ID, data.store?.slug || "");
+  }  const body = `${onboardingPanel}${staffPlanSelectionPanel}${statusNotice}<section class="grid"><div class="panel"><h2>今日預約</h2><div class="stat">${(data.bookings || []).length}</div><p class="muted">目前載入的預約筆數</p></div><div class="panel"><h2>會員</h2><div class="stat">${customers.length}</div><p class="muted">CRM 客戶資料</p><p style="margin-top:10px"><a class="btn" href="/api/customers/export?tenant=${encodeURIComponent(data.store?.tenantId || TENANT_ID)}">下載名單</a></p></div><div class="panel"><h2>服務項目</h2><div class="stat">${(data.services || []).length}</div><p class="muted">店家可預約服務</p></div></section><section class="panel" style="margin-top:12px"><h2>預約列表</h2><table class="table"><thead><tr><th>時間</th><th>客戶</th><th>服務</th><th>人員</th><th>狀態</th></tr></thead><tbody>${bookingRows || `<tr><td colspan="5">目前沒有預約資料</td></tr>`}</tbody></table></section>${data.dataError ? `<section class="panel" style="margin-top:12px"><h2>資料提醒</h2><p class="muted">${escapeHtmlValue(data.dataError)}</p></section>` : ""}`;
   return pageShell(data.store?.name || store.name, body, "merchant", data.store?.tenantId || TENANT_ID, data.store?.slug || "");
 }
 
@@ -2827,7 +2834,7 @@ function renderSettingsPage(data = { store, businessHours, services, staffMember
     <details class="settings-section" open><summary>店家資料 <span>名稱、品牌、網址、聯絡資料、LOGO</span></summary><div class="settings-body"><div class="form-grid"><label class="field">店家名稱<input id="store-name"></label><label class="field">品牌名稱<input id="store-brand-name"></label><label class="field">店家網址 Slug<input id="store-slug"></label><label class="field">時區<input id="store-timezone"></label><label class="field">電話<input id="store-phone"></label><label class="field">Email<input id="store-email" type="email"></label><label class="field">品牌主色<input id="store-primary-color" placeholder="#176b5b"></label></div><label class="field" style="margin-top:12px">地址<input id="store-address"></label><div class="form-grid" style="margin-top:12px"><label class="field">上傳 LOGO<input id="store-logo-file" type="file" accept="image/*"></label><label class="field">目前 LOGO<img id="store-logo-preview" class="logo-preview" alt="LOGO 預覽"></label></div><input id="store-logo-data" type="hidden"><div class="save-row"><button class="save-btn" id="save-store" type="button">儲存店家資料</button><span class="muted" id="store-status"></span></div></div></details>
     <details class="settings-section"><summary>營業規則 <span>每週營業時間、打烊規則、贈點比例</span></summary><div class="settings-body"><div class="notice-box">每週營業時間是正式預約唯一依據。關閉的日期不會產生可預約時段。</div><div id="weekly-hours-list" class="weekly-hours-list"></div><div class="form-grid" style="margin-top:12px"><label class="field">消費金額<input id="point-spend" type="number" min="1"></label><label class="field">贈送點數<input id="point-reward" type="number" min="0"></label></div><label class="check-row" style="margin-top:12px"><input id="allow-overtime" type="checkbox">允許預約時長超過打烊時間</label><div class="hint-box" style="margin-top:12px">關閉時，客戶選擇的時長若超過打烊時間，前台只會保留可完成的服務時長。</div><div class="save-row"><button class="save-btn" id="save-rules" type="button">儲存營業規則</button><span class="muted" id="rules-status"></span></div></div></details>
     <details class="settings-section"><summary>場地資源 <span>床位、座位、房間數</span></summary><div class="settings-body"><div class="notice-box">同時段可接幾組，會先看這裡的數量，再看師傅是否有空。</div><div class="item-list" id="resource-list"></div><div class="save-row"><button class="small-btn" id="add-resource" type="button">複製新增場地</button><button class="save-btn" id="save-resources" type="button">儲存場地資源</button><span class="muted" id="resources-status"></span></div></div></details>
-    <details class="settings-section"><summary>服務項目 <span>名稱、時長價格、點數折抵上限</span></summary><div class="settings-body"><div class="hint-box">點數折抵上限：填 0 代表可全額折抵；填數字代表本服務最多可折抵該點數。</div><div class="item-list" id="service-list"></div><div class="save-row"><button class="small-btn" id="add-service" type="button">複製新增服務</button><button class="save-btn" id="save-services" type="button">儲存服務項目</button><span class="muted" id="services-status"></span></div></div></details>
+    <details class="settings-section"><summary>服務項目 <span>新增、編輯、停用、排序、搜尋</span></summary><div class="settings-body"><label class="field">搜尋服務<input id="service-search" placeholder="輸入服務名稱或分類"></label><div class="hint-box" style="margin-top:10px">點數折抵上限：填 0 代表可全額折抵；填數字代表本服務最多可折抵該點數。</div><div class="item-list" id="service-list"></div><div class="save-row"><button class="small-btn" id="add-service" type="button">複製新增服務</button><button class="save-btn" id="save-services" type="button">儲存服務項目</button><span class="muted" id="services-status"></span></div></div></details>
     <details class="settings-section"><summary>服務人員 <span>可服務項目與 CRM 權限</span></summary><div class="settings-body"><div class="notice-box">取消勾選的服務代表該師傅不會此服務；客戶選「系統安排」時，系統會從可做該服務且有空的人員中挑選。目前方案最多可啟用 <b id="staff-limit-label"></b> 位服務人員。</div><div class="item-list" id="staff-list"></div><div class="save-row"><button class="small-btn" id="add-staff" type="button">複製新增人員</button><button class="save-btn" id="save-staff" type="button">儲存服務人員</button><span class="muted" id="staff-status"></span></div></div></details>
   </div><script>
   const settingsState=${payload};
@@ -2842,19 +2849,15 @@ function renderSettingsPage(data = { store, businessHours, services, staffMember
   function renderResources(){const list=$("resource-list"); list.innerHTML=(settingsState.resourceTypes||[]).map(resourceCard).join(""); list.querySelectorAll("[data-remove-resource]").forEach(btn=>btn.onclick=()=>{settingsState.resourceTypes.splice(Number(btn.dataset.removeResource),1);renderResources();});}
   function collectResources(){return Array.from(document.querySelectorAll("[data-resource-index]")).map((el,i)=>({id:el.querySelector("[data-resource-id]").value||slug(el.querySelector("[data-resource-name]").value),name:el.querySelector("[data-resource-name]").value,quantity:Number(el.querySelector("[data-resource-qty]").value||1),sortOrder:i}));}
   function priceLines(prices){return '<div class="price-lines">'+(prices||[]).map((p)=>'<div class="price-line"><input data-price-min type="number" min="1" value="'+Number(p.minutes||60)+'" placeholder="分鐘"><input data-price-value type="number" min="0" value="'+Number(p.price||0)+'" placeholder="價格"><button class="small-btn danger" data-remove-price type="button">刪除</button></div>').join("")+'</div><button class="small-btn" data-add-price type="button" style="margin-top:8px">增加時長價格</button>';}
-  function serviceCard(service,i){const resourceOptions=(settingsState.resourceTypes||[]).map(r=>'<option value="'+esc(r.id)+'" '+(r.id===service.resourceTypeId?'selected':'')+'>'+esc(r.name)+'</option>').join("");return '<div class="edit-item" data-service-index="'+i+'"><div class="edit-head"><b>'+esc(service.name||"服務")+'</b><button class="small-btn danger" type="button" data-remove-service="'+i+'">停用</button></div><div class="form-grid"><label class="field">服務名稱<input data-service-name value="'+esc(service.name||"")+'"></label><label class="field">分類<input data-service-category value="'+esc(service.category||"")+'"></label><label class="field">使用場地<select data-service-resource>'+resourceOptions+'</select></label><label class="field">點數折抵上限<input data-service-redeem type="number" min="0" value="'+Number(service.pointRedeemLimit||0)+'"></label></div><input data-service-id type="hidden" value="'+esc(service.id||slug(service.name))+'"><div style="margin-top:10px">'+priceLines(service.prices||[])+'</div></div>';}
-  function renderServices(){const list=$("service-list"); list.innerHTML=(settingsState.services||[]).map(serviceCard).join(""); list.querySelectorAll("[data-remove-service]").forEach(btn=>btn.onclick=()=>{settingsState.services.splice(Number(btn.dataset.removeService),1);renderServices();renderStaff();}); list.querySelectorAll("[data-add-price]").forEach(btn=>btn.onclick=()=>{btn.previousElementSibling.insertAdjacentHTML("beforeend",'<div class="price-line"><input data-price-min type="number" min="1" value="60" placeholder="分鐘"><input data-price-value type="number" min="0" value="1200" placeholder="價格"><button class="small-btn danger" data-remove-price type="button">刪除</button></div>'); bindPriceRemove();}); bindPriceRemove();}
+  function serviceCard(service,i){const resourceOptions=(settingsState.resourceTypes||[]).map(r=>'<option value="'+esc(r.id)+'" '+(r.id===service.resourceTypeId?'selected':'')+'>'+esc(r.name)+'</option>').join("");const enabled=service.enabled!==false;return '<div class="edit-item" data-service-index="'+i+'"><div class="edit-head"><b>'+esc(service.name||"服務")+'</b><span class="badge '+(enabled?'':'yellow')+'">'+(enabled?'啟用':'停用')+'</span><button class="small-btn danger" type="button" data-remove-service="'+i+'">停用</button></div><div class="form-grid"><label class="field">服務名稱<input data-service-name value="'+esc(service.name||"")+'"></label><label class="field">分類<input data-service-category value="'+esc(service.category||"")+'"></label><label class="field">使用場地<select data-service-resource>'+resourceOptions+'</select></label><label class="field">點數折抵上限<input data-service-redeem type="number" min="0" value="'+Number(service.pointRedeemLimit||0)+'"></label></div><label class="check-row"><input data-service-enabled type="checkbox" '+(enabled?'checked':'')+'>啟用此服務</label><input data-service-id type="hidden" value="'+esc(service.id||slug(service.name))+'"><div style="margin-top:10px">'+priceLines(service.prices||[])+'</div></div>';}  function renderServices(){const list=$("service-list");const query=String($("service-search")?.value||"").trim().toLowerCase();const visible=(settingsState.services||[]).filter((service)=>!query||String(service.name||"").toLowerCase().includes(query)||String(service.category||"").toLowerCase().includes(query));list.innerHTML=visible.map(serviceCard).join("")||'<div class="notice-box">沒有符合的服務項目</div>';list.querySelectorAll("[data-remove-service]").forEach(btn=>btn.onclick=()=>{const item=btn.closest("[data-service-index]");const id=item.querySelector("[data-service-id]").value;const target=(settingsState.services||[]).find((service)=>service.id===id);if(target)target.enabled=false;renderServices();});list.querySelectorAll("[data-add-price]").forEach(btn=>btn.onclick=()=>{btn.previousElementSibling.insertAdjacentHTML("beforeend",'<div class="price-line"><input data-price-min type="number" min="1" value="60" placeholder="分鐘"><input data-price-value type="number" min="0" value="1200" placeholder="價格"><button class="small-btn danger" data-remove-price type="button">刪除</button></div>');bindPriceRemove();});bindPriceRemove();}
   function bindPriceRemove(){document.querySelectorAll("[data-remove-price]").forEach(btn=>btn.onclick=()=>btn.closest(".price-line").remove());}
-  function collectServices(){return Array.from(document.querySelectorAll("[data-service-index]")).map((el,i)=>({id:el.querySelector("[data-service-id]").value||slug(el.querySelector("[data-service-name]").value),name:el.querySelector("[data-service-name]").value,category:el.querySelector("[data-service-category]").value,resourceTypeId:el.querySelector("[data-service-resource]").value,pointRedeemLimit:Number(el.querySelector("[data-service-redeem]").value||0),prices:Array.from(el.querySelectorAll(".price-line")).map(row=>({minutes:Number(row.querySelector("[data-price-min]").value||0),price:Number(row.querySelector("[data-price-value]").value||0)})).filter(p=>p.minutes>0),sortOrder:i}));}
-  function staffCard(staff,i){const serviceIds=Array.isArray(staff.serviceIds)?staff.serviceIds:null;const checks=(settingsState.services||[]).map(s=>'<label class="check-row"><input data-staff-service value="'+esc(s.id)+'" type="checkbox" '+(!serviceIds||serviceIds.includes(s.id)?'checked':'')+'>'+esc(s.name)+'</label>').join("");const perms=staff.crmPermissions||[];return '<div class="edit-item" data-staff-index="'+i+'"><div class="edit-head"><b>'+esc(staff.name||"服務人員")+'</b><button class="small-btn danger" type="button" data-remove-staff="'+i+'">停用</button></div><div class="form-grid"><label class="field">姓名<input data-staff-name value="'+esc(staff.name||"")+'"></label><label class="field">職稱<input data-staff-role value="'+esc(staff.role||"")+'"></label></div><input data-staff-id type="hidden" value="'+esc(staff.id||slug(staff.name))+'"><p class="muted" style="margin:12px 0 8px">可服務項目，取消代表不會此服務</p><div class="service-checks">'+checks+'</div><p class="muted" style="margin:12px 0 8px">CRM 權限</p><div class="service-checks"><label class="check-row"><input data-staff-perm value="staff" type="checkbox" '+(perms.includes("staff")?'checked':'')+'>師傅可看自己的客戶</label><label class="check-row"><input data-staff-perm value="store" type="checkbox" '+(perms.includes("store")?'checked':'')+'>店家可看全店客戶</label></div></div>';}
-  function renderStaff(){const list=$("staff-list"); const limit=Math.max(1,Number(settingsState.staffLimit||1)); const label=$("staff-limit-label"); if(label) label.textContent=String(limit); list.innerHTML=(settingsState.staffMembers||[]).map(staffCard).join(""); list.querySelectorAll("[data-remove-staff]").forEach(btn=>btn.onclick=()=>{settingsState.staffMembers.splice(Number(btn.dataset.removeStaff),1);renderStaff();}); const status=$("staff-status"); if(status && (settingsState.staffMembers||[]).length>limit) status.textContent="目前已超過方案上限，請刪除多餘人員或升級方案。";}
-  function collectStaff(){return Array.from(document.querySelectorAll("[data-staff-index]")).map((el,i)=>({id:el.querySelector("[data-staff-id]").value||slug(el.querySelector("[data-staff-name]").value),name:el.querySelector("[data-staff-name]").value,role:el.querySelector("[data-staff-role]").value,serviceIds:Array.from(el.querySelectorAll("[data-staff-service]:checked")).map(x=>x.value),crmPermissions:Array.from(el.querySelectorAll("[data-staff-perm]:checked")).map(x=>x.value),sortOrder:i}));}
-  initStore();initRules();renderResources();renderServices();renderStaff();
+  function collectServices(){const edited=new Map(Array.from(document.querySelectorAll("[data-service-index]")).map((el)=>{const id=el.querySelector("[data-service-id]").value;return [id,{id,name:el.querySelector("[data-service-name]").value,category:el.querySelector("[data-service-category]").value,resourceTypeId:el.querySelector("[data-service-resource]").value,pointRedeemLimit:Number(el.querySelector("[data-service-redeem]").value||0),enabled:el.querySelector("[data-service-enabled]").checked,prices:Array.from(el.querySelectorAll(".price-line")).map(row=>({minutes:Number(row.querySelector("[data-price-min]").value||0),price:Number(row.querySelector("[data-price-value]").value||0)})).filter(p=>p.minutes>0)}];}));return (settingsState.services||[]).map((service,index)=>({...service,...(edited.get(service.id)||{}),sortOrder:index}));}  function staffCard(staff,i){const serviceIds=Array.isArray(staff.serviceIds)?staff.serviceIds:null;const checks=(settingsState.services||[]).filter((s)=>s.enabled!==false).map(s=>'<label class="check-row"><input data-staff-service value="'+esc(s.id)+'" type="checkbox" '+(!serviceIds||serviceIds.includes(s.id)?'checked':'')+'>'+esc(s.name)+'</label>').join("")||'<span class="muted">請先建立啟用中的服務</span>';const perms=staff.crmPermissions||[];const enabled=staff.enabled!==false;return '<div class="edit-item" data-staff-index="'+i+'"><div class="edit-head"><b>'+esc(staff.name||"服務人員")+'</b><span class="badge '+(enabled?'':'yellow')+'">'+(enabled?'啟用':'停用')+'</span><button class="small-btn danger" type="button" data-remove-staff="'+i+'">停用</button></div><div class="form-grid"><label class="field">姓名<input data-staff-name value="'+esc(staff.name||"")+'"></label><label class="field">Avatar URL<input data-staff-avatar value="'+esc(staff.avatarUrl||"")+'" placeholder="可留白"></label><label class="field">手機<input data-staff-phone value="'+esc(staff.phone||"")+'"></label><label class="field">Email<input data-staff-email type="email" value="'+esc(staff.email||"")+'"></label><label class="field">職稱<input data-staff-role value="'+esc(staff.role||"")+'"></label></div><label class="check-row"><input data-staff-enabled type="checkbox" '+(enabled?'checked':'')+'>啟用此服務人員</label><input data-staff-id type="hidden" value="'+esc(staff.id||slug(staff.name))+'"><p class="muted" style="margin:12px 0 8px">可服務項目，取消代表不會此服務</p><div class="service-checks">'+checks+'</div><p class="muted" style="margin:12px 0 8px">CRM 權限</p><div class="service-checks"><label class="check-row"><input data-staff-perm value="staff" type="checkbox" '+(perms.includes("staff")?'checked':'')+'>師傅可看自己的客戶</label><label class="check-row"><input data-staff-perm value="store" type="checkbox" '+(perms.includes("store")?'checked':'')+'>店家可看全店客戶</label></div></div>';}  function renderStaff(){const list=$("staff-list"); const limit=Math.max(1,Number(settingsState.staffLimit||1)); const label=$("staff-limit-label"); if(label) label.textContent=String(limit); list.innerHTML=(settingsState.staffMembers||[]).map(staffCard).join(""); list.querySelectorAll("[data-remove-staff]").forEach(btn=>btn.onclick=()=>{const item=btn.closest("[data-staff-index]");const id=item.querySelector("[data-staff-id]").value;const target=(settingsState.staffMembers||[]).find((staff)=>staff.id===id);if(target)target.enabled=false;renderStaff();}); const status=$("staff-status"); if(status && (settingsState.staffMembers||[]).length>limit) status.textContent="目前已超過方案上限，請刪除多餘人員或升級方案。";}
+  function collectStaff(){return Array.from(document.querySelectorAll("[data-staff-index]")).map((el,i)=>{const id=el.querySelector("[data-staff-id]").value;const original=(settingsState.staffMembers||[]).find((staff)=>staff.id===id)||{};return {id,name:el.querySelector("[data-staff-name]").value,avatarUrl:el.querySelector("[data-staff-avatar]").value,phone:el.querySelector("[data-staff-phone]").value,email:el.querySelector("[data-staff-email]").value,role:el.querySelector("[data-staff-role]").value,enabled:el.querySelector("[data-staff-enabled]").checked,serviceIds:Array.from(el.querySelectorAll("[data-staff-service]:checked")).map(x=>x.value),crmPermissions:Array.from(el.querySelectorAll("[data-staff-perm]:checked")).map(x=>x.value),planBookingStatus:original.planBookingStatus||"active",sortOrder:i};});}  initStore();initRules();renderResources();renderServices();renderStaff();$("service-search")?.addEventListener("input",renderServices);
   $("add-resource").onclick=()=>{const base=(settingsState.resourceTypes||[])[0]||{name:"新場地",quantity:1};settingsState.resourceTypes.push({...base,id:"resource-"+Date.now().toString(36),name:(base.name||"場地")+" 複製"});renderResources();};
   $("save-resources").onclick=()=>{settingsState.resourceTypes=collectResources();postJson("/api/resources",{resourceTypes:settingsState.resourceTypes},"resources-status").then(()=>renderServices());};
-  $("add-service").onclick=()=>{const base=(settingsState.services||[])[0]||{name:"新服務",category:"未分類",pointRedeemLimit:0,prices:[{minutes:60,price:1200}]};settingsState.services.push({...base,id:"service-"+Date.now().toString(36),name:(base.name||"服務")+" 複製"});renderServices();renderStaff();};
+  $("add-service").onclick=()=>{const base=(settingsState.services||[])[0]||{name:"新服務",category:"未分類",pointRedeemLimit:0,prices:[{minutes:60,price:1200}],enabled:true};settingsState.services.push({...base,id:"service-"+Date.now().toString(36),name:(base.name||"服務")+" 複製",enabled:true,sortOrder:settingsState.services.length});renderServices();renderStaff();};
   $("save-services").onclick=()=>{settingsState.services=collectServices();postJson("/api/services",{services:settingsState.services},"services-status").then(()=>renderStaff());};
-  $("add-staff").onclick=()=>{const limit=Math.max(1,Number(settingsState.staffLimit||1)); if((settingsState.staffMembers||[]).length>=limit){$("staff-status").textContent="目前方案最多可建立 "+limit+" 位服務人員";return;}const base=(settingsState.staffMembers||[])[0]||{name:"新服務人員",role:"服務人員",serviceIds:null,crmPermissions:[]};settingsState.staffMembers.push({...base,id:"staff-"+Date.now().toString(36),name:(base.name||"服務人員")+" 複製"});renderStaff();};
+  $("add-staff").onclick=()=>{const limit=Math.max(1,Number(settingsState.staffLimit||1));const activeCount=(settingsState.staffMembers||[]).filter((staff)=>staff.enabled!==false).length;if(activeCount>=limit){$("staff-status").textContent="目前方案最多可啟用 "+limit+" 位服務人員";return;}const base=(settingsState.staffMembers||[])[0]||{name:"新服務人員",role:"服務人員",serviceIds:null,crmPermissions:[],enabled:true};settingsState.staffMembers.push({...base,id:"staff-"+Date.now().toString(36),name:(base.name||"服務人員")+" 複製",enabled:true});renderStaff();};
   $("save-staff").onclick=()=>{settingsState.staffMembers=collectStaff();const limit=Math.max(1,Number(settingsState.staffLimit||1));if(settingsState.staffMembers.length>limit){$("staff-status").textContent="目前已超過方案上限，會由後端確認是否為既有人員保存。";}postJson("/api/staff",{staffMembers:settingsState.staffMembers},"staff-status");};
   </script>`;
   return pageShell("店家設定", body, "settings", tenantId, data.store?.slug || "");
@@ -4307,8 +4310,9 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     affectedFutureBookingCount
   };
   const rawChecks = {
-    storeProfile: Boolean(storeData.name && storeData.phone && storeData.address),
-    businessHours: Boolean(data.businessHours?.open && data.businessHours?.close),
+    storeProfile: Boolean(storeData.name && storeData.slug && storeData.timezone && storeData.address),
+    brand: Boolean(storeData.brandName && /^#[0-9a-f]{6}$/i.test(String(storeData.primaryColor || "")) && (storeData.phone || storeData.email) && storeData.address),
+    businessHours: Boolean(data.businessHours?.complete && !data.businessHours?.invalid),
     services: (data.services || []).some((service) => service.name && Array.isArray(service.prices) && service.prices.length > 0),
     staff: bookableSetupStaff.length > 0,
     staffServiceBinding: boundStaff.length > 0,
@@ -4316,10 +4320,12 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     resources: resourcesCoverServices,
     publicStore: Boolean(normalizeStoreSlug(storeData.slug || "") && access.canAcceptBookings),
     testBooking: testBookingCount > 0,
-    bookingEnabled: storeData.bookingEnabled !== false
+    bookingEnabled: storeData.bookingEnabled !== false,
+    onboarding: storeData.onboardingStatus === "completed"
   };
   const labels = {
     storeProfile: "店家資料",
+    brand: "品牌資料",
     businessHours: "營業時間",
     services: "服務與時長價格",
     staff: "服務人員",
@@ -4328,10 +4334,12 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     resources: "場地資源",
     publicStore: "公開網址",
     testBooking: "測試預約",
-    bookingEnabled: "正式預約開關"
+    bookingEnabled: "正式預約開關",
+    onboarding: "完成店家開店精靈"
   };
   const actions = {
-    storeProfile: "到設定填寫店名、電話、地址與 Logo",
+    storeProfile: "到設定填寫店名、網址、地址與時區",
+    brand: "到設定填寫品牌名稱、主色與聯絡方式",
     businessHours: "到設定調整營業時間",
     services: "建立至少一個服務與時長價格",
     staff: "建立或選擇至少一位可接單服務人員",
@@ -4347,7 +4355,7 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
   const total = Object.keys(rawChecks).length;
   const missingActions = Object.entries(checks).filter(([, item]) => !item.ok).map(([key, item]) => ({ key, label: item.label, action: item.action }));
   const readyForTestBooking = Object.entries(rawChecks).filter(([key]) => key !== "testBooking" && key !== "bookingEnabled").every(([, ok]) => ok) && access.canAcceptBookings;
-  const readyForBooking = readyForTestBooking && rawChecks.testBooking && !staffPlanSelection.required;
+  const readyForBooking = readyForTestBooking && rawChecks.testBooking && rawChecks.bookingEnabled && rawChecks.onboarding && !staffPlanSelection.required;
   return {
     completed,
     total,
@@ -4358,6 +4366,7 @@ async function evaluateTenantSetup(env, tenantId = TENANT_ID) {
     readyForBooking,
     goLiveComplete: readyForBooking && storeData.bookingEnabled !== false,
     bookingEnabled: storeData.bookingEnabled !== false,
+    onboarding: storeData.onboardingStatus === "completed",
     publicPath: storePublicPathForTenant({ id: tenantId, slug: storeData.slug || "" }),
     staffPlanSelection,
     checks,
@@ -4573,21 +4582,17 @@ async function loadBusinessHours(env, tenantId = TENANT_ID) {
   const currentDay = dayHoursForDate(parsed.ok ? parsed.weeklyHours : defaultWeeklyHours(), todayInTaipei());
   return { ...currentDay, weeklyHours: parsed.ok ? parsed.weeklyHours : defaultWeeklyHours(), complete: Boolean(parsed.ok && parsed.complete), invalid: !parsed.ok, hoursError: parsed.ok ? null : parsed, allowOvertimeBooking: Boolean(row.allow_overtime_booking), pointReward: { spendAmount: Number(row.point_spend_amount || 100), rewardPoints: Number(row.point_reward_points || 1) } };
 }
-async function loadServices(env, tenantId = TENANT_ID) {
-  const rows = await env.DB.prepare(`
-    SELECT s.id, s.name, s.category, s.resource_type_id, rt.name AS resource_type_name, s.point_redeem_limit, d.minutes, d.price
-    FROM services s
-    JOIN service_durations d ON d.service_id = s.id AND d.enabled = 1
-    LEFT JOIN resource_types rt ON rt.id = s.resource_type_id AND rt.tenant_id = s.tenant_id
-    WHERE s.tenant_id = ? AND s.enabled = 1
-    ORDER BY s.sort_order, d.minutes
-  `).bind(tenantId).all();
+async function loadServices(env, tenantId = TENANT_ID, options = {}) {
+  const includeDisabled = options.includeDisabled === true;
+  const durationJoin = includeDisabled ? "LEFT JOIN service_durations d ON d.service_id = s.id AND d.tenant_id = s.tenant_id" : "JOIN service_durations d ON d.service_id = s.id AND d.tenant_id = s.tenant_id AND d.enabled = 1";
+  const serviceFilter = includeDisabled ? "" : " AND s.enabled = 1";
+  const rows = await env.DB.prepare("SELECT s.id, s.name, s.category, s.enabled AS service_enabled, s.sort_order, s.resource_type_id, rt.name AS resource_type_name, s.point_redeem_limit, d.minutes, d.price, d.enabled AS duration_enabled FROM services s " + durationJoin + " LEFT JOIN resource_types rt ON rt.id = s.resource_type_id AND rt.tenant_id = s.tenant_id WHERE s.tenant_id = ?" + serviceFilter + " ORDER BY s.sort_order, s.name, d.minutes").bind(tenantId).all();
   const grouped = new Map();
   for (const row of rows.results || []) {
-    if (!grouped.has(row.id)) grouped.set(row.id, { id: row.id, name: row.name, category: row.category, resourceTypeId: row.resource_type_id || "", resourceTypeName: row.resource_type_name || "未指定資源", pointRedeemLimit: Number(row.point_redeem_limit || 0), prices: [] });
-    grouped.get(row.id).prices.push({ minutes: row.minutes, price: row.price });
+    if (!grouped.has(row.id)) grouped.set(row.id, { id: row.id, name: row.name, category: row.category || "", enabled: Number(row.service_enabled || 0) === 1, sortOrder: Number(row.sort_order || 0), resourceTypeId: row.resource_type_id || "", resourceTypeName: row.resource_type_name || "未指定資源", pointRedeemLimit: Number(row.point_redeem_limit || 0), prices: [] });
+    if (row.minutes !== null && row.minutes !== undefined) grouped.get(row.id).prices.push({ minutes: Number(row.minutes), price: Number(row.price || 0), enabled: Number(row.duration_enabled ?? 1) === 1 });
   }
-  return grouped.size ? Array.from(grouped.values()) : (isDefaultDemoTenant(env, tenantId) ? services : []);
+  return grouped.size ? Array.from(grouped.values()) : (isDefaultDemoTenant(env, tenantId) ? services.map((item, index) => ({ ...item, enabled: true, sortOrder: index })) : []);
 }
 
 async function loadResourceTypes(env, tenantId = TENANT_ID) {
@@ -4595,9 +4600,11 @@ async function loadResourceTypes(env, tenantId = TENANT_ID) {
   return (rows.results || []).length ? rows.results.map((row) => ({ id: row.id, name: row.name, quantity: Number(row.quantity || 1) })) : (isDefaultDemoTenant(env, tenantId) ? resourceTypes : []);
 }
 
-async function loadStaffMembers(env, tenantId = TENANT_ID) {
-  const rows = await env.DB.prepare("SELECT id, name, role, service_ids, crm_permissions, COALESCE(plan_booking_status, 'active') AS plan_booking_status FROM staff_members WHERE tenant_id = ? AND enabled = 1 ORDER BY sort_order, name").bind(tenantId).all();
-  return (rows.results || []).length ? rows.results.map((row) => ({ id: row.id, name: row.name, role: row.role || "", serviceIds: parseServiceIds(row.service_ids), crmPermissions: parseServiceIds(row.crm_permissions) || [], planBookingStatus: normalizeStaffPlanBookingStatus(row.plan_booking_status) })) : (isDefaultDemoTenant(env, tenantId) ? staffMembers.map((staff) => ({ ...staff, planBookingStatus: "active" })) : []);
+async function loadStaffMembers(env, tenantId = TENANT_ID, options = {}) {
+  const includeDisabled = options.includeDisabled === true;
+  const filter = includeDisabled ? "" : " AND enabled = 1";
+  const rows = await env.DB.prepare("SELECT id, name, avatar_url, phone, email, role, enabled, sort_order, service_ids, crm_permissions, COALESCE(plan_booking_status, 'active') AS plan_booking_status FROM staff_members WHERE tenant_id = ?" + filter + " ORDER BY sort_order, name").bind(tenantId).all();
+  return (rows.results || []).length ? rows.results.map((row) => ({ id: row.id, name: row.name, avatarUrl: row.avatar_url || "", phone: row.phone || "", email: row.email || "", role: row.role || "", enabled: Number(row.enabled || 0) === 1, sortOrder: Number(row.sort_order || 0), serviceIds: parseServiceIds(row.service_ids), crmPermissions: parseServiceIds(row.crm_permissions) || [], planBookingStatus: normalizeStaffPlanBookingStatus(row.plan_booking_status) })) : (isDefaultDemoTenant(env, tenantId) ? staffMembers.map((staff, index) => ({ ...staff, avatarUrl: staff.avatarUrl || "", phone: staff.phone || "", email: staff.email || "", enabled: true, sortOrder: index, planBookingStatus: "active" })) : []);
 }
 
 async function loadBookings(env, date, tenantId) {
@@ -4870,13 +4877,21 @@ async function saveStaffMembers(request, env, tenantId = TENANT_ID) {
     const incoming = Array.isArray(payload.staffMembers) ? payload.staffMembers : [];
     const cleaned = incoming.map((staff, index) => {
       const name = String(staff.name || "").trim();
-      const id = safeServiceId(staff.id || `${tenantId}-${name}` || crypto.randomUUID());
-      const serviceIds = Array.isArray(staff.serviceIds) ? staff.serviceIds.map((id) => safeServiceId(id)).filter(Boolean) : null;
+      const id = safeServiceId(staff.id || (tenantId + "-" + name) || crypto.randomUUID());
+      const serviceIds = Array.isArray(staff.serviceIds) ? Array.from(new Set(staff.serviceIds.map((id) => safeServiceId(id)).filter(Boolean))) : null;
       const crmPermissions = Array.isArray(staff.crmPermissions) ? staff.crmPermissions.map((item) => String(item || "").trim()).filter((item) => item === "staff" || item === "store") : [];
       const hasPlanStatus = Object.prototype.hasOwnProperty.call(staff, "planBookingStatus") || Object.prototype.hasOwnProperty.call(staff, "plan_booking_status");
-      return { id, name, role: clean(staff.role), serviceIds, crmPermissions, sortOrder: Number(staff.sortOrder ?? index), planBookingStatus: hasPlanStatus ? normalizeStaffPlanBookingStatus(staff.planBookingStatus || staff.plan_booking_status) : null };
+      const enabled = staff.enabled === undefined ? true : (staff.enabled === true || staff.enabled === 1 || staff.enabled === "1");
+      const phone = clean(staff.phone);
+      const email = normalizeMerchantEmail(staff.email);
+      const avatarUrl = clean(staff.avatarUrl || staff.avatar_url);
+      return { id, name, avatarUrl, phone, email, role: clean(staff.role), enabled, serviceIds, crmPermissions, sortOrder: Number(staff.sortOrder ?? index), planBookingStatus: hasPlanStatus ? normalizeStaffPlanBookingStatus(staff.planBookingStatus || staff.plan_booking_status) : null };
     }).filter((staff) => staff.name);
-    if (!cleaned.length) return Response.json({ ok: false, error: "at least one staff member is required" }, { status: 400, headers: jsonHeaders });
+    if (!cleaned.length) return Response.json({ ok: false, error: { code: "STAFF_NAME_REQUIRED", message: "至少需要一位服務人員" } }, { status: 400, headers: jsonHeaders });
+    const invalidEmail = incoming.some((item) => String(item.email || "").trim() && !normalizeMerchantEmail(item.email));
+    if (invalidEmail) return Response.json({ ok: false, error: { code: "STAFF_EMAIL_INVALID", message: "服務人員 Email 格式無效" } }, { status: 400, headers: jsonHeaders });
+    const invalidAvatar = cleaned.find((staff) => staff.avatarUrl && !((/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(staff.avatarUrl) && staff.avatarUrl.length <= 400000) || /^https:\/\/[^\s]+$/i.test(staff.avatarUrl)));
+    if (invalidAvatar) return Response.json({ ok: false, error: { code: "STAFF_AVATAR_INVALID", message: "Avatar 必須使用 HTTPS URL 或安全圖片資料" } }, { status: 400, headers: jsonHeaders });
     const serviceRows = await env.DB.prepare("SELECT id FROM services WHERE tenant_id = ? AND enabled = 1").bind(tenantId).all();
     const validServiceIds = new Set((serviceRows.results || []).map((row) => String(row.id)));
     if (!validServiceIds.size) return Response.json({ ok: false, error: { code: "SERVICE_REQUIRED_BEFORE_STAFF", message: "請先建立至少一個服務項目，再新增服務人員" } }, { status: 409, headers: jsonHeaders });
@@ -4886,19 +4901,19 @@ async function saveStaffMembers(request, env, tenantId = TENANT_ID) {
     const existingRows = await env.DB.prepare("SELECT id, enabled, COALESCE(plan_booking_status, 'active') AS plan_booking_status FROM staff_members WHERE tenant_id = ?").bind(tenantId).all();
     const existingStatus = new Map((existingRows.results || []).map((row) => [String(row.id), normalizeStaffPlanBookingStatus(row.plan_booking_status)]));
     const existingEnabledIds = new Set((existingRows.results || []).filter((row) => Number(row.enabled || 0) === 1).map((row) => String(row.id)));
-    const onlyCurrentEnabledStaff = cleaned.every((staff) => existingEnabledIds.has(staff.id)) && cleaned.length <= existingEnabledIds.size;
-    if (cleaned.length > limit && !onlyCurrentEnabledStaff) return Response.json({ ok: false, error: { code: "STAFF_LIMIT_REACHED", message: `目前方案最多可建立 ${limit} 位服務人員` }, staffLimit: limit, requested: cleaned.length }, { status: 409, headers: jsonHeaders });
+    const activeCount = cleaned.filter((staff) => staff.enabled).length;
+    const onlyCurrentEnabledStaff = cleaned.filter((staff) => staff.enabled).every((staff) => existingEnabledIds.has(staff.id)) && activeCount <= existingEnabledIds.size;
+    if (activeCount > limit && !onlyCurrentEnabledStaff) return Response.json({ ok: false, error: { code: "STAFF_LIMIT_REACHED", message: "目前方案最多可啟用 " + limit + " 位服務人員" }, staffLimit: limit, requested: activeCount }, { status: 409, headers: jsonHeaders });
     await env.DB.prepare("UPDATE staff_members SET enabled = 0, updated_at = datetime('now') WHERE tenant_id = ?").bind(tenantId).run();
     for (const staff of cleaned) {
       const planBookingStatus = staff.planBookingStatus || existingStatus.get(staff.id) || "active";
-      await env.DB.prepare("INSERT INTO staff_members (id, tenant_id, name, role, service_ids, crm_permissions, plan_booking_status, enabled, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now')) ON CONFLICT(id) DO UPDATE SET name = excluded.name, role = excluded.role, service_ids = excluded.service_ids, crm_permissions = excluded.crm_permissions, plan_booking_status = excluded.plan_booking_status, enabled = 1, sort_order = excluded.sort_order, updated_at = datetime('now')").bind(staff.id, tenantId, staff.name, staff.role, JSON.stringify(staff.serviceIds || []), JSON.stringify(staff.crmPermissions || []), planBookingStatus, staff.sortOrder).run();
+      await env.DB.prepare("INSERT INTO staff_members (id, tenant_id, name, avatar_url, phone, email, role, service_ids, crm_permissions, plan_booking_status, enabled, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(id) DO UPDATE SET name = excluded.name, avatar_url = excluded.avatar_url, phone = excluded.phone, email = excluded.email, role = excluded.role, service_ids = excluded.service_ids, crm_permissions = excluded.crm_permissions, plan_booking_status = excluded.plan_booking_status, enabled = excluded.enabled, sort_order = excluded.sort_order, updated_at = datetime('now')").bind(staff.id, tenantId, staff.name, staff.avatarUrl || null, staff.phone || null, staff.email || null, staff.role, JSON.stringify(staff.serviceIds || []), JSON.stringify(staff.crmPermissions || []), planBookingStatus, staff.enabled ? 1 : 0, staff.sortOrder).run();
     }
-    return Response.json({ ok: true, staffMembers: await loadStaffMembers(env, tenantId) }, { headers: jsonHeaders });
+    return Response.json({ ok: true, staffMembers: await loadStaffMembers(env, tenantId, { includeDisabled: true }) }, { headers: jsonHeaders });
   } catch (error) {
-    return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
+    return Response.json({ ok: false, error: { code: "STAFF_SAVE_FAILED", message: error.message } }, { status: 500, headers: jsonHeaders });
   }
 }
-
 
 async function saveStaffPlanSelection(request, env, tenantId = TENANT_ID) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
@@ -4934,39 +4949,42 @@ async function saveServices(request, env, tenantId = TENANT_ID) {
     const cleaned = incoming.map((service, index) => {
       const name = String(service.name || "").trim();
       const category = clean(service.category);
-      const id = safeServiceId(service.id || `${tenantId}-${name}` || crypto.randomUUID());
-      const prices = Array.isArray(service.prices) ? service.prices.map((item) => ({ minutes: Number(item.minutes), price: Number(item.price) })).filter((item) => item.minutes >= 15 && item.minutes <= 480 && item.price >= 0) : [];
+      const id = safeServiceId(service.id || (tenantId + "-" + name) || crypto.randomUUID());
+      const prices = Array.isArray(service.prices) ? service.prices.map((item) => ({ minutes: Number(item.minutes), price: Number(item.price) })).filter((item) => Number.isFinite(item.minutes) && item.minutes > 0 && Number.isFinite(item.price) && item.price >= 0) : [];
+      const enabled = service.enabled === undefined ? true : (service.enabled === true || service.enabled === 1 || service.enabled === "1");
       const pointRedeemLimit = normalizeNonNegativeInt(service.pointRedeemLimit, 0);
       const resourceTypeId = clean(service.resourceTypeId);
-      return { id, name, category, resourceTypeId, pointRedeemLimit, sortOrder: Number(service.sortOrder ?? index), prices };
-    }).filter((service) => service.name && service.prices.length);
-    if (!cleaned.length) return Response.json({ ok: false, error: "at least one service is required" }, { status: 400, headers: jsonHeaders });
+      return { id, name, category, enabled, resourceTypeId, pointRedeemLimit, sortOrder: Number(service.sortOrder ?? index), prices };
+    });
+    const invalid = cleaned.find((service) => !service.name || !service.prices.length);
+    if (invalid) return Response.json({ ok: false, error: { code: "SERVICE_FIELDS_INVALID", message: "服務名稱必填，且至少需要一組大於 0 分鐘、價格不可為負數的時長價格" } }, { status: 400, headers: jsonHeaders });
     const resourceIds = Array.from(new Set(cleaned.map((service) => service.resourceTypeId).filter(Boolean)));
     if (resourceIds.length) {
       const placeholders = resourceIds.map(() => "?").join(",");
-      const rows = await env.DB.prepare(`SELECT id FROM resource_types WHERE tenant_id = ? AND enabled = 1 AND id IN (${placeholders})`).bind(tenantId, ...resourceIds).all();
+      const rows = await env.DB.prepare("SELECT id FROM resource_types WHERE tenant_id = ? AND enabled = 1 AND id IN (" + placeholders + ")").bind(tenantId, ...resourceIds).all();
       const validResources = new Set((rows.results || []).map((row) => String(row.id)));
       if (resourceIds.some((id) => !validResources.has(id))) return Response.json({ ok: false, error: { code: "SERVICE_RESOURCE_INVALID", message: "服務綁定了不存在或不屬於本店的資源" } }, { status: 400, headers: jsonHeaders });
     }
-    const incomingIds = new Set(cleaned.map((service) => service.id));
     const existingServices = await env.DB.prepare("SELECT id FROM services WHERE tenant_id = ? AND enabled = 1").bind(tenantId).all();
-    const disablingIds = (existingServices.results || []).map((row) => String(row.id)).filter((id) => !incomingIds.has(id));
+    const incomingById = new Map(cleaned.map((service) => [service.id, service]));
+    const disablingIds = (existingServices.results || []).map((row) => String(row.id)).filter((id) => !incomingById.has(id) || incomingById.get(id).enabled === false);
     if (disablingIds.length) {
       const placeholders = disablingIds.map(() => "?").join(",");
-      const futureRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM bookings WHERE tenant_id = ? AND status != 'cancelled' AND booking_date >= ? AND service_id IN (${placeholders})`).bind(tenantId, todayInTaipei(), ...disablingIds).first();
+      const futureRow = await env.DB.prepare("SELECT COUNT(*) AS count FROM bookings WHERE tenant_id = ? AND status != 'cancelled' AND booking_date >= ? AND service_id IN (" + placeholders + ")").bind(tenantId, todayInTaipei(), ...disablingIds).first();
       if (Number(futureRow?.count || 0) > 0) return Response.json({ ok: false, error: { code: "SERVICE_HAS_FUTURE_BOOKINGS", message: "服務已有未來預約，請先人工處理預約後再停用" } }, { status: 409, headers: jsonHeaders });
     }
     await env.DB.prepare("UPDATE services SET enabled = 0, updated_at = datetime('now') WHERE tenant_id = ?").bind(tenantId).run();
     await env.DB.prepare("UPDATE service_durations SET enabled = 0, updated_at = datetime('now') WHERE tenant_id = ?").bind(tenantId).run();
     for (const service of cleaned) {
-      await env.DB.prepare("INSERT INTO services (id, tenant_id, name, category, resource_type_id, point_redeem_limit, enabled, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now')) ON CONFLICT(id) DO UPDATE SET name = excluded.name, category = excluded.category, resource_type_id = excluded.resource_type_id, point_redeem_limit = excluded.point_redeem_limit, enabled = 1, sort_order = excluded.sort_order, updated_at = datetime('now')").bind(service.id, tenantId, service.name, service.category, service.resourceTypeId, service.pointRedeemLimit, service.sortOrder).run();
+      const serviceEnabled = service.enabled ? 1 : 0;
+      await env.DB.prepare("INSERT INTO services (id, tenant_id, name, category, resource_type_id, point_redeem_limit, enabled, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(id) DO UPDATE SET name = excluded.name, category = excluded.category, resource_type_id = excluded.resource_type_id, point_redeem_limit = excluded.point_redeem_limit, enabled = excluded.enabled, sort_order = excluded.sort_order, updated_at = datetime('now')").bind(service.id, tenantId, service.name, service.category, service.resourceTypeId, service.pointRedeemLimit, serviceEnabled, service.sortOrder).run();
       for (const price of service.prices) {
-        await env.DB.prepare("INSERT INTO service_durations (id, tenant_id, service_id, minutes, price, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, datetime('now'), datetime('now')) ON CONFLICT(service_id, minutes) DO UPDATE SET price = excluded.price, enabled = 1, updated_at = datetime('now')").bind(`${service.id}-${price.minutes}`, tenantId, service.id, price.minutes, price.price).run();
+        await env.DB.prepare("INSERT INTO service_durations (id, tenant_id, service_id, minutes, price, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now')) ON CONFLICT(service_id, minutes) DO UPDATE SET price = excluded.price, enabled = excluded.enabled, updated_at = datetime('now')").bind(service.id + "-" + price.minutes, tenantId, service.id, price.minutes, price.price, serviceEnabled).run();
       }
     }
-    return Response.json({ ok: true, services: await loadServices(env, tenantId) }, { headers: jsonHeaders });
+    return Response.json({ ok: true, services: await loadServices(env, tenantId, { includeDisabled: true }) }, { headers: jsonHeaders });
   } catch (error) {
-    return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
+    return Response.json({ ok: false, error: { code: "SERVICE_SAVE_FAILED", message: error.message } }, { status: 500, headers: jsonHeaders });
   }
 }
 

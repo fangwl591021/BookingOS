@@ -225,3 +225,12 @@
 - business_settings.weekly_hours_json is the sole runtime business-hours source; old daily columns are retained as historical schema only and are no longer read or written.
 - Availability, booking creation, rescheduling, and booking enablement are blocked until onboarding is completed.
 - Local parser tests and the existing 12-check smoke suite pass before remote migration.
+
+## Sprint 2 Operations Foundation 2026-07-12
+
+- Added Service CRUD improvements using existing services and service_durations tables.
+- Added Staff CRUD profile fields through migration 0020: avatar_url, phone, and email.
+- Added enabled/disabled management, Service search, Staff-Service mapping, and tenant-scoped validation.
+- Merchant dashboard now shows Booking Not Ready with missing items until readiness conditions are complete.
+- Disabled Services and Staff are excluded from public availability and booking flows.
+- Post-deploy smoke passed 12/12.

@@ -9,7 +9,8 @@
     "check": "node --check src/index.js",
     "smoke": "node scripts/smoke-test.mjs",
     "test:platform-tenant-actions": "node scripts/platform-tenant-actions-test.mjs",
-    "test:weekly-hours": "node scripts/weekly-hours-test.mjs"
+    "test:weekly-hours": "node scripts/weekly-hours-test.mjs",
+    "test:operations": "node scripts/operations-foundation-test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"

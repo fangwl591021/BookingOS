@@ -76,3 +76,7 @@ Write APIs include template apply, store profile, hours, services, staff, resour
 ## Sprint 1 Clean Foundation
 
 Sprint 1 replaces the old single daily-hours editor with the weekly onboarding model documented in docs/STORE_ONBOARDING_FOUNDATION.md. weekly_hours_json is now the only runtime business-hours source. The onboarding entry redirects draft tenants to the wizard; completed tenants continue to the normal merchant dashboard. Service, Staff, LINE, and Promotion remain placeholders in this sprint.
+
+## Sprint 2 Operations Boundary
+
+Service and Staff management are performed from the existing Settings surface. The onboarding wizard keeps Service and Staff as placeholders. Booking Readiness is evaluated by the Merchant dashboard after onboarding and prevents the normal operations dashboard from appearing until required operational data is complete.

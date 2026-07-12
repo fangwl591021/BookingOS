@@ -1,3 +1,17 @@
+## 2026-07-12 - Sprint 2 Service and Staff Foundation
+
+### Added
+
+- Added migration 0020_staff_profile_fields.sql for nullable Staff avatar URL, phone, and email.
+- Added focused Operations contract tests.
+- Added Service search and enabled-state management.
+- Added Staff profile fields, enabled-state management, and Staff-Service mapping management.
+- Added Booking Readiness missing-item dashboard gate.
+
+### Changed
+
+- Public availability and booking flows continue to use only enabled Services and bookable Staff.
+- Service and Staff management APIs remain tenant-scoped.
 ## 2026-07-12 - Sprint 1 Store Onboarding Foundation
 
 ### Added
