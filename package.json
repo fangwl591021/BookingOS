@@ -11,9 +11,13 @@
     "test:platform-tenant-actions": "node scripts/platform-tenant-actions-test.mjs",
     "test:weekly-hours": "node scripts/weekly-hours-test.mjs",
     "test:operations": "node scripts/operations-foundation-test.mjs",
-    "test:line-engagement": "node scripts/line-engagement-test.mjs"
+    "test:line-engagement": "node scripts/line-engagement-test.mjs",
+    "test:web-push": "node scripts/web-push-test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
   }
 }
