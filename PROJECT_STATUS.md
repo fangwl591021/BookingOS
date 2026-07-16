@@ -250,3 +250,14 @@
 - Legacy retained: customer/guest cancellation, guest phone fallback, booking create, reschedule, reassign, B4 non-cancel transitions, `checked_in -> completed`, idempotency persistence, LINE/Web Push implementation, and deployment.
 - Compatibility: cancellation command receives adapters for existing `rollbackBookingCustomerPoints()` and `appendBookingEvent()` to preserve update -> rollback -> event -> notification order.
 - Schema / Migration / Remote D1 / Deploy: not performed.
+
+## Sprint B6.1 Cancellation Current-State Tests & Contract Freeze - 2026-07-16
+
+- Branch: `refactor/b6-1-cancellation-current-state-contract`
+- Scope: Customer/Guest cancellation current-state tests and documentation only.
+- Frozen contracts: Customer Session cancel, Guest `bookingId + phone` fallback, tenant mismatch fallback behavior, repeated cancel behavior, current absence of `expected_updated_at`, current absence of original-status SQL predicate, and current Customer/Guest order `update -> event/notification -> points`.
+- Merchant B5 cancellation remains covered as regression: `update -> rollbackBookingCustomerPoints() -> appendBookingEvent()`.
+- Product decision recorded: Guest cancellation will become token-only in later B6.x phases; phone fallback remains transitional only.
+- Runtime behavior / Schema / Migration / Remote D1 / Deploy: not changed or performed.
+
+- B6.2 blocker: Customer Session tenant mismatch currently falls through to Guest phone fallback when payload phone matches; B6.2 must close this before command-boundary adoption.

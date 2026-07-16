@@ -1,3 +1,15 @@
+## 2026-07-16 - Sprint B6.1 Cancellation Current-State Contract Freeze
+
+### Added
+
+- Added focused Customer/Guest cancellation current-state contract tests.
+- Documented transitional Guest `bookingId + phone` fallback and future token-only decision.
+
+### Safety
+
+- No runtime cancellation behavior change.
+- No schema, migration, binding, secret, remote D1 write, LINE/Web Push implementation change, or production deployment.
+
 ## 2026-07-16 - Sprint B5 Merchant Cancellation Command Boundary
 
 ### Changed
