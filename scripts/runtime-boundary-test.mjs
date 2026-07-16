@@ -80,9 +80,9 @@ async function responseJson(response) {
   const runtime = createRuntime({ DB: db, PUSH_KV: {}, RELEASE_SHA: "test-sha", DATABASE_ID: "should-not-leak" });
   await runtime.repositories.serviceRepository.listActive("tenant-a");
   await runtime.repositories.staffRepository.listActive("tenant-a");
-  assert.match(db.calls[0].sql, /WHERE tenant_id = \?/);
+  assert.match(db.calls[0].sql, /WHERE (?:\w+\.)?tenant_id = \?/);
   assert.deepEqual(db.calls[0].binds, ["tenant-a"]);
-  assert.match(db.calls[1].sql, /WHERE tenant_id = \?/);
+  assert.match(db.calls[1].sql, /WHERE (?:\w+\.)?tenant_id = \?/);
   assert.deepEqual(db.calls[1].binds, ["tenant-a"]);
   await assert.rejects(() => runtime.repositories.serviceRepository.listActive(""), /TENANT_REQUIRED/);
 }
