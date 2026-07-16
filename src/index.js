@@ -1,6 +1,7 @@
 import { WEEKDAY_KEYS, WEEKDAY_LABELS, defaultWeeklyHours, normalizeWeeklyHours, validateWeeklyHours, hasCompleteWeeklyHours, weekdayKeyForDate, dayHoursForDate } from "./weekly-hours.js";
 import { publicKeyResponse, subscribePush, unsubscribePush, pushStatus, sendWebPushToActor } from "./web-push.js";
 import { createRuntime } from "./runtime/composition-root.js";
+import { createIdempotencyEnvelope } from "./runtime/idempotency-envelope.js";
 import { createTenantContext, requireTenantContext } from "./runtime/tenant-context.js";
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -493,7 +494,7 @@ export default {
       return merchantBookingsResponse(request, env, activeTenantId, runtime);
     }
     if (merchantBookingAction && request.method === "POST") {
-      return merchantBookingActionResponse(request, env, activeTenantId, merchantBookingAction);
+      return merchantBookingActionResponse(request, env, activeTenantId, merchantBookingAction, runtime);
     }
     if (url.pathname === "/api/merchant/onboarding/disable-booking" && request.method === "POST") {
       return setTenantBookingEnabled(request, env, activeTenantId, false);
@@ -5320,9 +5321,50 @@ function canRunMerchantBookingAction(access = {}, action = "", payload = {}) {
   }
   return false;
 }
-async function merchantBookingActionResponse(request, env, tenantId, route) {
+function bookingCommandContext(request, runtime, tenantId) {
+  const url = new URL(request.url);
+  const baseContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "merchant_session" }) });
+  return {
+    ...baseContext,
+    tenantId,
+    authContext: { actor: { type: "merchant", id: merchantActorIdFromRequest(request), tenantId } },
+    actorId: merchantActorIdFromRequest(request),
+    idempotencyEnvelope: createIdempotencyEnvelope(request, { requestId: baseContext.requestId, source: "merchant_booking_command" })
+  };
+}
+
+function merchantBookingCommandErrorResponse(result) {
+  return merchantBookingError(result.code, result.message, result.status || 400);
+}
+
+async function merchantBookingActionResponse(request, env, tenantId, route, runtime = null) {
   if (!env.DB) return merchantBookingError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
   const payload = await request.json().catch(() => ({}));
+  const commandService = runtime?.domains?.bookingCommandService || runtime?.bookingCommandService;
+  if (commandService && ["note", "customer", "events"].includes(route.action)) {
+    const context = bookingCommandContext(request, runtime, tenantId);
+    const bookingResult = await commandService.getScopedBooking(context, route.bookingId);
+    if (!bookingResult.ok) return merchantBookingCommandErrorResponse(bookingResult);
+    const booking = bookingResult.booking;
+    if (payload.expected_updated_at && String(payload.expected_updated_at) !== String(booking.updated_at || "")) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
+    const tenantAccess = await merchantBookingTenantAccess(env, tenantId);
+    if (!canRunMerchantBookingAction(tenantAccess, route.action, payload)) return merchantBookingError("TENANT_BOOKING_ACTION_READ_ONLY", "目前方案狀態不允許執行這項預約操作", 403);
+    if (route.action === "note") {
+      const result = await commandService.updateMerchantNote(context, { bookingId: route.bookingId, note: payload.note, expectedUpdatedAt: bookingExpectedUpdatedAt(payload) });
+      if (!result.ok) return merchantBookingCommandErrorResponse(result);
+      return Response.json({ ok: true, booking: bookingRowToOperation(result.booking) }, { headers: jsonHeaders });
+    }
+    if (route.action === "customer") {
+      const result = await commandService.updateBookingCustomer(context, { bookingId: route.bookingId, customerName: payload.customer_name || payload.customerName, customerPhone: payload.customer_phone || payload.customerPhone, expectedUpdatedAt: bookingExpectedUpdatedAt(payload) });
+      if (!result.ok) return merchantBookingCommandErrorResponse(result);
+      return Response.json({ ok: true, booking: bookingRowToOperation(result.booking) }, { headers: jsonHeaders });
+    }
+    if (route.action === "events") {
+      const result = await commandService.listBookingEvents(context, route.bookingId);
+      if (!result.ok) return merchantBookingCommandErrorResponse(result);
+      return Response.json({ ok: true, events: result.events }, { headers: jsonHeaders });
+    }
+  }
   const booking = await loadMerchantBookingById(env, tenantId, route.bookingId);
   if (!booking) return merchantBookingError("BOOKING_NOT_FOUND", "Booking not found", 404);
   if (payload.expected_updated_at && String(payload.expected_updated_at) !== String(booking.updated_at || "")) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
@@ -5336,7 +5378,6 @@ async function merchantBookingActionResponse(request, env, tenantId, route) {
   if (route.action === "events") return merchantBookingEventsResponse(env, tenantId, booking.id);
   return merchantBookingError("BOOKING_ACTION_NOT_FOUND", "Booking action not found", 404);
 }
-
 async function rollbackBookingCustomerPoints(env, tenantId, bookingId, customerId) {
   if (!customerId) return;
   await env.DB.prepare("UPDATE customers SET total_bookings = CASE WHEN total_bookings > 0 THEN total_bookings - 1 ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, customerId).run();

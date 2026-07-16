@@ -14,7 +14,8 @@
     "test:line-engagement": "node scripts/line-engagement-test.mjs",
     "test:web-push": "node scripts/web-push-test.mjs",
     "test:runtime-boundary": "node scripts/runtime-boundary-test.mjs",
-    "test:domain-boundary": "node scripts/domain-boundary-test.mjs"
+    "test:domain-boundary": "node scripts/domain-boundary-test.mjs",
+    "test:booking-command-boundary": "node scripts/booking-command-boundary-test.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.102.0"
