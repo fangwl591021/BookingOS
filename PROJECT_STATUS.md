@@ -234,3 +234,10 @@
 - Merchant dashboard now shows Booking Not Ready with missing items until readiness conditions are complete.
 - Disabled Services and Staff are excluded from public availability and booking flows.
 - Post-deploy smoke passed 12/12.
+## Sprint B4 Non-Cancel Booking Status Command Boundary - 2026-07-16
+
+- 分支：`refactor/b4-non-cancel-booking-status-command-boundary`
+- 範圍：僅將 `pending -> confirmed`、`confirmed -> checked_in`、`checked_in -> in_service`、`in_service -> completed`、`confirmed -> no_show` 接入 Booking Command Service。
+- Legacy 保留：所有取消、取消點數回沖、`checked_in -> completed`、建立預約、改期、改派、Idempotency persistence、LINE/Web Push 實作。
+- 通知相容：`pending -> confirmed` 仍透過 legacy `appendBookingEvent()` adapter 先寫入 event，再維持既有 LINE confirmed 與 Web Push confirmed path；通知失敗不影響成功 response。
+- Schema / Migration / Remote D1 / Deploy：未執行。

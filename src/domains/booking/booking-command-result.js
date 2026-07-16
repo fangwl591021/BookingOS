@@ -5,8 +5,10 @@ export const BOOKING_COMMAND_ERRORS = Object.freeze({
   VALIDATION_FAILED: { status: 400, message: "Validation failed" },
   PERMISSION_DENIED: { status: 403, message: "Permission denied" },
   TENANT_SCOPE_MISMATCH: { status: 403, message: "Tenant scope mismatch" },
+  INVALID_BOOKING_STATUS_TRANSITION: { status: 409, message: "此預約狀態無法執行這項操作" },
   BOOKING_NOTE_UPDATE_FAILED: { status: 500, message: "Unable to update booking note" },
   BOOKING_CUSTOMER_UPDATE_FAILED: { status: 500, message: "Unable to update booking customer" },
+  BOOKING_STATUS_UPDATE_FAILED: { status: 500, message: "Unable to update booking status" },
   BOOKING_EVENT_READ_FAILED: { status: 500, message: "Unable to load booking events" }
 });
 

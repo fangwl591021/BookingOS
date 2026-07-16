@@ -3,6 +3,7 @@ import { publicKeyResponse, subscribePush, unsubscribePush, pushStatus, sendWebP
 import { createRuntime } from "./runtime/composition-root.js";
 import { createIdempotencyEnvelope } from "./runtime/idempotency-envelope.js";
 import { createTenantContext, requireTenantContext } from "./runtime/tenant-context.js";
+import { isB4BookingStatusTransition } from "./domains/booking/booking-command-validation.js";
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
@@ -5341,7 +5342,7 @@ async function merchantBookingActionResponse(request, env, tenantId, route, runt
   if (!env.DB) return merchantBookingError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
   const payload = await request.json().catch(() => ({}));
   const commandService = runtime?.domains?.bookingCommandService || runtime?.bookingCommandService;
-  if (commandService && ["note", "customer", "events"].includes(route.action)) {
+  if (commandService && ["note", "customer", "events", "status"].includes(route.action)) {
     const context = bookingCommandContext(request, runtime, tenantId);
     const bookingResult = await commandService.getScopedBooking(context, route.bookingId);
     if (!bookingResult.ok) return merchantBookingCommandErrorResponse(bookingResult);
@@ -5349,6 +5350,23 @@ async function merchantBookingActionResponse(request, env, tenantId, route, runt
     if (payload.expected_updated_at && String(payload.expected_updated_at) !== String(booking.updated_at || "")) return merchantBookingError("BOOKING_CONFLICT", "此預約已被其他人更新，請重新整理", 409);
     const tenantAccess = await merchantBookingTenantAccess(env, tenantId);
     if (!canRunMerchantBookingAction(tenantAccess, route.action, payload)) return merchantBookingError("TENANT_BOOKING_ACTION_READ_ONLY", "目前方案狀態不允許執行這項預約操作", 403);
+    if (route.action === "status") {
+      const fromStatus = normalizeBookingStatus(booking.status);
+      const toStatus = normalizeBookingStatus(payload.status);
+      if (isB4BookingStatusTransition(fromStatus, toStatus)) {
+        const result = await commandService.updateBookingStatus(context, {
+          bookingId: route.bookingId,
+          fromStatus,
+          status: payload.status,
+          reason: payload.reason,
+          expectedUpdatedAt: bookingExpectedUpdatedAt(payload),
+          appendStatusEvent: (event) => appendBookingEvent(env, event)
+        });
+        if (!result.ok) return merchantBookingCommandErrorResponse(result);
+        return Response.json({ ok: true, booking: bookingRowToOperation(result.booking) }, { headers: jsonHeaders });
+      }
+      return updateMerchantBookingStatus(request, env, tenantId, booking, payload);
+    }
     if (route.action === "note") {
       const result = await commandService.updateMerchantNote(context, { bookingId: route.bookingId, note: payload.note, expectedUpdatedAt: bookingExpectedUpdatedAt(payload) });
       if (!result.ok) return merchantBookingCommandErrorResponse(result);

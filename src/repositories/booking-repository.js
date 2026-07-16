@@ -44,6 +44,18 @@ export function createBookingRepository(db) {
         .bind(input.customerName || "", input.customerPhone || null, input.updatedAt, scopedTenantId, bookingId, ...(expectedUpdatedAt ? [expectedUpdatedAt] : []))
         .run();
     },
+    async updateStatus(tenantId, bookingId, input = {}) {
+      const scopedTenantId = requireTenantId(tenantId);
+      if (!db || !bookingId) return { meta: { changes: 0 } };
+      const expectedUpdatedAt = String(input.expectedUpdatedAt || "").trim();
+      const setParts = ["status = ?", "updated_at = ?"];
+      if (input.toStatus === "checked_in") setParts.push("checked_in_at = COALESCE(checked_in_at, datetime('now'))");
+      if (input.toStatus === "in_service") setParts.push("service_started_at = COALESCE(service_started_at, datetime('now'))");
+      if (input.toStatus === "completed") setParts.push("completed_at = COALESCE(completed_at, datetime('now'))");
+      return db.prepare(`UPDATE bookings SET ${setParts.join(", ")} WHERE tenant_id = ? AND id = ? AND status = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`)
+        .bind(input.toStatus, input.updatedAt, scopedTenantId, bookingId, input.fromStatus, ...(expectedUpdatedAt ? [expectedUpdatedAt] : []))
+        .run();
+    },
     async listByDateRange(tenantId, range = {}) {
       const scopedTenantId = requireTenantId(tenantId);
       if (!db) return [];

@@ -1,3 +1,14 @@
+## 2026-07-16 - Sprint B4 Non-Cancel Booking Status Command Boundary
+
+### Changed
+
+- Moved approved non-cancel merchant booking status transitions into the Booking Command Service boundary.
+- Preserved legacy cancellation, point rollback, reschedule, reassign, and `checked_in -> completed` behavior.
+- Preserved confirmed booking LINE/Web Push notification order through a legacy-compatible event adapter.
+
+### Safety
+
+- No schema, migration, binding, secret, remote D1 write, LINE/Web Push design change, or production deployment.
 ## 2026-07-12 - Sprint 2 Service and Staff Foundation
 
 ### Added

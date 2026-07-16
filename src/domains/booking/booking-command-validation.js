@@ -28,6 +28,52 @@ export function validateCustomerInfoCommand(command = {}) {
   };
 }
 
+const BOOKING_STATUSES = Object.freeze(["pending", "confirmed", "checked_in", "in_service", "completed", "no_show", "cancelled"]);
+const B4_STATUS_TRANSITIONS = Object.freeze(new Set([
+  "pending->confirmed",
+  "confirmed->checked_in",
+  "checked_in->in_service",
+  "in_service->completed",
+  "confirmed->no_show"
+]));
+
+export function normalizeBookingCommandStatus(status) {
+  const raw = String(status || "confirmed").trim().toLowerCase();
+  const aliases = {
+    "已確認": "confirmed",
+    "待確認": "pending",
+    "已取消": "cancelled",
+    "取消": "cancelled",
+    "完成": "completed",
+    "已完成": "completed",
+    "未到店": "no_show",
+    "已到店": "checked_in",
+    "服務中": "in_service"
+  };
+  const normalized = aliases[raw] || raw;
+  return BOOKING_STATUSES.includes(normalized) ? normalized : "confirmed";
+}
+
+export function isB4BookingStatusTransition(fromStatus, toStatus) {
+  const from = normalizeBookingCommandStatus(fromStatus);
+  const to = normalizeBookingCommandStatus(toStatus);
+  return B4_STATUS_TRANSITIONS.has(`${from}->${to}`);
+}
+
+export function validateBookingStatusCommand(command = {}) {
+  const bookingId = String(command.bookingId || "").trim();
+  const fromStatus = normalizeBookingCommandStatus(command.fromStatus);
+  const toStatus = normalizeBookingCommandStatus(command.status || command.toStatus);
+  if (!isB4BookingStatusTransition(fromStatus, toStatus)) return commandError("INVALID_BOOKING_STATUS_TRANSITION");
+  return {
+    bookingId,
+    fromStatus,
+    toStatus,
+    reason: limitCommandText(command.reason, 300),
+    expectedUpdatedAt: expectedUpdatedAtFromCommand(command)
+  };
+}
+
 export function assertExpectedVersion(currentUpdatedAt, expectedUpdatedAt) {
   const expected = String(expectedUpdatedAt || "").trim();
   if (!expected) return null;
