@@ -454,7 +454,7 @@ export default {
       if (request.method === "GET") {
         const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId: activeTenantId, source: "merchant_session" }) });
         const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
-        return Response.json({ ok: true, services: await loadServices(env, scopedTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
+        return merchantServicesReadResponse(request, env, runtime, scopedTenantId);
       }
       if (request.method === "POST") return saveServices(request, env, activeTenantId);
     }
@@ -463,7 +463,7 @@ export default {
       if (request.method === "GET") {
         const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId: activeTenantId, source: "merchant_session" }) });
         const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
-        return Response.json({ ok: true, staffMembers: await loadStaffMembers(env, scopedTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
+        return merchantStaffReadResponse(request, env, runtime, scopedTenantId);
       }
       if (request.method === "POST") return saveStaffMembers(request, env, activeTenantId);
     }
@@ -490,7 +490,7 @@ export default {
     }
     const merchantBookingAction = parseMerchantBookingActionPath(url.pathname);
     if (url.pathname === "/api/merchant/bookings" && request.method === "GET") {
-      return merchantBookingsResponse(request, env, activeTenantId);
+      return merchantBookingsResponse(request, env, activeTenantId, runtime);
     }
     if (merchantBookingAction && request.method === "POST") {
       return merchantBookingActionResponse(request, env, activeTenantId, merchantBookingAction);
@@ -5192,6 +5192,34 @@ async function saveSettings(request, env, tenantId = TENANT_ID) {
     return Response.json({ ok: false, error: { code: "SETTINGS_SAVE_FAILED", message: error.message } }, { status: 500, headers: jsonHeaders });
   }
 }
+async function merchantServicesReadResponse(request, env, runtime, tenantId) {
+  const url = new URL(request.url);
+  const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "merchant_session" }) });
+  const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
+  const includeDisabled = url.searchParams.get("include_disabled") === "1";
+  try {
+    const services = await runtime.domains.serviceDomain.listServices(readContext, { includeDisabled });
+    const legacyFallback = services.length ? services : await loadServices(env, scopedTenantId, { includeDisabled });
+    return Response.json({ ok: true, services: legacyFallback }, { headers: jsonHeaders });
+  } catch (error) {
+    return Response.json({ ok: false, error: { code: error.code || "SERVICE_READ_FAILED", message: error.message || "Unable to load services" } }, { status: error.httpStatus || 400, headers: jsonHeaders });
+  }
+}
+
+async function merchantStaffReadResponse(request, env, runtime, tenantId) {
+  const url = new URL(request.url);
+  const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "merchant_session" }) });
+  const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
+  const includeDisabled = url.searchParams.get("include_disabled") === "1";
+  try {
+    const staffMembers = await runtime.domains.staffDomain.listStaff(readContext, { includeDisabled });
+    const legacyFallback = staffMembers.length ? staffMembers : await loadStaffMembers(env, scopedTenantId, { includeDisabled });
+    return Response.json({ ok: true, staffMembers: legacyFallback }, { headers: jsonHeaders });
+  } catch (error) {
+    return Response.json({ ok: false, error: { code: error.code || "STAFF_READ_FAILED", message: error.message || "Unable to load staff" } }, { status: error.httpStatus || 400, headers: jsonHeaders });
+  }
+}
+
 async function loadMerchantBookingById(env, tenantId, bookingId) {
   return env.DB.prepare(`
     SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
@@ -5202,10 +5230,31 @@ async function loadMerchantBookingById(env, tenantId, bookingId) {
   `).bind(tenantId, bookingId).first();
 }
 
-async function merchantBookingsResponse(request, env, tenantId) {
+async function merchantBookingsResponse(request, env, tenantId, runtime = null) {
   if (!env.DB) return merchantBookingError("DATABASE_NOT_CONFIGURED", "Database is not configured", 503);
   const url = new URL(request.url);
   const today = todayInTaipei();
+  if (runtime?.domains?.bookingDomain) {
+    try {
+      const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "merchant_session" }) });
+      const bookingRead = await runtime.domains.bookingDomain.listBookings(readContext, {
+        date: url.searchParams.get("date") || "",
+        dateFrom: url.searchParams.get("date_from") || "",
+        dateTo: url.searchParams.get("date_to") || "",
+        status: url.searchParams.get("status") || "",
+        staffId: url.searchParams.get("staff_id") || "",
+        serviceId: url.searchParams.get("service_id") || "",
+        keyword: url.searchParams.get("customer_keyword") || "",
+        includeCancelled: url.searchParams.get("include_cancelled") || "",
+        limit: url.searchParams.get("limit") || "100",
+        page: url.searchParams.get("page") || "1",
+        today
+      });
+      return Response.json({ ok: true, summary: summarizeMerchantBookings(bookingRead.bookings), bookings: bookingRead.bookings, planLimited: bookingRead.planLimited }, { headers: jsonHeaders });
+    } catch (error) {
+      return merchantBookingError(error.code || "BOOKING_READ_FAILED", error.message || "Unable to load bookings", error.httpStatus || 400);
+    }
+  }
   const date = url.searchParams.get("date") || "";
   const dateFrom = url.searchParams.get("date_from") || date || today;
   const dateTo = url.searchParams.get("date_to") || date || dateFrom;

@@ -3,6 +3,9 @@ import { createModuleRegistry } from "./module-registry.js";
 import { createDiagnostics } from "./diagnostics.js";
 import { createRequestContext } from "./request-context.js";
 import { createRepositories } from "../repositories/index.js";
+import { createBookingDomain } from "../domains/booking/index.js";
+import { createStaffDomain } from "../domains/staff/index.js";
+import { createServiceDomain } from "../domains/service/index.js";
 
 export function createRuntime(env, executionContext = null) {
   const moduleRegistry = createModuleRegistry();
@@ -11,12 +14,19 @@ export function createRuntime(env, executionContext = null) {
     runtimeVersion: "b1-runtime-boundary-foundation"
   });
   const repositories = createRepositories(env?.DB);
+  const domains = {
+    bookingDomain: createBookingDomain({ bookingRepository: repositories.bookingRepository }),
+    staffDomain: createStaffDomain({ staffRepository: repositories.staffRepository }),
+    serviceDomain: createServiceDomain({ serviceRepository: repositories.serviceRepository })
+  };
   const diagnostics = createDiagnostics(env, moduleRegistry);
   return {
     env,
     executionContext,
     logger,
     repositories,
+    domains,
+    ...domains,
     modules: moduleRegistry,
     diagnostics,
     createRequestContext(request, options = {}) {
