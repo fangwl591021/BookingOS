@@ -5196,13 +5196,13 @@ async function merchantServicesReadResponse(request, env, runtime, tenantId) {
   const url = new URL(request.url);
   const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "merchant_session" }) });
   const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
-  const includeDisabled = url.searchParams.get("include_disabled") === "1";
+  const includeDisabled = url.searchParams.get("include_disabled") ?? "";
   try {
     const services = await runtime.domains.serviceDomain.listServices(readContext, { includeDisabled });
-    const legacyFallback = services.length ? services : await loadServices(env, scopedTenantId, { includeDisabled });
-    return Response.json({ ok: true, services: legacyFallback }, { headers: jsonHeaders });
+    return Response.json({ ok: true, services }, { headers: jsonHeaders });
   } catch (error) {
-    return Response.json({ ok: false, error: { code: error.code || "SERVICE_READ_FAILED", message: error.message || "Unable to load services" } }, { status: error.httpStatus || 400, headers: jsonHeaders });
+    if (error?.code === "VALIDATION_FAILED") return Response.json({ ok: false, error: { code: error.code, message: error.message } }, { status: error.httpStatus || 400, headers: jsonHeaders });
+    return Response.json({ ok: false, error: { code: "SERVICE_READ_FAILED", message: "Unable to load services" } }, { status: 500, headers: jsonHeaders });
   }
 }
 
@@ -5210,13 +5210,13 @@ async function merchantStaffReadResponse(request, env, runtime, tenantId) {
   const url = new URL(request.url);
   const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "merchant_session" }) });
   const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
-  const includeDisabled = url.searchParams.get("include_disabled") === "1";
+  const includeDisabled = url.searchParams.get("include_disabled") ?? "";
   try {
     const staffMembers = await runtime.domains.staffDomain.listStaff(readContext, { includeDisabled });
-    const legacyFallback = staffMembers.length ? staffMembers : await loadStaffMembers(env, scopedTenantId, { includeDisabled });
-    return Response.json({ ok: true, staffMembers: legacyFallback }, { headers: jsonHeaders });
+    return Response.json({ ok: true, staffMembers }, { headers: jsonHeaders });
   } catch (error) {
-    return Response.json({ ok: false, error: { code: error.code || "STAFF_READ_FAILED", message: error.message || "Unable to load staff" } }, { status: error.httpStatus || 400, headers: jsonHeaders });
+    if (error?.code === "VALIDATION_FAILED") return Response.json({ ok: false, error: { code: error.code, message: error.message } }, { status: error.httpStatus || 400, headers: jsonHeaders });
+    return Response.json({ ok: false, error: { code: "STAFF_READ_FAILED", message: "Unable to load staff" } }, { status: 500, headers: jsonHeaders });
   }
 }
 
@@ -5252,7 +5252,7 @@ async function merchantBookingsResponse(request, env, tenantId, runtime = null) 
       });
       return Response.json({ ok: true, summary: summarizeMerchantBookings(bookingRead.bookings), bookings: bookingRead.bookings, planLimited: bookingRead.planLimited }, { headers: jsonHeaders });
     } catch (error) {
-      return merchantBookingError(error.code || "BOOKING_READ_FAILED", error.message || "Unable to load bookings", error.httpStatus || 400);
+      return merchantBookingError(error.code || "BOOKING_READ_FAILED", error.code === "VALIDATION_FAILED" ? error.message : "Unable to load bookings", error.httpStatus || 500);
     }
   }
   const date = url.searchParams.get("date") || "";
