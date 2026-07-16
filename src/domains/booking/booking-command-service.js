@@ -3,6 +3,7 @@ import { commandError, commandOk } from "./booking-command-result.js";
 import {
   assertExpectedVersion,
   sanitizeBookingEventMetadata,
+  validateBookingStatusCommand,
   validateCustomerInfoCommand,
   validateMerchantNoteCommand
 } from "./booking-command-validation.js";
@@ -30,6 +31,43 @@ export function createBookingCommandService({ bookingRepository, bookingEventRep
       const booking = await loadScopedBooking(tenantId, bookingId);
       if (!booking) return commandError("BOOKING_NOT_FOUND");
       return commandOk({ booking });
+    },
+
+    async updateBookingStatus(context, command = {}) {
+      const tenantId = tenantIdFromContext(context);
+      const payload = validateBookingStatusCommand(command);
+      if (payload.ok === false) return payload;
+      const booking = await loadScopedBooking(tenantId, payload.bookingId);
+      if (!booking) return commandError("BOOKING_NOT_FOUND");
+      if (String(booking.status || "") !== payload.fromStatus) return commandError("BOOKING_CONFLICT");
+      const versionError = assertExpectedVersion(booking.updated_at, payload.expectedUpdatedAt);
+      if (versionError) return versionError;
+      const updatedAt = new Date().toISOString();
+      let updateResult;
+      try {
+        updateResult = await bookingRepository.updateStatus(tenantId, booking.id, {
+          fromStatus: payload.fromStatus,
+          toStatus: payload.toStatus,
+          updatedAt,
+          expectedUpdatedAt: payload.expectedUpdatedAt
+        });
+      } catch (error) {
+        context.logger?.error?.("booking.status_update_failed", { code: "BOOKING_STATUS_UPDATE_FAILED" });
+        return commandError("BOOKING_STATUS_UPDATE_FAILED");
+      }
+      if (Number(updateResult?.meta?.changes || 0) !== 1) return commandError("BOOKING_CONFLICT");
+      const { actorType, actorId } = actor(context);
+      await command.appendStatusEvent?.({
+        tenantId,
+        bookingId: booking.id,
+        eventType: "status_changed",
+        fromStatus: payload.fromStatus,
+        toStatus: payload.toStatus,
+        actorType,
+        actorId,
+        reason: payload.reason
+      }).catch(() => null);
+      return commandOk({ booking: await loadScopedBooking(tenantId, booking.id) });
     },
 
     async updateMerchantNote(context, command = {}) {

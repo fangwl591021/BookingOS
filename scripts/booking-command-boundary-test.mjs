@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import app from "../src/index.js";
-import { createRuntime } from "../src/runtime/composition-root.js";
 import { createTenantContext } from "../src/runtime/tenant-context.js";
 import { createIdempotencyEnvelope } from "../src/runtime/idempotency-envelope.js";
 import { createBookingCommandService } from "../src/domains/booking/index.js";
 import { createBookingRepository } from "../src/repositories/booking-repository.js";
 import { createBookingEventRepository } from "../src/repositories/booking-event-repository.js";
-import { validateMerchantNoteCommand, sanitizeBookingEventMetadata } from "../src/domains/booking/booking-command-validation.js";
+import { validateMerchantNoteCommand, sanitizeBookingEventMetadata, isB4BookingStatusTransition } from "../src/domains/booking/booking-command-validation.js";
 
 const SESSION_SECRET = "booking-command-secret";
 
@@ -48,6 +47,12 @@ function makeBooking(overrides = {}) {
     merchant_note: "",
     source: "web",
     updated_at: "2026-07-16T00:00:00Z",
+    checked_in_at: null,
+    service_started_at: null,
+    completed_at: null,
+    cancelled_at: null,
+    cancelled_by: null,
+    cancel_reason: null,
     ...overrides
   };
 }
@@ -56,16 +61,24 @@ function routeDb(options = {}) {
   const calls = [];
   const booking = options.booking === undefined ? makeBooking() : options.booking;
   const events = options.events ? [...options.events] : [{ event_type: "created", from_status: null, to_status: "pending", actor_type: "customer", reason: null, metadata_json: "{}", created_at: "2026-07-16 09:00:00" }];
+  function rowForBooking(binds) {
+    if (!booking || binds[0] !== "tenant-a" || binds[1] !== booking.id) return null;
+    return { ...booking };
+  }
   function exec(sql, binds) {
     if (sql.includes("FROM tenant_admins a JOIN identities")) {
-      return { results: [{ admin_id: "admin-a", identity_id: "identity-a", tenant_id: "tenant-a", role: "owner", admin_status: "active", identity_status: "active", tenant_status: options.tenantStatus || "active", tenant_name: "Tenant A", contract_start: "2026-07-01", contract_end: "2027-07-01", billing_plan_id: "solo", staff_limit: 2, active_staff_count: 1 }] };
+      return { results: [{ admin_id: "admin-a", identity_id: "identity-a", tenant_id: "tenant-a", role: "owner", admin_status: "active", identity_status: "active", tenant_status: options.tenantStatus || "active", tenant_name: "Tenant A", contract_start: options.contractStart || "2026-07-01", contract_end: options.contractEnd || "2027-07-01", billing_plan_id: "solo", staff_limit: 2, active_staff_count: 1 }] };
     }
     if (sql.includes("FROM tenants t WHERE t.id = ?")) {
-      return { results: [{ name: "Tenant A", status: options.tenantStatus || "active", contract_start: "2026-07-01", contract_end: "2027-07-01", billing_plan_id: "solo", staff_limit: 2, booking_enabled: 1, active_staff_count: 1, active_booking_staff_count: 1 }] };
+      return { results: [{ name: "Tenant A", status: options.tenantStatus || "active", contract_start: options.contractStart || "2026-07-01", contract_end: options.contractEnd || "2027-07-01", billing_plan_id: "solo", staff_limit: 2, booking_enabled: 1, active_staff_count: 1, active_booking_staff_count: 1 }] };
     }
     if (sql.includes("FROM bookings b") && sql.includes("WHERE b.tenant_id = ? AND b.id = ?")) {
-      if (!booking || binds[0] !== "tenant-a" || binds[1] !== booking.id) return { results: [] };
-      return { results: [{ ...booking }] };
+      const row = rowForBooking(binds);
+      return { results: row ? [row] : [] };
+    }
+    if (sql.includes("FROM bookings WHERE tenant_id") && sql.includes("AND id") && sql.includes("LIMIT 1")) {
+      const row = rowForBooking(binds);
+      return { results: row ? [row] : [] };
     }
     if (sql.startsWith("UPDATE bookings SET merchant_note")) {
       if (options.throwUpdate) throw new Error("SQLITE_CONSTRAINT: hidden sql details");
@@ -82,6 +95,22 @@ function routeDb(options = {}) {
       return { meta: { changes: 1 } };
     }
     if (sql.startsWith("UPDATE bookings SET status")) {
+      if (options.statusUpdateChanges === 0) return { meta: { changes: 0 } };
+      const hasCancelReason = sql.includes("cancel_reason");
+      const tenantIndex = hasCancelReason ? 3 : 2;
+      const expectedUpdatedAt = sql.includes("AND updated_at = ?") ? binds.at(-1) : "";
+      if (binds[tenantIndex] !== "tenant-a" || binds[tenantIndex + 1] !== booking.id || binds[tenantIndex + 2] !== booking.status) return { meta: { changes: 0 } };
+      if (expectedUpdatedAt && expectedUpdatedAt !== booking.updated_at) return { meta: { changes: 0 } };
+      booking.status = binds[0];
+      booking.updated_at = binds[1];
+      if (sql.includes("checked_in_at")) booking.checked_in_at ||= "2026-07-16 10:00:00";
+      if (sql.includes("service_started_at")) booking.service_started_at ||= "2026-07-16 10:00:00";
+      if (sql.includes("completed_at")) booking.completed_at ||= "2026-07-16 10:00:00";
+      if (hasCancelReason) {
+        booking.cancelled_at ||= "2026-07-16 10:00:00";
+        booking.cancelled_by ||= "merchant";
+        booking.cancel_reason ||= binds[2] || null;
+      }
       return { meta: { changes: 1 } };
     }
     if (sql.startsWith("INSERT INTO booking_events")) {
@@ -92,6 +121,15 @@ function routeDb(options = {}) {
       if (options.throwEvents) throw new Error("SELECT * FROM secret failure");
       return { results: events };
     }
+    if (sql.startsWith("INSERT OR IGNORE INTO line_notification_deliveries")) {
+      if (options.throwNotificationInsert) throw new Error("notification unavailable");
+      return { meta: { changes: 1 } };
+    }
+    if (sql.startsWith("UPDATE line_notification_deliveries")) return { meta: { changes: 1 } };
+    if (sql.includes("SELECT line_user_id FROM customers")) return { results: options.lineUid ? [{ line_user_id: options.lineUid }] : [] };
+    if (sql.includes("point_transactions")) return { results: [{ points: 0 }] };
+    if (sql.startsWith("UPDATE customers SET")) return { meta: { changes: 1 } };
+    if (sql.includes("FROM line_oa_settings")) return { results: [] };
     return { results: [] };
   }
   return {
@@ -117,8 +155,8 @@ function env(db) {
   return { DB: db, MERCHANT_SESSION_SECRET: SESSION_SECRET, MERCHANT_SESSION_TTL_SECONDS: "3600" };
 }
 
-async function routeJson(path, db, payload = {}, headers = {}) {
-  const request = new Request("https://example.test" + path, { method: "POST", headers: { cookie: await merchantCookie("tenant-a"), "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
+async function routeJson(path, db, payload = {}, headers = {}, tenantId = "tenant-a") {
+  const request = new Request("https://example.test" + path, { method: "POST", headers: { cookie: await merchantCookie(tenantId), "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
   const response = await app.fetch(request, env(db), {});
   return { response, body: JSON.parse(await response.text()) };
 }
@@ -131,12 +169,32 @@ function countSql(db, fragment) {
   return db.calls.filter((call) => call.sql.includes(fragment)).length;
 }
 
+async function statusRoute(status, options = {}, payload = {}) {
+  const db = routeDb(options);
+  const result = await routeJson("/api/merchant/bookings/booking-1/status", db, { status, expected_updated_at: options.booking?.updated_at || "2026-07-16T00:00:00Z", ...payload });
+  return { db, ...result };
+}
+
 assert.equal(validateMerchantNoteCommand({ note: "x".repeat(1001) }).note.length, 1000);
 assert.deepEqual(sanitizeBookingEventMetadata({ token: "secret", cookie: "session", oldName: "A", lineUid: "U123" }), { oldName: "A" });
+assert.equal(isB4BookingStatusTransition("pending", "confirmed"), true);
+assert.equal(isB4BookingStatusTransition("checked_in", "completed"), false);
+assert.equal(isB4BookingStatusTransition("pending", "cancelled"), false);
 const envelope = createIdempotencyEnvelope(new Request("https://example.test", { headers: { "Idempotency-Key": "idem-1", "X-Request-Id": "req-1" } }), { source: "test" });
 assert.equal(envelope.key, "idem-1");
 assert.equal(envelope.persistence, "not_implemented");
 
+{
+  const db = routeDb();
+  let appended = null;
+  const service = createBookingCommandService({ bookingRepository: createBookingRepository(db), bookingEventRepository: createBookingEventRepository(db) });
+  const result = await service.updateBookingStatus(commandContext(), { bookingId: "booking-1", fromStatus: "pending", status: "confirmed", expectedUpdatedAt: "2026-07-16T00:00:00Z", appendStatusEvent: async (event) => { appended = event; } });
+  assert.equal(result.ok, true);
+  assert.equal(result.booking.status, "confirmed");
+  assert.equal(appended.eventType, "status_changed");
+  assert.equal(appended.fromStatus, "pending");
+  assert.equal(appended.toStatus, "confirmed");
+}
 {
   const db = routeDb();
   const service = createBookingCommandService({ bookingRepository: createBookingRepository(db), bookingEventRepository: createBookingEventRepository(db) });
@@ -178,6 +236,104 @@ assert.equal(envelope.persistence, "not_implemented");
   assert.equal(response.status, 400);
   assert.equal(body.error.code, "CUSTOMER_NAME_REQUIRED");
   assert.equal(countSql(db, "UPDATE bookings SET customer_name"), 0);
+}
+{
+  const { db, response, body } = await statusRoute("confirmed");
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys(body), ["ok", "booking"]);
+  assert.equal(body.booking.status, "confirmed");
+  assert.equal(db.events.at(-1).event_type, "status_changed");
+  assert.equal(db.events.at(-1).from_status, "pending");
+  assert.equal(db.events.at(-1).to_status, "confirmed");
+  assert.equal(countSql(db, "INSERT OR IGNORE INTO line_notification_deliveries"), 1, "confirmed notification adapter path remains active");
+}
+{
+  const { db, response, body } = await statusRoute("confirmed", { throwNotificationInsert: true });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "confirmed");
+  assert.equal(db.events.at(-1).event_type, "status_changed", "event insert happens before notification failure is swallowed");
+}
+{
+  const { db, response, body } = await statusRoute("checked_in", { booking: makeBooking({ status: "confirmed" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "checked_in");
+  assert.ok(db.booking.checked_in_at);
+  assert.equal(countSql(db, "INSERT OR IGNORE INTO line_notification_deliveries"), 0);
+}
+{
+  const { db, response, body } = await statusRoute("in_service", { booking: makeBooking({ status: "checked_in" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "in_service");
+  assert.ok(db.booking.service_started_at);
+}
+{
+  const { db, response, body } = await statusRoute("completed", { booking: makeBooking({ status: "in_service" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "completed");
+  assert.ok(db.booking.completed_at);
+}
+{
+  const { response, body } = await statusRoute("no_show", { booking: makeBooking({ status: "confirmed" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "no_show");
+}
+for (const terminal of ["completed", "no_show", "cancelled"]) {
+  const { response, body } = await statusRoute("confirmed", { booking: makeBooking({ status: terminal }) });
+  assert.equal(response.status, 409);
+  assert.equal(body.error.code, "INVALID_BOOKING_STATUS_TRANSITION");
+}
+{
+  const { db, response, body } = await statusRoute("completed", { booking: makeBooking({ status: "checked_in" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "completed");
+  assert.ok(db.booking.completed_at, "checked_in -> completed remains legacy-supported outside B4 command set");
+}
+{
+  const { db, response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "pending", customer_id: "cust-1" }) }, { reason: "customer request" });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "cancelled");
+  assert.equal(db.events.at(-1).event_type, "cancelled");
+  assert.equal(countSql(db, "point_transactions"), 4, "cancel rollback remains legacy path");
+}
+{
+  const db = routeDb();
+  const { response, body } = await routeJson("/api/merchant/bookings/booking-1/status", db, { status: "confirmed", expected_updated_at: "stale" });
+  assert.equal(response.status, 409);
+  assert.equal(body.error.code, "BOOKING_CONFLICT");
+  assert.equal(countSql(db, "UPDATE bookings SET status"), 0);
+}
+{
+  const { db, response, body } = await statusRoute("confirmed", { statusUpdateChanges: 0 });
+  assert.equal(response.status, 409);
+  assert.equal(body.error.code, "BOOKING_CONFLICT");
+  assert.equal(db.events.length, 1);
+}
+{
+  const db = routeDb();
+  const { response, body } = await routeJson("/api/merchant/bookings/booking-1/status", db, { status: "confirmed" }, {}, "tenant-b");
+  assert.equal(response.status, 404);
+  assert.equal(body.error.code, "BOOKING_NOT_FOUND");
+  assert.equal(countSql(db, "UPDATE bookings SET status"), 0);
+}
+{
+  const { response, body } = await statusRoute("confirmed", { tenantStatus: "active", contractEnd: "2026-01-01" });
+  assert.equal(response.status, 403);
+  assert.equal(body.error.code, "TENANT_BOOKING_ACTION_READ_ONLY");
+}
+{
+  const { response, body } = await statusRoute("checked_in", { tenantStatus: "active", contractEnd: "2026-01-01", booking: makeBooking({ status: "confirmed" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "checked_in");
+}
+{
+  const { response, body } = await statusRoute("completed", { tenantStatus: "suspended", booking: makeBooking({ status: "in_service" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "completed");
+}
+{
+  const { response, body } = await statusRoute("checked_in", { tenantStatus: "suspended", booking: makeBooking({ status: "confirmed" }) });
+  assert.equal(response.status, 403);
+  assert.equal(body.error.code, "TENANT_BOOKING_ACTION_READ_ONLY");
 }
 {
   const db = routeDb({ booking: null });
@@ -229,11 +385,6 @@ assert.equal(envelope.persistence, "not_implemented");
   assert.equal(response.status, 500);
   assert.equal(body.error.code, "BOOKING_NOTE_UPDATE_FAILED");
   assert.equal(JSON.stringify(body).includes("SQLITE"), false);
-}
-{
-  const db = routeDb();
-  await routeJson("/api/merchant/bookings/booking-1/status", db, { status: "confirmed", expected_updated_at: "2026-07-16T00:00:00Z" });
-  assert.equal(countSql(db, "UPDATE bookings SET status"), 1, "status route remains legacy mutation path");
 }
 
 console.log("booking-command-boundary-test: PASS");
