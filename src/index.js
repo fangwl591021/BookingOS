@@ -1,5 +1,7 @@
 import { WEEKDAY_KEYS, WEEKDAY_LABELS, defaultWeeklyHours, normalizeWeeklyHours, validateWeeklyHours, hasCompleteWeeklyHours, weekdayKeyForDate, dayHoursForDate } from "./weekly-hours.js";
 import { publicKeyResponse, subscribePush, unsubscribePush, pushStatus, sendWebPushToActor } from "./web-push.js";
+import { createRuntime } from "./runtime/composition-root.js";
+import { createTenantContext, requireTenantContext } from "./runtime/tenant-context.js";
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
@@ -274,6 +276,7 @@ const TENANT_CAPABILITIES = Object.freeze({
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const runtime = createRuntime(env, ctx);
     const liffStateParams = liffStateSearchParams(url);
     let activeTenantId = tenantIdFromUrl(url, env);
     if (url.pathname.startsWith("/api/push/")) return handlePushApi(request, env, activeTenantId);
@@ -439,19 +442,29 @@ export default {
 
     if (url.pathname === "/api/settings") {
       if (request.method === "GET") {
-        const data = await dashboardData(env, todayInTaipei(), activeTenantId);
+        const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId: activeTenantId, source: "merchant_session" }) });
+        const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
+        const data = await dashboardData(env, todayInTaipei(), scopedTenantId);
         return Response.json({ ok: true, store: data.store, businessHours: data.businessHours }, { headers: jsonHeaders });
       }
       if (request.method === "POST") return saveSettings(request, env, activeTenantId);
     }
 
     if (url.pathname === "/api/services") {
-      if (request.method === "GET") return Response.json({ ok: true, services: await loadServices(env, activeTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
+      if (request.method === "GET") {
+        const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId: activeTenantId, source: "merchant_session" }) });
+        const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
+        return Response.json({ ok: true, services: await loadServices(env, scopedTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
+      }
       if (request.method === "POST") return saveServices(request, env, activeTenantId);
     }
 
     if (url.pathname === "/api/staff") {
-      if (request.method === "GET") return Response.json({ ok: true, staffMembers: await loadStaffMembers(env, activeTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
+      if (request.method === "GET") {
+        const readContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId: activeTenantId, source: "merchant_session" }) });
+        const scopedTenantId = requireTenantContext(readContext.tenantContext).tenantId;
+        return Response.json({ ok: true, staffMembers: await loadStaffMembers(env, scopedTenantId, { includeDisabled: url.searchParams.get("include_disabled") === "1" }) }, { headers: jsonHeaders });
+      }
       if (request.method === "POST") return saveStaffMembers(request, env, activeTenantId);
     }
     if (url.pathname === "/api/merchant/staff/plan-selection" && request.method === "POST") {
