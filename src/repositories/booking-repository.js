@@ -56,6 +56,14 @@ export function createBookingRepository(db) {
         .bind(input.toStatus, input.updatedAt, scopedTenantId, bookingId, input.fromStatus, ...(expectedUpdatedAt ? [expectedUpdatedAt] : []))
         .run();
     },
+    async cancelMerchantStatus(tenantId, bookingId, input = {}) {
+      const scopedTenantId = requireTenantId(tenantId);
+      if (!db || !bookingId) return { meta: { changes: 0 } };
+      const expectedUpdatedAt = String(input.expectedUpdatedAt || "").trim();
+      return db.prepare(`UPDATE bookings SET status = ?, updated_at = ?, cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, 'merchant'), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason) WHERE tenant_id = ? AND id = ? AND status = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`)
+        .bind(input.toStatus, input.updatedAt, input.reason || "", scopedTenantId, bookingId, input.fromStatus, ...(expectedUpdatedAt ? [expectedUpdatedAt] : []))
+        .run();
+    },
     async listByDateRange(tenantId, range = {}) {
       const scopedTenantId = requireTenantId(tenantId);
       if (!db) return [];

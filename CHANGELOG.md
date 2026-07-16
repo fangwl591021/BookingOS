@@ -1,3 +1,14 @@
+## 2026-07-16 - Sprint B5 Merchant Cancellation Command Boundary
+
+### Changed
+
+- Moved merchant-protected cancellation for pending, confirmed, and checked_in bookings into the Booking Command Service boundary.
+- Preserved customer and guest cancellation routes, guest phone fallback, point rollback helper, and legacy notification implementation.
+- Preserved cancellation response shape and tenant-scoped conditional update semantics.
+
+### Safety
+
+- No schema, migration, binding, secret, remote D1 write, LINE/Web Push design change, or production deployment.
 ## 2026-07-16 - Sprint B4 Non-Cancel Booking Status Command Boundary
 
 ### Changed

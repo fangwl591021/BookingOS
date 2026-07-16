@@ -3,7 +3,7 @@ import { publicKeyResponse, subscribePush, unsubscribePush, pushStatus, sendWebP
 import { createRuntime } from "./runtime/composition-root.js";
 import { createIdempotencyEnvelope } from "./runtime/idempotency-envelope.js";
 import { createTenantContext, requireTenantContext } from "./runtime/tenant-context.js";
-import { isB4BookingStatusTransition } from "./domains/booking/booking-command-validation.js";
+import { isB4BookingStatusTransition, isB5MerchantCancellationTransition } from "./domains/booking/booking-command-validation.js";
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
@@ -5361,6 +5361,19 @@ async function merchantBookingActionResponse(request, env, tenantId, route, runt
           reason: payload.reason,
           expectedUpdatedAt: bookingExpectedUpdatedAt(payload),
           appendStatusEvent: (event) => appendBookingEvent(env, event)
+        });
+        if (!result.ok) return merchantBookingCommandErrorResponse(result);
+        return Response.json({ ok: true, booking: bookingRowToOperation(result.booking) }, { headers: jsonHeaders });
+      }
+      if (isB5MerchantCancellationTransition(fromStatus, toStatus)) {
+        const result = await commandService.cancelMerchantBooking(context, {
+          bookingId: route.bookingId,
+          fromStatus,
+          status: payload.status,
+          reason: payload.reason,
+          expectedUpdatedAt: bookingExpectedUpdatedAt(payload),
+          rollbackCustomerPoints: ({ tenantId: scopedTenantId, bookingId, customerId }) => rollbackBookingCustomerPoints(env, scopedTenantId, bookingId, customerId),
+          appendCancellationEvent: (event) => appendBookingEvent(env, event)
         });
         if (!result.ok) return merchantBookingCommandErrorResponse(result);
         return Response.json({ ok: true, booking: bookingRowToOperation(result.booking) }, { headers: jsonHeaders });

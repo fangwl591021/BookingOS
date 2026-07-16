@@ -5,6 +5,7 @@ import {
   sanitizeBookingEventMetadata,
   validateBookingStatusCommand,
   validateCustomerInfoCommand,
+  validateMerchantCancellationCommand,
   validateMerchantNoteCommand
 } from "./booking-command-validation.js";
 
@@ -61,6 +62,45 @@ export function createBookingCommandService({ bookingRepository, bookingEventRep
         tenantId,
         bookingId: booking.id,
         eventType: "status_changed",
+        fromStatus: payload.fromStatus,
+        toStatus: payload.toStatus,
+        actorType,
+        actorId,
+        reason: payload.reason
+      }).catch(() => null);
+      return commandOk({ booking: await loadScopedBooking(tenantId, booking.id) });
+    },
+
+    async cancelMerchantBooking(context, command = {}) {
+      const tenantId = tenantIdFromContext(context);
+      const payload = validateMerchantCancellationCommand(command);
+      if (payload.ok === false) return payload;
+      const booking = await loadScopedBooking(tenantId, payload.bookingId);
+      if (!booking) return commandError("BOOKING_NOT_FOUND");
+      if (String(booking.status || "") !== payload.fromStatus) return commandError("BOOKING_CONFLICT");
+      const versionError = assertExpectedVersion(booking.updated_at, payload.expectedUpdatedAt);
+      if (versionError) return versionError;
+      const updatedAt = new Date().toISOString();
+      let updateResult;
+      try {
+        updateResult = await bookingRepository.cancelMerchantStatus(tenantId, booking.id, {
+          fromStatus: payload.fromStatus,
+          toStatus: payload.toStatus,
+          reason: payload.reason,
+          updatedAt,
+          expectedUpdatedAt: payload.expectedUpdatedAt
+        });
+      } catch (error) {
+        context.logger?.error?.("booking.cancellation_update_failed", { code: "BOOKING_STATUS_UPDATE_FAILED" });
+        return commandError("BOOKING_STATUS_UPDATE_FAILED");
+      }
+      if (Number(updateResult?.meta?.changes || 0) !== 1) return commandError("BOOKING_CONFLICT");
+      await command.rollbackCustomerPoints?.({ tenantId, bookingId: booking.id, customerId: booking.customer_id });
+      const { actorType, actorId } = actor(context);
+      await command.appendCancellationEvent?.({
+        tenantId,
+        bookingId: booking.id,
+        eventType: "cancelled",
         fromStatus: payload.fromStatus,
         toStatus: payload.toStatus,
         actorType,
