@@ -374,7 +374,9 @@ export default {
 
     const apiRoute = classifyApiRoute(url.pathname, request.method);
     if (!apiRoute.ok) return apiRouteFailureResponse(apiRoute);
-    if (url.pathname === "/api/health") return Response.json(runtime.diagnostics.publicHealth(), { headers: jsonHeaders });
+    if (url.pathname === "/api/health") {
+      return Response.json({ ok: true, service: "BookingOS", version: "0.2.2-resource-capacity", database: Boolean(env.DB) }, { headers: jsonHeaders });
+    }
 
     if (url.pathname === "/api/platform") return platformSectionResponse(request, env, "overview");
     if (url.pathname === "/api/platform/overview") return platformSectionResponse(request, env, "overview");

@@ -79,7 +79,7 @@ B1 does not replace booking mutations or high-risk lifecycle queries.
 
 Low-risk adoption only:
 
-- `GET /api/health` returns runtime diagnostics with booleans only.
+- `GET /api/health` preserves the legacy public response shape exactly: `ok`, `service`, `version`, and `database` only. Runtime diagnostics remain internal until a future authenticated platform diagnostics route is approved.
 - `GET /api/settings` creates a request context and validates tenant context before reading existing dashboard data.
 - `GET /api/services` creates a request context and validates tenant context before existing service list loading.
 - `GET /api/staff` creates a request context and validates tenant context before existing staff list loading.

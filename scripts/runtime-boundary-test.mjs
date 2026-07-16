@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import app from "../src/index.js";
 import { AppError, TenantContextError, errorResponse, safeErrorSummary } from "../src/runtime/errors.js";
 import { sanitizeLogValue } from "../src/runtime/logger.js";
 import { createModuleRegistry } from "../src/runtime/module-registry.js";
@@ -99,6 +100,15 @@ async function responseJson(response) {
   const serialized = JSON.stringify(health);
   assert.ok(!serialized.includes("must-not-leak"));
   assert.ok(!serialized.includes("DATABASE_ID"));
+}
+
+
+{
+  const response = await app.fetch(new Request("https://example.test/api/health"), { DB: {} }, {});
+  const body = await responseJson(response);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys(body), ["ok", "service", "version", "database"]);
+  assert.deepEqual(body, { ok: true, service: "BookingOS", version: "0.2.2-resource-capacity", database: true });
 }
 
 console.log("runtime-boundary contracts passed");
