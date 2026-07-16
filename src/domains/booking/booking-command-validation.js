@@ -10,11 +10,9 @@ export function expectedUpdatedAtFromCommand(command = {}) {
 }
 
 export function validateMerchantNoteCommand(command = {}) {
-  const rawNote = String(command.note || "").trim();
-  if (rawNote.length > 1000) return commandError("VALIDATION_FAILED", { message: "店家備註不可超過 1000 字" });
   return {
     bookingId: String(command.bookingId || "").trim(),
-    note: rawNote,
+    note: limitCommandText(command.note, 1000),
     expectedUpdatedAt: expectedUpdatedAtFromCommand(command)
   };
 }

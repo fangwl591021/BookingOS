@@ -131,7 +131,7 @@ function countSql(db, fragment) {
   return db.calls.filter((call) => call.sql.includes(fragment)).length;
 }
 
-assert.equal(validateMerchantNoteCommand({ note: "x".repeat(1001) }).code, "VALIDATION_FAILED");
+assert.equal(validateMerchantNoteCommand({ note: "x".repeat(1001) }).note.length, 1000);
 assert.deepEqual(sanitizeBookingEventMetadata({ token: "secret", cookie: "session", oldName: "A", lineUid: "U123" }), { oldName: "A" });
 const envelope = createIdempotencyEnvelope(new Request("https://example.test", { headers: { "Idempotency-Key": "idem-1", "X-Request-Id": "req-1" } }), { source: "test" });
 assert.equal(envelope.key, "idem-1");
@@ -157,10 +157,11 @@ assert.equal(envelope.persistence, "not_implemented");
 {
   const db = routeDb();
   const { response, body } = await routeJson("/api/merchant/bookings/booking-1/note", db, { note: "x".repeat(1001), expected_updated_at: "2026-07-16T00:00:00Z" });
-  assert.equal(response.status, 400);
-  assert.equal(body.error.code, "VALIDATION_FAILED");
-  assert.equal(countSql(db, "UPDATE bookings SET merchant_note"), 0);
-  assert.equal(db.events.length, 1);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys(body), ["ok", "booking"]);
+  assert.equal(body.booking.merchant_note.length, 1000);
+  assert.equal(countSql(db, "UPDATE bookings SET merchant_note"), 1);
+  assert.equal(db.events.at(-1).event_type, "merchant_note_updated");
 }
 {
   const db = routeDb();

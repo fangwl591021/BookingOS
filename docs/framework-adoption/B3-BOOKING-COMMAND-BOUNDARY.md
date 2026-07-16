@@ -50,6 +50,7 @@ Boundary behavior:
 - Preserves optimistic conflict behavior for `expected_updated_at`.
 - Applies existing tenant access rules before the command write.
 - Updates `bookings.merchant_note` through `bookingRepository.updateMerchantNote`.
+- Preserves legacy note length behavior: notes longer than 1000 characters are truncated and still return the existing success shape.
 - Appends `merchant_note_updated` through `bookingEventRepository.append`.
 - Returns the existing `{ ok, booking }` shape.
 - Does not trigger LINE or Web Push notification.
