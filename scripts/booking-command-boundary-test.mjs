@@ -5,7 +5,7 @@ import { createIdempotencyEnvelope } from "../src/runtime/idempotency-envelope.j
 import { createBookingCommandService } from "../src/domains/booking/index.js";
 import { createBookingRepository } from "../src/repositories/booking-repository.js";
 import { createBookingEventRepository } from "../src/repositories/booking-event-repository.js";
-import { validateMerchantNoteCommand, sanitizeBookingEventMetadata, isB4BookingStatusTransition } from "../src/domains/booking/booking-command-validation.js";
+import { validateMerchantNoteCommand, sanitizeBookingEventMetadata, isB4BookingStatusTransition, isB5MerchantCancellationTransition } from "../src/domains/booking/booking-command-validation.js";
 
 const SESSION_SECRET = "booking-command-secret";
 
@@ -161,12 +161,22 @@ async function routeJson(path, db, payload = {}, headers = {}, tenantId = "tenan
   return { response, body: JSON.parse(await response.text()) };
 }
 
+async function publicRouteJson(path, db, payload = {}, headers = {}) {
+  const request = new Request("https://example.test" + path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
+  const response = await app.fetch(request, env(db), {});
+  return { response, body: JSON.parse(await response.text()) };
+}
+
 function commandContext() {
   return { tenantContext: createTenantContext({ tenantId: "tenant-a", source: "test" }), authContext: { actor: { type: "merchant", id: "merchant" } }, logger: { error() {} } };
 }
 
 function countSql(db, fragment) {
   return db.calls.filter((call) => call.sql.includes(fragment)).length;
+}
+
+function firstSqlIndex(db, fragment) {
+  return db.calls.findIndex((call) => call.sql.includes(fragment));
 }
 
 async function statusRoute(status, options = {}, payload = {}) {
@@ -180,6 +190,10 @@ assert.deepEqual(sanitizeBookingEventMetadata({ token: "secret", cookie: "sessio
 assert.equal(isB4BookingStatusTransition("pending", "confirmed"), true);
 assert.equal(isB4BookingStatusTransition("checked_in", "completed"), false);
 assert.equal(isB4BookingStatusTransition("pending", "cancelled"), false);
+assert.equal(isB5MerchantCancellationTransition("pending", "cancelled"), true);
+assert.equal(isB5MerchantCancellationTransition("confirmed", "cancelled"), true);
+assert.equal(isB5MerchantCancellationTransition("checked_in", "cancelled"), true);
+assert.equal(isB5MerchantCancellationTransition("in_service", "cancelled"), false);
 const envelope = createIdempotencyEnvelope(new Request("https://example.test", { headers: { "Idempotency-Key": "idem-1", "X-Request-Id": "req-1" } }), { source: "test" });
 assert.equal(envelope.key, "idem-1");
 assert.equal(envelope.persistence, "not_implemented");
@@ -294,6 +308,64 @@ for (const terminal of ["completed", "no_show", "cancelled"]) {
   assert.equal(body.booking.status, "cancelled");
   assert.equal(db.events.at(-1).event_type, "cancelled");
   assert.equal(countSql(db, "point_transactions"), 4, "cancel rollback remains legacy path");
+}
+{
+  const { db, response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "pending", customer_id: "cust-1" }) }, { reason: "customer request" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys(body), ["ok", "booking"]);
+  assert.equal(body.booking.status, "cancelled");
+  assert.equal(db.booking.cancelled_by, "merchant");
+  assert.equal(db.booking.cancel_reason, "customer request");
+  assert.equal(countSql(db, "point_transactions"), 4, "cancel rollback remains adapter-backed legacy path");
+  assert.equal(countSql(db, "INSERT OR IGNORE INTO line_notification_deliveries"), 1, "cancelled notification adapter path remains active");
+  const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status");
+  const rollbackIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
+  const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
+  assert.ok(updateIndex >= 0 && rollbackIndex > updateIndex && eventIndex > rollbackIndex, "merchant cancellation preserves update -> rollback -> event order");
+}
+{
+  const { response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "confirmed", customer_id: "cust-1" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "cancelled");
+}
+{
+  const { response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "checked_in", customer_id: "cust-1" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "cancelled");
+}
+for (const fromStatus of ["in_service", "completed", "no_show"]) {
+  const { db, response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: fromStatus, customer_id: "cust-1" }) });
+  assert.equal(response.status, 409, fromStatus);
+  assert.equal(body.error.code, "INVALID_BOOKING_STATUS_TRANSITION", fromStatus);
+  assert.equal(countSql(db, "point_transactions"), 0);
+  assert.equal(firstSqlIndex(db, "INSERT INTO booking_events"), -1);
+}
+{
+  const { db, response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "cancelled", customer_id: "cust-1" }) });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "cancelled");
+  assert.equal(countSql(db, "point_transactions"), 0);
+  assert.equal(firstSqlIndex(db, "INSERT INTO booking_events"), -1);
+}
+{
+  const { db, response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "pending", customer_id: "cust-1" }), throwNotificationInsert: true });
+  assert.equal(response.status, 200);
+  assert.equal(body.booking.status, "cancelled");
+  assert.equal(db.events.at(-1).event_type, "cancelled", "event insert happens before notification failure is swallowed");
+}
+{
+  const { db, response, body } = await statusRoute("cancelled", { booking: makeBooking({ status: "pending", customer_id: "cust-1" }), statusUpdateChanges: 0 });
+  assert.equal(response.status, 409);
+  assert.equal(body.error.code, "BOOKING_CONFLICT");
+  assert.equal(countSql(db, "point_transactions"), 0);
+  assert.equal(firstSqlIndex(db, "INSERT INTO booking_events"), -1);
+}
+{
+  const db = routeDb({ booking: makeBooking({ status: "pending", customer_id: "", customer_phone: "0912345678" }) });
+  const { response, body } = await publicRouteJson("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678", reason: "guest cancel" });
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 1, "customer/guest cancel remains legacy route");
 }
 {
   const db = routeDb();

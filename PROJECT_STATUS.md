@@ -241,3 +241,12 @@
 - Legacy 保留：所有取消、取消點數回沖、`checked_in -> completed`、建立預約、改期、改派、Idempotency persistence、LINE/Web Push 實作。
 - 通知相容：`pending -> confirmed` 仍透過 legacy `appendBookingEvent()` adapter 先寫入 event，再維持既有 LINE confirmed 與 Web Push confirmed path；通知失敗不影響成功 response。
 - Schema / Migration / Remote D1 / Deploy：未執行。
+
+## Sprint B5 Merchant Cancellation Command Boundary - 2026-07-16
+
+- Branch: `refactor/b5-merchant-cancellation-command-boundary`
+- Scope: merchant-protected `POST /api/merchant/bookings/:bookingId/status` with payload `status=cancelled`
+- Adopted transitions: `pending -> cancelled`, `confirmed -> cancelled`, and `checked_in -> cancelled`
+- Legacy retained: customer/guest cancellation, guest phone fallback, booking create, reschedule, reassign, B4 non-cancel transitions, `checked_in -> completed`, idempotency persistence, LINE/Web Push implementation, and deployment.
+- Compatibility: cancellation command receives adapters for existing `rollbackBookingCustomerPoints()` and `appendBookingEvent()` to preserve update -> rollback -> event -> notification order.
+- Schema / Migration / Remote D1 / Deploy: not performed.

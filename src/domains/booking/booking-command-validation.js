@@ -36,6 +36,11 @@ const B4_STATUS_TRANSITIONS = Object.freeze(new Set([
   "in_service->completed",
   "confirmed->no_show"
 ]));
+const B5_MERCHANT_CANCELLATION_TRANSITIONS = Object.freeze(new Set([
+  "pending->cancelled",
+  "confirmed->cancelled",
+  "checked_in->cancelled"
+]));
 
 export function normalizeBookingCommandStatus(status) {
   const raw = String(status || "confirmed").trim().toLowerCase();
@@ -60,11 +65,31 @@ export function isB4BookingStatusTransition(fromStatus, toStatus) {
   return B4_STATUS_TRANSITIONS.has(`${from}->${to}`);
 }
 
+export function isB5MerchantCancellationTransition(fromStatus, toStatus) {
+  const from = normalizeBookingCommandStatus(fromStatus);
+  const to = normalizeBookingCommandStatus(toStatus);
+  return B5_MERCHANT_CANCELLATION_TRANSITIONS.has(`${from}->${to}`);
+}
+
 export function validateBookingStatusCommand(command = {}) {
   const bookingId = String(command.bookingId || "").trim();
   const fromStatus = normalizeBookingCommandStatus(command.fromStatus);
   const toStatus = normalizeBookingCommandStatus(command.status || command.toStatus);
   if (!isB4BookingStatusTransition(fromStatus, toStatus)) return commandError("INVALID_BOOKING_STATUS_TRANSITION");
+  return {
+    bookingId,
+    fromStatus,
+    toStatus,
+    reason: limitCommandText(command.reason, 300),
+    expectedUpdatedAt: expectedUpdatedAtFromCommand(command)
+  };
+}
+
+export function validateMerchantCancellationCommand(command = {}) {
+  const bookingId = String(command.bookingId || "").trim();
+  const fromStatus = normalizeBookingCommandStatus(command.fromStatus);
+  const toStatus = normalizeBookingCommandStatus(command.status || command.toStatus);
+  if (!isB5MerchantCancellationTransition(fromStatus, toStatus)) return commandError("INVALID_BOOKING_STATUS_TRANSITION");
   return {
     bookingId,
     fromStatus,
