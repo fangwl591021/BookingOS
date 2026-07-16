@@ -64,3 +64,7 @@ Domain services require a resolved tenant context. Repositories require `tenantI
 - Staff and service UI redesign
 - LINE and Web Push changes
 - Production deployment
+
+## Next
+
+B3 continues framework adoption with Booking command boundaries for merchant note update, booking customer update, and booking event read/append. See `docs/framework-adoption/B3-BOOKING-COMMAND-BOUNDARY.md`.

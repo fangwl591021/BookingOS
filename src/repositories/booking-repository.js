@@ -17,6 +17,33 @@ export function createBookingRepository(db) {
       if (!db || !bookingId) return null;
       return db.prepare(BOOKING_SELECT + " WHERE b.tenant_id = ? AND b.id = ? LIMIT 1").bind(scopedTenantId, bookingId).first();
     },
+    async findOperationById(tenantId, bookingId) {
+      const scopedTenantId = requireTenantId(tenantId);
+      if (!db || !bookingId) return null;
+      return db.prepare(`
+        SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
+        FROM bookings b
+        LEFT JOIN staff_members sm ON sm.id = b.staff_id AND sm.tenant_id = b.tenant_id
+        LEFT JOIN services s ON s.id = b.service_id AND s.tenant_id = b.tenant_id
+        WHERE b.tenant_id = ? AND b.id = ?
+      `).bind(scopedTenantId, bookingId).first();
+    },
+    async updateMerchantNote(tenantId, bookingId, input = {}) {
+      const scopedTenantId = requireTenantId(tenantId);
+      if (!db || !bookingId) return { meta: { changes: 0 } };
+      const expectedUpdatedAt = String(input.expectedUpdatedAt || "").trim();
+      return db.prepare(`UPDATE bookings SET merchant_note = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`)
+        .bind(input.note || "", input.updatedAt, scopedTenantId, bookingId, ...(expectedUpdatedAt ? [expectedUpdatedAt] : []))
+        .run();
+    },
+    async updateCustomerInfo(tenantId, bookingId, input = {}) {
+      const scopedTenantId = requireTenantId(tenantId);
+      if (!db || !bookingId) return { meta: { changes: 0 } };
+      const expectedUpdatedAt = String(input.expectedUpdatedAt || "").trim();
+      return db.prepare(`UPDATE bookings SET customer_name = ?, customer_phone = ?, updated_at = ? WHERE tenant_id = ? AND id = ?${expectedUpdatedAt ? " AND updated_at = ?" : ""}`)
+        .bind(input.customerName || "", input.customerPhone || null, input.updatedAt, scopedTenantId, bookingId, ...(expectedUpdatedAt ? [expectedUpdatedAt] : []))
+        .run();
+    },
     async listByDateRange(tenantId, range = {}) {
       const scopedTenantId = requireTenantId(tenantId);
       if (!db) return [];
