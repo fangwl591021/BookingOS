@@ -269,3 +269,12 @@
 - Guest phone fallback remains legacy for unauthenticated or invalid-session requests.
 - Customer/Guest order remains status update -> appendBookingEvent() -> points; B6.3 will decide point-order unification separately.
 - No schema, migration, remote D1 write, secret/binding change, LINE/Web Push implementation change, or deployment.
+
+## Sprint B6.3 Cancellation Point Rollback Consistency Boundary 2026-07-17
+
+- Customer Session cancellation and transitional Guest phone fallback cancellation now share the cancellation order: status update -> rollbackBookingCustomerPoints() -> appendBookingEvent().
+- Customer/Guest success response remains `{ ok: true, profile }`.
+- Customer Session tenant/customer mismatch still rejects without Guest fallback or side effects.
+- Merchant B5 cancellation behavior remains unchanged.
+- If point rollback fails after status update, event/notification are not triggered; the existing non-transaction risk is documented for a future transaction/idempotency phase.
+- No schema, migration, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
