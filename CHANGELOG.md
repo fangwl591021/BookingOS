@@ -1,3 +1,13 @@
+## 2026-07-17 - Sprint B6.4 Guest Cancellation Token ADR
+
+### Added
+
+- Added documentation-only ADR and migration proposal for Guest cancellation token authorization.
+- Defined token-only cancellation for new guest bookings, hash-only storage, anti-enumeration behavior, rollout, rollback, observability, and B6.5 scope.
+
+### Safety
+
+- No runtime, schema, migration file, binding, secret, remote D1 write, LINE/Web Push implementation change, or production deployment.
 ## 2026-07-17 - Sprint B6.3 Cancellation Point Rollback Consistency Boundary
 
 ### Changed

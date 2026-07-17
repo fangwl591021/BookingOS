@@ -278,3 +278,11 @@
 - Merchant B5 cancellation behavior remains unchanged.
 - If point rollback fails after status update, event/notification are not triggered; the existing non-transaction risk is documented for a future transaction/idempotency phase.
 - No schema, migration, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
+
+## Sprint B6.4 Guest Cancellation Token ADR 2026-07-17
+
+- Added a documentation-only ADR and migration proposal for Guest token-only cancellation.
+- Decision: new guest bookings should use high-entropy cancellation tokens with hash-only database storage; `bookingId + phone` remains only as transitional fallback for eligible legacy no-token bookings.
+- Proposed independent `booking_cancel_tokens` table, indexes, rollout, rollback, observability, and B6.5 minimal implementation scope.
+- This does not solve cancellation transactionality, point rollback atomicity, notification persistence, or idempotency.
+- No runtime, schema, migration file, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
