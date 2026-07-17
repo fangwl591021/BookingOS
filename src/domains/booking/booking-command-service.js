@@ -4,6 +4,7 @@ import {
   assertExpectedVersion,
   sanitizeBookingEventMetadata,
   validateBookingStatusCommand,
+  validateCustomerCancellationCommand,
   validateCustomerInfoCommand,
   validateMerchantCancellationCommand,
   validateMerchantNoteCommand
@@ -110,6 +111,41 @@ export function createBookingCommandService({ bookingRepository, bookingEventRep
       return commandOk({ booking: await loadScopedBooking(tenantId, booking.id) });
     },
 
+    async cancelCustomerBooking(context, command = {}) {
+      const tenantId = tenantIdFromContext(context);
+      const payload = validateCustomerCancellationCommand(command);
+      if (payload.ok === false) return payload;
+      const booking = await loadScopedBooking(tenantId, payload.bookingId);
+      if (!booking) return commandError("BOOKING_NOT_FOUND");
+      if (String(booking.customer_id || "") !== payload.customerId) return commandError("PERMISSION_DENIED");
+      if (String(booking.status || "") !== payload.fromStatus) return commandError("BOOKING_CONFLICT");
+      const updatedAt = new Date().toISOString();
+      let updateResult;
+      try {
+        updateResult = await bookingRepository.cancelCustomerStatus(tenantId, booking.id, {
+          customerId: payload.customerId,
+          fromStatus: payload.fromStatus,
+          reason: payload.reason,
+          updatedAt
+        });
+      } catch (error) {
+        context.logger?.error?.("booking.customer_cancellation_update_failed", { code: "BOOKING_STATUS_UPDATE_FAILED" });
+        return commandError("BOOKING_STATUS_UPDATE_FAILED");
+      }
+      if (Number(updateResult?.meta?.changes || 0) !== 1) return commandError("BOOKING_CONFLICT");
+      const { actorType, actorId } = actor(context);
+      await command.appendCancellationEvent?.({
+        tenantId,
+        bookingId: booking.id,
+        eventType: "cancelled",
+        fromStatus: payload.fromStatus,
+        toStatus: payload.toStatus,
+        actorType,
+        actorId,
+        reason: payload.reason
+      });
+      return commandOk({ booking: await loadScopedBooking(tenantId, booking.id) });
+    },
     async updateMerchantNote(context, command = {}) {
       const tenantId = tenantIdFromContext(context);
       const payload = validateMerchantNoteCommand(command);

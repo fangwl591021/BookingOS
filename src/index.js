@@ -534,7 +534,7 @@ export default {
     }
 
     if (url.pathname === "/api/bookings/cancel" && request.method === "POST") {
-      return cancelBooking(request, env, activeTenantId);
+      return cancelBooking(request, env, activeTenantId, runtime);
     }
 
     if (url.pathname === "/api/bookings" && request.method === "POST") {
@@ -5527,7 +5527,7 @@ async function merchantBookingEventsResponse(env, tenantId, bookingId) {
   const rows = await env.DB.prepare("SELECT event_type, from_status, to_status, actor_type, reason, metadata_json, created_at FROM booking_events WHERE tenant_id = ? AND booking_id = ? ORDER BY created_at ASC").bind(tenantId, bookingId).all();
   return Response.json({ ok: true, events: rows.results || [] }, { headers: jsonHeaders });
 }
-async function cancelBooking(request, env, tenantId) {
+async function cancelBooking(request, env, tenantId, runtime = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
     const payload = await request.json();
@@ -5536,22 +5536,53 @@ async function cancelBooking(request, env, tenantId) {
     const customerSession = await readCustomerSession(request, env);
     const booking = await env.DB.prepare("SELECT b.id, b.customer_id, b.customer_phone, b.status, c.phone AS member_phone FROM bookings b LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.id = ?").bind(tenantId, bookingId).first();
     if (!booking) return Response.json({ ok: false, error: "booking not found" }, { status: 404, headers: jsonHeaders });
+    const currentStatus = normalizeBookingStatus(booking.status);
+    if (currentStatus === "completed") return customerJsonError("INVALID_BOOKING_STATUS_TRANSITION", "已完成預約不可取消", 409);
+
     let authorizedCustomerId = "";
     let responseProfilePhone = "";
-    if (customerSession.ok && customerSession.tenantId === tenantId) {
+    let actorId = "guest";
+    let actorType = "customer";
+    let cancelledBy = "guest";
+    const reason = limitText(payload.reason || "顧客取消", 300);
+
+    if (customerSession.ok) {
+      if (customerSession.tenantId !== tenantId) return customerJsonError("CUSTOMER_ACCESS_DENIED", "not allowed", 403);
       if (String(booking.customer_id || "") !== customerSession.customerId) return customerJsonError("CUSTOMER_ACCESS_DENIED", "not allowed", 403);
       authorizedCustomerId = customerSession.customerId;
+      actorId = authorizedCustomerId;
+      cancelledBy = "customer";
     } else {
       const phone = String(payload.phone || "").trim();
       if (!phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
       if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
       responseProfilePhone = phone;
     }
-    const currentStatus = normalizeBookingStatus(booking.status);
-    if (currentStatus === "completed") return customerJsonError("INVALID_BOOKING_STATUS_TRANSITION", "已完成預約不可取消", 409);
+
     if (currentStatus !== "cancelled") {
-      await env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, ?), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(customerSession.ok ? "customer" : "guest", limitText(payload.reason || "顧客取消", 300), tenantId, bookingId).run();
-      await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType: customerSession.ok ? "customer" : "customer", actorId: authorizedCustomerId || "guest", reason: limitText(payload.reason || "顧客取消", 300) });
+      if (customerSession.ok) {
+        const commandService = runtime?.domains?.bookingCommandService || runtime?.bookingCommandService;
+        if (!commandService?.cancelCustomerBooking) return Response.json({ ok: false, error: "Booking command service is not configured" }, { status: 500, headers: jsonHeaders });
+        const url = new URL(request.url);
+        const baseContext = runtime.createRequestContext(request, { url, tenantContext: createTenantContext({ tenantId, source: "customer_session" }) });
+        const result = await commandService.cancelCustomerBooking({
+          ...baseContext,
+          tenantId,
+          authContext: { actor: { type: actorType, id: actorId, tenantId } },
+          actorId
+        }, {
+          bookingId,
+          customerId: authorizedCustomerId,
+          fromStatus: currentStatus,
+          status: "cancelled",
+          reason,
+          appendCancellationEvent: (event) => appendBookingEvent(env, event)
+        });
+        if (!result.ok) return Response.json({ ok: false, error: result.message }, { status: result.status || 400, headers: jsonHeaders });
+      } else {
+        await env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, ?), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(cancelledBy, reason, tenantId, bookingId).run();
+        await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType, actorId, reason });
+      }
       if (booking.customer_id) {
         const earned = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'earn'").bind(tenantId, booking.customer_id, bookingId).first();
         const revokePoints = Math.max(0, Number(earned?.points || 0));

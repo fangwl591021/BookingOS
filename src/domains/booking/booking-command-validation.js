@@ -99,6 +99,22 @@ export function validateMerchantCancellationCommand(command = {}) {
   };
 }
 
+export function validateCustomerCancellationCommand(command = {}) {
+  const bookingId = String(command.bookingId || "").trim();
+  const customerId = String(command.customerId || command.customer_id || "").trim();
+  const fromStatus = normalizeBookingCommandStatus(command.fromStatus);
+  const toStatus = normalizeBookingCommandStatus(command.status || command.toStatus || "cancelled");
+  if (!bookingId || !customerId) return commandError("VALIDATION_FAILED");
+  if (toStatus !== "cancelled" || fromStatus === "completed" || fromStatus === "cancelled") return commandError("INVALID_BOOKING_STATUS_TRANSITION");
+  return {
+    bookingId,
+    customerId,
+    fromStatus,
+    toStatus,
+    reason: limitCommandText(command.reason, 300)
+  };
+}
+
 export function assertExpectedVersion(currentUpdatedAt, expectedUpdatedAt) {
   const expected = String(expectedUpdatedAt || "").trim();
   if (!expected) return null;
