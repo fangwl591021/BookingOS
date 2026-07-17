@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import app from "../src/index.js";
 
 const SESSION_SECRET = "cancellation-current-state-secret";
@@ -66,6 +66,11 @@ function createDb(options = {}) {
     if (!booking || binds[0] !== "tenant-a" || binds[1] !== booking.id) return null;
     return { ...booking };
   }
+  function customerPrincipalRow(customerId, tenantId, identityId) {
+    const allowed = new Set(options.validCustomerPrincipals || ["tenant-a:cust-1:identity-customer", "tenant-a:cust-2:identity-customer", "tenant-b:cust-1:identity-customer"]);
+    if (!allowed.has(`${tenantId}:${customerId}:${identityId}`)) return null;
+    return { customer_id: customerId, identity_id: identityId, tenant_id: tenantId, name: "Customer A", phone: "0912345678", email: "", customer_status: "active", identity_status: "active", tenant_status: "active", tenant_name: tenantId };
+  }
   function exec(sql, binds) {
     if (sql.includes("FROM tenant_admins a JOIN identities")) {
       return { results: [{ admin_id: "admin-a", identity_id: "identity-merchant", tenant_id: "tenant-a", role: "owner", admin_status: "active", identity_status: "active", tenant_status: "active", tenant_name: "Tenant A", contract_start: "2026-07-01", contract_end: "2027-07-01", billing_plan_id: "solo", staff_limit: 2, active_staff_count: 1 }] };
@@ -75,8 +80,8 @@ function createDb(options = {}) {
     }
     if (sql.includes("FROM customers c") && sql.includes("JOIN identities i") && sql.includes("JOIN tenants t")) {
       const [customerId, tenantId, identityId] = binds;
-      if (customerId !== "cust-1" || tenantId !== "tenant-a" || identityId !== "identity-customer") return { results: [] };
-      return { results: [{ customer_id: "cust-1", identity_id: "identity-customer", tenant_id: "tenant-a", name: "Customer A", phone: "0912345678", email: "", customer_status: "active", identity_status: "active", tenant_status: "active", tenant_name: "Tenant A" }] };
+      const row = customerPrincipalRow(customerId, tenantId, identityId);
+      return { results: row ? [row] : [] };
     }
     if (sql.includes("FROM bookings b") && sql.includes("LEFT JOIN customers c") && sql.includes("WHERE b.tenant_id = ? AND b.id = ?")) {
       const row = bookingRow(binds);
@@ -87,12 +92,22 @@ function createDb(options = {}) {
       return { results: row ? [row] : [] };
     }
     if (sql.includes("SELECT c.id, c.tenant_id") && sql.includes("FROM customers c") && sql.includes("WHERE c.tenant_id = ? AND c.id = ?")) {
-      if (binds[0] !== "tenant-a" || binds[1] !== "cust-1") return { results: [] };
-      return { results: [{ id: "cust-1", tenant_id: "tenant-a", identity_id: "identity-customer", name: "Customer A", phone: "0912345678", points_balance: 0, total_bookings: 1, status: "active" }] };
+      if (binds[0] !== "tenant-a") return { results: [] };
+      return { results: [{ id: binds[1], tenant_id: "tenant-a", identity_id: "identity-customer", name: "Customer A", phone: "0912345678", points_balance: 0, total_bookings: 1, status: "active" }] };
     }
     if (sql.includes("SELECT name, phone") && sql.includes("FROM customers") && sql.includes("WHERE tenant_id = ? AND phone = ?")) {
       if (binds[0] !== "tenant-a") return { results: [] };
       return { results: [{ name: "Guest A", phone: binds[1] }] };
+    }
+    if (sql.startsWith("UPDATE bookings SET status = 'cancelled'") && sql.includes("AND customer_id = ? AND status = ?")) {
+      if (!booking || options.customerCancelChanges === 0) return { meta: { changes: 0 } };
+      if (binds[2] !== "tenant-a" || binds[3] !== booking.id || binds[4] !== booking.customer_id || binds[5] !== booking.status) return { meta: { changes: 0 } };
+      booking.status = "cancelled";
+      booking.cancelled_at ||= "2026-07-16 10:00:00";
+      booking.cancelled_by ||= "customer";
+      booking.cancel_reason ||= binds[0] || null;
+      booking.updated_at = binds[1];
+      return { meta: { changes: 1 } };
     }
     if (sql.startsWith("UPDATE bookings SET status = 'cancelled'")) {
       if (!booking) return { meta: { changes: 0 } };
@@ -186,6 +201,7 @@ function firstSqlIndex(db, fragment) {
   assert.equal(db.booking.cancelled_by, "customer");
   assert.equal(db.events.at(-1).actor_type, "customer");
   assert.equal(db.events.at(-1).actor_id, "cust-1");
+  assert.equal(countSql(db, "AND customer_id = ? AND status = ?"), 1);
 }
 
 {
@@ -195,6 +211,7 @@ function firstSqlIndex(db, fragment) {
   assert.deepEqual(Object.keys(body), ["ok", "profile"]);
   assert.equal(db.booking.cancelled_by, "guest");
   assert.equal(db.events.at(-1).actor_id, "guest");
+  assert.equal(countSql(db, "AND customer_id = ? AND status = ?"), 0);
 }
 
 {
@@ -208,9 +225,21 @@ function firstSqlIndex(db, fragment) {
 {
   const db = createDb();
   const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, { cookie: await customerCookie({ tenantId: "tenant-b" }) });
-  assert.equal(response.status, 200, "B6.1 freezes current unsafe legacy behavior: mismatched Customer Session can still fall through to Guest phone fallback");
-  assert.equal(body.ok, true);
-  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 1);
+  assert.equal(response.status, 403);
+  assert.equal(body.error?.message, "not allowed");
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 0);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0);
+  assert.equal(countSql(db, "point_transactions"), 0);
+}
+
+{
+  const db = createDb();
+  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, { cookie: await customerCookie({ customerId: "cust-2" }) });
+  assert.equal(response.status, 403);
+  assert.equal(body.error?.message, "not allowed");
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 0);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0);
+  assert.equal(countSql(db, "point_transactions"), 0);
 }
 
 {
@@ -224,20 +253,29 @@ function firstSqlIndex(db, fragment) {
 }
 
 {
-  const db = createDb({ booking: makeBooking({ customer_id: "cust-1", customer_phone: "0912345678" }) });
-  const { response } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678", expected_updated_at: "stale" });
-  assert.equal(response.status, 200);
-  assert.equal(countSql(db, "AND updated_at = ?"), 0, "B6.1 freezes that customer/guest cancel does not yet use expected_updated_at");
-  assert.equal(countSql(db, "AND status = ?"), 0, "B6.1 freezes that customer/guest cancel does not yet use an original-status SQL predicate");
+  const db = createDb({ customerCancelChanges: 0 });
+  const { response } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1" }, { cookie: await customerCookie() });
+  assert.equal(response.status, 409);
+  assert.equal(countSql(db, "AND customer_id = ? AND status = ?"), 1);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0);
+  assert.equal(countSql(db, "point_transactions"), 0);
 }
 
 {
   const db = createDb({ booking: makeBooking({ customer_id: "cust-1", customer_phone: "0912345678" }) });
-  await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" });
+  const { response } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678", expected_updated_at: "stale" }, { cookie: await customerCookie() });
+  assert.equal(response.status, 200);
+  assert.equal(countSql(db, "AND updated_at = ?"), 0, "B6.2 keeps no expected_updated_at requirement for customer cancel");
+  assert.equal(countSql(db, "AND customer_id = ? AND status = ?"), 1, "B6.2 adds customer_id and original-status predicate for customer cancel");
+}
+
+{
+  const db = createDb({ booking: makeBooking({ customer_id: "cust-1", customer_phone: "0912345678" }) });
+  await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, { cookie: await customerCookie() });
   const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
   const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
   const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
-  assert.ok(updateIndex >= 0 && eventIndex > updateIndex && pointsIndex > eventIndex, "B6.1 freezes legacy customer/guest order: update -> event/notification -> points");
+  assert.ok(updateIndex >= 0 && eventIndex > updateIndex && pointsIndex > eventIndex, "B6.2 keeps customer order: update -> event/notification -> points");
 }
 
 {

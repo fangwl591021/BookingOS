@@ -1,3 +1,17 @@
+## 2026-07-17 - Sprint B6.2 Customer Cancellation Command Boundary
+
+### Changed
+
+- Moved authenticated Customer Session cancellation for `/api/bookings/cancel` into the Booking Command Service boundary.
+- Blocked valid Customer Sessions with tenant or customer mismatches from falling through to Guest phone fallback.
+- Added tenant + booking + customer + original-status conditional cancellation update for Customer Session cancellation.
+
+### Safety
+
+- Guest phone fallback remains legacy when no valid Customer Session exists.
+- Customer success response remains `{ ok: true, profile }`.
+- Customer/Guest side-effect order remains status update -> event/notification -> points.
+- No schema, migration, binding, secret, remote D1 write, LINE/Web Push implementation change, or production deployment.
 ## 2026-07-16 - Sprint B6.1 Cancellation Current-State Contract Freeze
 
 ### Added

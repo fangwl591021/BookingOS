@@ -261,3 +261,11 @@
 - Runtime behavior / Schema / Migration / Remote D1 / Deploy: not changed or performed.
 
 - B6.2 blocker: Customer Session tenant mismatch currently falls through to Guest phone fallback when payload phone matches; B6.2 must close this before command-boundary adoption.
+
+## Sprint B6.2 Customer Cancellation Command Boundary - 2026-07-17
+
+- Authenticated Customer Session cancellation now rejects tenant/customer mismatches before Guest fallback.
+- Matching Customer Session cancellation uses Booking Command Service with tenant + booking + customer + original-status conditional update.
+- Guest phone fallback remains legacy for unauthenticated or invalid-session requests.
+- Customer/Guest order remains status update -> appendBookingEvent() -> points; B6.3 will decide point-order unification separately.
+- No schema, migration, remote D1 write, secret/binding change, LINE/Web Push implementation change, or deployment.
