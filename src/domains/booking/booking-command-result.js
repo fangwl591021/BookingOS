@@ -9,6 +9,7 @@ export const BOOKING_COMMAND_ERRORS = Object.freeze({
   BOOKING_NOTE_UPDATE_FAILED: { status: 500, message: "Unable to update booking note" },
   BOOKING_CUSTOMER_UPDATE_FAILED: { status: 500, message: "Unable to update booking customer" },
   BOOKING_STATUS_UPDATE_FAILED: { status: 500, message: "Unable to update booking status" },
+  BOOKING_POINTS_ROLLBACK_FAILED: { status: 500, message: "Unable to rollback booking points" },
   BOOKING_EVENT_READ_FAILED: { status: 500, message: "Unable to load booking events" }
 });
 

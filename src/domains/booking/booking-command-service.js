@@ -133,6 +133,12 @@ export function createBookingCommandService({ bookingRepository, bookingEventRep
         return commandError("BOOKING_STATUS_UPDATE_FAILED");
       }
       if (Number(updateResult?.meta?.changes || 0) !== 1) return commandError("BOOKING_CONFLICT");
+      try {
+        await command.rollbackCustomerPoints?.({ tenantId, bookingId: booking.id, customerId: booking.customer_id });
+      } catch (error) {
+        context.logger?.error?.("booking.customer_points_rollback_failed", { code: "BOOKING_POINTS_ROLLBACK_FAILED" });
+        return commandError("BOOKING_POINTS_ROLLBACK_FAILED");
+      }
       const { actorType, actorId } = actor(context);
       await command.appendCancellationEvent?.({
         tenantId,

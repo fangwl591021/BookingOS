@@ -143,6 +143,7 @@ function createDb(options = {}) {
     if (sql.includes("SELECT line_user_id FROM customers")) return { results: [] };
     if (sql.includes("point_transactions")) return { results: [{ points: options.pointSum ?? 10 }] };
     if (sql.startsWith("INSERT INTO point_transactions")) return { meta: { changes: 1 } };
+    if (sql.startsWith("UPDATE customers SET total_bookings") && options.rollbackFails) throw new Error("ROLLBACK_FAILED");
     if (sql.startsWith("UPDATE customers SET")) return { meta: { changes: 1 } };
     if (sql.includes("FROM booking_events")) return { results: events };
     if (sql.includes("FROM line_oa_settings")) return { results: [] };
@@ -275,7 +276,36 @@ function firstSqlIndex(db, fragment) {
   const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
   const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
   const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
-  assert.ok(updateIndex >= 0 && eventIndex > updateIndex && pointsIndex > eventIndex, "B6.2 keeps customer order: update -> event/notification -> points");
+  assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "B6.3 keeps customer order: update -> rollback points -> event/notification");
+  assert.ok(countSql(db, "type = 'revoke'") > 0 && countSql(db, "type = 'refund'") > 0, "B6.3 customer cancel uses rollbackBookingCustomerPoints helper queries");
+}
+
+{
+  const db = createDb({ booking: makeBooking({ customer_id: "cust-1", customer_phone: "0912345678" }) });
+  await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" });
+  const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
+  const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
+  const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
+  assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "B6.3 keeps guest order: update -> rollback points -> event/notification");
+  assert.ok(countSql(db, "type = 'revoke'") > 0 && countSql(db, "type = 'refund'") > 0, "B6.3 guest cancel uses rollbackBookingCustomerPoints helper queries");
+}
+
+{
+  const db = createDb({ rollbackFails: true });
+  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1" }, { cookie: await customerCookie() });
+  assert.equal(response.status, 500);
+  assert.equal(body.error, "Unable to rollback booking points");
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 1);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0);
+}
+
+{
+  const db = createDb({ booking: makeBooking({ customer_id: "cust-1", customer_phone: "0912345678" }), rollbackFails: true });
+  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" });
+  assert.equal(response.status, 500);
+  assert.equal(body.error, "ROLLBACK_FAILED");
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 1);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0);
 }
 
 {

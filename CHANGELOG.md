@@ -1,3 +1,17 @@
+## 2026-07-17 - Sprint B6.3 Cancellation Point Rollback Consistency Boundary
+
+### Changed
+
+- Aligned Customer Session and transitional Guest phone fallback cancellation order to status update -> point rollback -> event/notification.
+- Reused the existing rollbackBookingCustomerPoints() helper through compatible adapters instead of keeping inline point rollback after event notification.
+- Added regression coverage for Customer, Guest, rollback failure, and Merchant B5 cancellation order.
+
+### Safety
+
+- Customer/Guest success response remains `{ ok: true, profile }`.
+- Customer Session tenant/customer mismatch rejection remains in place and does not fall through to Guest fallback.
+- No schema, migration, binding, secret, remote D1 write, LINE/Web Push implementation change, or production deployment.
+- The known non-transaction risk remains: if point rollback fails after status update, B6.3 does not compensate the already-updated booking status.
 ## 2026-07-17 - Sprint B6.2 Customer Cancellation Command Boundary
 
 ### Changed

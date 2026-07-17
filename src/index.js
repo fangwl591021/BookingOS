@@ -5576,33 +5576,14 @@ async function cancelBooking(request, env, tenantId, runtime = null) {
           fromStatus: currentStatus,
           status: "cancelled",
           reason,
+          rollbackCustomerPoints: ({ tenantId: scopedTenantId, bookingId: scopedBookingId, customerId }) => rollbackBookingCustomerPoints(env, scopedTenantId, scopedBookingId, customerId),
           appendCancellationEvent: (event) => appendBookingEvent(env, event)
         });
         if (!result.ok) return Response.json({ ok: false, error: result.message }, { status: result.status || 400, headers: jsonHeaders });
       } else {
         await env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, ?), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(cancelledBy, reason, tenantId, bookingId).run();
+        if (booking.customer_id) await rollbackBookingCustomerPoints(env, tenantId, bookingId, booking.customer_id);
         await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType, actorId, reason });
-      }
-      if (booking.customer_id) {
-        const earned = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'earn'").bind(tenantId, booking.customer_id, bookingId).first();
-        const revokePoints = Math.max(0, Number(earned?.points || 0));
-        await env.DB.prepare("UPDATE customers SET total_bookings = CASE WHEN total_bookings > 0 THEN total_bookings - 1 ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(tenantId, booking.customer_id).run();
-        if (revokePoints > 0) {
-          await env.DB.prepare(`
-            INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
-            VALUES (?, ?, ?, ?, 'revoke', ?, '取消預約扣回贈點', datetime('now'))
-          `).bind(crypto.randomUUID(), tenantId, booking.customer_id, bookingId, -revokePoints).run();
-          await env.DB.prepare("UPDATE customers SET points_balance = points_balance - ?, total_points_earned = CASE WHEN total_points_earned >= ? THEN total_points_earned - ? ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(revokePoints, revokePoints, revokePoints, tenantId, booking.customer_id).run();
-        }
-        const redeemed = await env.DB.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM point_transactions WHERE tenant_id = ? AND customer_id = ? AND booking_id = ? AND type = 'redeem'").bind(tenantId, booking.customer_id, bookingId).first();
-        const refundPoints = Math.max(0, Math.abs(Number(redeemed?.points || 0)));
-        if (refundPoints > 0) {
-          await env.DB.prepare(`
-            INSERT INTO point_transactions (id, tenant_id, customer_id, booking_id, type, points, reason, created_at)
-            VALUES (?, ?, ?, ?, 'refund', ?, '取消預約退回折抵點數', datetime('now'))
-          `).bind(crypto.randomUUID(), tenantId, booking.customer_id, bookingId, refundPoints).run();
-          await env.DB.prepare("UPDATE customers SET points_balance = points_balance + ?, total_points_used = CASE WHEN total_points_used >= ? THEN total_points_used - ? ELSE 0 END, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(refundPoints, refundPoints, refundPoints, tenantId, booking.customer_id).run();
-        }
       }
     }
     const profile = authorizedCustomerId ? await loadCustomerProfileById(env, tenantId, authorizedCustomerId) : await loadCustomerPrefillByPhone(env, tenantId, responseProfilePhone);
