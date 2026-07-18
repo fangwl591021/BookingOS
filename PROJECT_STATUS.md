@@ -291,6 +291,6 @@
 - 新增 `booking_cancel_tokens` schema migration 檔，但尚未套用 remote D1。
 - 新增 guest token cancel route：`/store/{slug}/cancel#b={bookingId}&t={token}` 與 `POST /store/{slug}/api/bookings/cancel-token`。
 - 新 guest web booking 在 rollout flag 啟用 write/verify/enforce 時建立 hash-only token row；不回傳 token plaintext。
-- tokenized booking 在 verify/enforce 時不再允許 phone fallback；legacy no-token booking 保留 phone fallback。
+- rollout flag 為 write/verify/enforce 時，只要 booking 已存在 token row，即禁止 legacy `bookingId + phone` fallback；僅既有且無 token row 的 booking 保留 legacy phone fallback。
 - 本輪未部署、未執行 remote migration、未修改 wrangler/secret/binding，LINE/Web Push 實作未改。
 - 仍保留 cancellation 非 transaction 與無 persistent idempotency 的已知風險。
