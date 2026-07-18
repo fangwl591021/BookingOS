@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft implementation PR. Not deployed. Remote D1 migration not applied.
+Merged into the development baseline. Not deployed. Remote D1 migration not applied. Production rollout is not authorized.
 
 ## Scope
 

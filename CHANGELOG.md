@@ -1,3 +1,16 @@
+## 2026-07-18 - Sprint B6.6 Guest Token Rollout Guardrails
+
+### Added
+
+- Added documentation-only rollout guardrails for Guest cancellation token production readiness.
+- Documented actual `GUEST_CANCEL_TOKEN_ROLLOUT=off|write|verify|enforce` behavior and fail-safe handling.
+- Added Remote D1 migration SOP for `0023_booking_cancel_tokens.sql` as an authorization-gated plan only.
+
+### Safety
+
+- Production `write`, `verify`, and `enforce` remain NO-GO until migration, link delivery, observability, and approval gates are complete.
+- `write` currently blocks phone fallback for tokenized bookings while token API remains disabled, so it is not a safe production dark launch.
+- No runtime, schema, migration file, binding, secret, remote D1 write, LINE/Web Push implementation change, or production deployment.
 ## 2026-07-17 - Sprint B6.5 Guest Cancellation Token
 
 ### Added
