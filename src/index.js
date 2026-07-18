@@ -111,6 +111,19 @@ function customerLiffIdentityLoginEnabled(env) {
   return envValue(env, "CUSTOMER_LIFF_IDENTITY_LOGIN_ENABLED", "true").toLowerCase() !== "false";
 }
 
+function guestCancelTokenRolloutMode(env) {
+  const mode = envValue(env, "GUEST_CANCEL_TOKEN_ROLLOUT", "off").toLowerCase();
+  return ["off", "write", "verify", "enforce"].includes(mode) ? mode : "off";
+}
+
+function guestCancelTokenWriteEnabled(env) {
+  return ["write", "verify", "enforce"].includes(guestCancelTokenRolloutMode(env));
+}
+
+function guestCancelTokenVerifyEnabled(env) {
+  return ["verify", "enforce"].includes(guestCancelTokenRolloutMode(env));
+}
+
 async function secureCompare(actual, expected) {
   const left = new TextEncoder().encode(String(actual || ""));
   const right = new TextEncoder().encode(String(expected || ""));
@@ -283,6 +296,9 @@ export default {
     let activeTenantId = tenantIdFromUrl(url, env);
     if (url.pathname.startsWith("/api/push/")) return handlePushApi(request, env, activeTenantId);
     if (!url.searchParams.has("tenant") && liffStateParams.get("tenant")) activeTenantId = liffStateParams.get("tenant");
+
+    const storeCancelTokenApiRoute = parseStoreBookingCancelTokenApiPath(url.pathname);
+    if (storeCancelTokenApiRoute) return handleStoreBookingCancelTokenApi(request, env, storeCancelTokenApiRoute, runtime);
 
     const storeCustomerApiRoute = parseStoreCustomerApiPath(url.pathname);
     if (storeCustomerApiRoute) return handleStoreCustomerAuthApi(request, env, storeCustomerApiRoute);
@@ -666,6 +682,12 @@ function parseStoreCustomerApiPath(pathname = "") {
   return { slug: normalizeStoreSlug(decodeStorePathPart(parts[2])), action: parts[4] };
 }
 
+function parseStoreBookingCancelTokenApiPath(pathname = "") {
+  const parts = String(pathname || "").split("/").filter(Boolean);
+  if (parts.length !== 5 || parts[0] !== "store" || parts[2] !== "api" || parts[3] !== "bookings" || parts[4] !== "cancel-token") return null;
+  return { slug: normalizeStoreSlug(decodeStorePathPart(parts[1])), action: "cancel-token" };
+}
+
 function storeErrorResponse(result) {
   return Response.json({ ok: false, error: { code: result.code || "STORE_NOT_FOUND", message: result.message || "店家網址不存在" } }, { status: result.status || 404, headers: jsonHeaders });
 }
@@ -722,6 +744,7 @@ function classifyApiRoute(pathname, method = "GET") {
 
 function apiRouteMethods(pathname) {
   if (parseStoreCustomerApiPath(pathname)) return ["POST"];
+  if (parseStoreBookingCancelTokenApiPath(pathname)) return ["POST"];
   const routes = {
     "/api/health": ["GET"],
     "/api/merchant/liff-login": ["POST"],
@@ -803,6 +826,19 @@ async function handleStoreCustomerAuthApi(request, env, route) {
   return storeErrorResponse({ status: 404, code: "STORE_NOT_FOUND", message: "店家網址不存在" });
 }
 
+async function handleStoreBookingCancelTokenApi(request, env, route, runtime = null) {
+  if (request.method !== "POST") return storeErrorResponse({ status: 405, code: "API_METHOD_NOT_ALLOWED", message: "API method is not allowed" });
+  const resolved = await resolveTenantBySlug(env, route.slug);
+  if (!resolved.ok) return guestCancelUnavailableResponse();
+  return cancelBookingWithGuestToken(request, env, resolved.tenantId, runtime);
+}
+
+function renderStoreCancelPage(store = {}) {
+  const title = `${store.name || "BookingOS"} 取消預約`;
+  const brandColor = /^#[0-9a-fA-F]{6}$/.test(store.primaryColor || "") ? store.primaryColor : "#176b5b";
+  return `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${escapeHtmlValue(title)}</title><style>:root{--brand:${escapeAttrValue(brandColor)};--line:#dce5df;--soft:#eef6f1}*{box-sizing:border-box}body{margin:0;background:#edf3ee;color:#08231b;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.card{width:min(520px,calc(100vw - 28px));margin:8vh auto;background:white;border:1px solid var(--line);border-radius:14px;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,.08)}.brand{display:flex;gap:12px;align-items:center}.logo{width:52px;height:52px;border-radius:12px;background:var(--brand);color:white;font-weight:950;display:grid;place-items:center}.muted{color:#66756e;line-height:1.6}.primary{width:100%;min-height:52px;border:0;border-radius:10px;background:var(--brand);color:white;font-weight:950;font-size:18px}.primary:disabled{opacity:.55}.secondary{display:block;text-align:center;margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:14px;color:#0d372d;text-decoration:none;font-weight:850}.status{margin:16px 0;color:#0d513f;font-weight:850}.error{color:#9b1c1c}</style></head><body><main class="card"><div class="brand"><div class="logo">B</div><div><h1>${escapeHtmlValue(store.name || "BookingOS")}</h1><p class="muted">取消預約</p></div></div><p class="muted">確認後將送出取消預約申請。此連結逾期、已使用或不適用時，系統會請你聯絡店家。</p><button class="primary" type="button" id="cancelBtn">取消此預約</button><p class="status" id="status">讀取取消連結中...</p><a class="secondary" href="${escapeAttrValue(storePath(store.slug || "", ""))}">回店家頁面</a></main><script>(function(){const status=document.getElementById("status");const btn=document.getElementById("cancelBtn");function fragment(){const raw=location.hash.startsWith("#")?location.hash.slice(1):location.hash;return new URLSearchParams(raw);}function message(text,isError){status.textContent=text;status.className=isError?"status error":"status";}const params=fragment();const bookingId=params.get("b")||"";const token=params.get("t")||"";if(!bookingId||!token){btn.disabled=true;message("取消連結不可用，請聯絡店家。",true);return;}message("請確認是否取消預約。",false);btn.addEventListener("click",async()=>{btn.disabled=true;message("取消中...",false);try{const res=await fetch(location.pathname.replace(/\/cancel\/?$/,"/api/bookings/cancel-token"),{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({bookingId,token})});const data=await res.json().catch(()=>({ok:false}));if(!res.ok||!data.ok)throw new Error("CANCEL_FAILED");message("已取消預約。",false);btn.textContent="已取消";}catch(error){btn.disabled=false;message("此預約目前無法取消，請聯絡店家。",true);}});})();</script></body></html>`;
+}
+
 async function handleStoreRoute(request, env, route) {
   const resolved = await resolveTenantBySlug(env, route.slug);
   if (!resolved.ok) return storeErrorResponse(resolved);
@@ -819,6 +855,9 @@ async function handleStoreRoute(request, env, route) {
   }
   if (section === "logout" && (request.method === "POST" || request.method === "GET")) {
     return redirectWithCookie(storePath(resolved.slug, "/login"), clearCustomerSessionCookie());
+  }
+  if (section === "cancel" && request.method === "GET") {
+    return html(renderStoreCancelPage({ ...(resolved.store || {}), slug: resolved.slug }));
   }
   if (["member", "points", "history"].includes(section) && request.method === "GET") {
     const session = await requireCustomerSession(request, env, resolved.tenantId);
@@ -972,6 +1011,41 @@ function randomNonce(size = 16) {
   const bytes = new Uint8Array(size);
   crypto.getRandomValues(bytes);
   return bytesToBase64Url(bytes);
+}
+
+function randomGuestCancelToken() {
+  return randomNonce(32);
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function guestCancelTokenHash(tenantId, bookingId, token) {
+  return sha256Hex(`${tenantId}:${bookingId}:${token}`);
+}
+
+function sqliteDateTimeFromDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 19).replace("T", " ");
+}
+
+function guestCancelTokenExpiresAt(bookingDate, endTime) {
+  const date = String(bookingDate || "").slice(0, 10);
+  const time = normalizeTime(endTime || "00:00");
+  const base = new Date(`${date}T${time}:00+08:00`);
+  if (Number.isNaN(base.getTime())) return sqliteDateTimeFromDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
+  return sqliteDateTimeFromDate(new Date(base.getTime() + 24 * 60 * 60 * 1000));
+}
+
+function isValidGuestCancelToken(value) {
+  const token = String(value || "").trim();
+  return token.length >= 32 && token.length <= 256 && /^[A-Za-z0-9_-]+$/.test(token);
+}
+
+function guestCancelUnavailableResponse(status = 404) {
+  return Response.json({ ok: false, error: { code: "CANCELLATION_NOT_AVAILABLE", message: "此預約目前無法取消，請聯絡店家。" } }, { status, headers: jsonHeaders });
 }
 
 async function createMerchantTenantSelectionToken(env, input) {
@@ -5527,6 +5601,78 @@ async function merchantBookingEventsResponse(env, tenantId, bookingId) {
   const rows = await env.DB.prepare("SELECT event_type, from_status, to_status, actor_type, reason, metadata_json, created_at FROM booking_events WHERE tenant_id = ? AND booking_id = ? ORDER BY created_at ASC").bind(tenantId, bookingId).all();
   return Response.json({ ok: true, events: rows.results || [] }, { headers: jsonHeaders });
 }
+async function prepareGuestCancelTokenInsert(env, { tenantId, bookingId, bookingDate, endTime }) {
+  const token = randomGuestCancelToken();
+  const tokenHash = await guestCancelTokenHash(tenantId, bookingId, token);
+  const expiresAt = guestCancelTokenExpiresAt(bookingDate, endTime);
+  const statement = env.DB.prepare(`
+    INSERT INTO booking_cancel_tokens (id, tenant_id, booking_id, token_hash, status, expires_at, created_by, created_reason, metadata_json)
+    VALUES (?, ?, ?, ?, 'active', ?, 'system', 'guest_booking_created', '{}')
+  `).bind(crypto.randomUUID(), tenantId, bookingId, tokenHash, expiresAt);
+  return { statement };
+}
+
+async function bookingHasCancelToken(env, tenantId, bookingId) {
+  if (!env.DB) return false;
+  const row = await env.DB.prepare("SELECT id FROM booking_cancel_tokens WHERE tenant_id = ? AND booking_id = ? LIMIT 1").bind(tenantId, bookingId).first();
+  return Boolean(row?.id);
+}
+
+async function loadGuestCancelToken(env, tenantId, bookingId, token) {
+  const tokenHash = await guestCancelTokenHash(tenantId, bookingId, token);
+  return env.DB.prepare("SELECT id, status, expires_at FROM booking_cancel_tokens WHERE tenant_id = ? AND booking_id = ? AND token_hash = ? LIMIT 1").bind(tenantId, bookingId, tokenHash).first();
+}
+
+function isGuestCancelTokenUsable(row) {
+  if (!row || row.status !== "active") return false;
+  const expiresAt = String(row.expires_at || "").replace(" ", "T") + "Z";
+  const expiresMs = Date.parse(expiresAt);
+  return Number.isFinite(expiresMs) && expiresMs > Date.now();
+}
+
+async function markGuestCancelTokenVerified(env, tenantId, tokenId) {
+  try {
+    await env.DB.prepare("UPDATE booking_cancel_tokens SET last_verified_at = datetime('now'), verify_count = verify_count + 1 WHERE tenant_id = ? AND id = ?").bind(tenantId, tokenId).run();
+  } catch (error) {
+    // Verification audit is best-effort and must not leak token validity.
+  }
+}
+
+async function markGuestCancelTokenUsed(env, tenantId, tokenId) {
+  try {
+    await env.DB.prepare("UPDATE booking_cancel_tokens SET status = 'used', used_at = COALESCE(used_at, datetime('now')), last_verified_at = datetime('now'), verify_count = verify_count + 1 WHERE tenant_id = ? AND id = ? AND status = 'active'").bind(tenantId, tokenId).run();
+  } catch (error) {
+    // Token consumption is best-effort after a successful cancellation.
+  }
+}
+
+async function cancelGuestBookingWithLegacyBoundary(env, { tenantId, bookingId, booking, currentStatus, cancelledBy = "guest", actorType = "customer", actorId = "guest", reason = "顧客取消" }) {
+  await env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, ?), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(cancelledBy, reason, tenantId, bookingId).run();
+  if (booking.customer_id) await rollbackBookingCustomerPoints(env, tenantId, bookingId, booking.customer_id);
+  await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType, actorId, reason });
+}
+
+async function cancelBookingWithGuestToken(request, env, tenantId) {
+  if (!env.DB || !guestCancelTokenVerifyEnabled(env)) return guestCancelUnavailableResponse();
+  try {
+    const payload = await request.json();
+    const bookingId = String(payload.bookingId || payload.b || "").trim();
+    const token = String(payload.token || payload.t || "").trim();
+    if (!bookingId || !isValidGuestCancelToken(token)) return guestCancelUnavailableResponse();
+    const tokenRow = await loadGuestCancelToken(env, tenantId, bookingId, token);
+    if (tokenRow?.id) await markGuestCancelTokenVerified(env, tenantId, tokenRow.id);
+    if (!isGuestCancelTokenUsable(tokenRow)) return guestCancelUnavailableResponse();
+    const booking = await env.DB.prepare("SELECT b.id, b.customer_id, b.customer_phone, b.status, c.phone AS member_phone FROM bookings b LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.id = ?").bind(tenantId, bookingId).first();
+    if (!booking) return guestCancelUnavailableResponse();
+    const currentStatus = normalizeBookingStatus(booking.status);
+    if (currentStatus === "completed" || currentStatus === "cancelled") return guestCancelUnavailableResponse();
+    await cancelGuestBookingWithLegacyBoundary(env, { tenantId, bookingId, booking, currentStatus, reason: limitText(payload.reason || "顧客取消", 300) });
+    await markGuestCancelTokenUsed(env, tenantId, tokenRow.id);
+    return Response.json({ ok: true }, { headers: jsonHeaders });
+  } catch (error) {
+    return guestCancelUnavailableResponse();
+  }
+}
 async function cancelBooking(request, env, tenantId, runtime = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
@@ -5555,6 +5701,7 @@ async function cancelBooking(request, env, tenantId, runtime = null) {
     } else {
       const phone = String(payload.phone || "").trim();
       if (!phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
+      if (guestCancelTokenWriteEnabled(env) && await bookingHasCancelToken(env, tenantId, bookingId)) return guestCancelUnavailableResponse();
       if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
       responseProfilePhone = phone;
     }
@@ -5581,9 +5728,7 @@ async function cancelBooking(request, env, tenantId, runtime = null) {
         });
         if (!result.ok) return Response.json({ ok: false, error: result.message }, { status: result.status || 400, headers: jsonHeaders });
       } else {
-        await env.DB.prepare("UPDATE bookings SET status = 'cancelled', cancelled_at = COALESCE(cancelled_at, datetime('now')), cancelled_by = COALESCE(cancelled_by, ?), cancel_reason = COALESCE(NULLIF(?, ''), cancel_reason), updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(cancelledBy, reason, tenantId, bookingId).run();
-        if (booking.customer_id) await rollbackBookingCustomerPoints(env, tenantId, bookingId, booking.customer_id);
-        await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType, actorId, reason });
+        await cancelGuestBookingWithLegacyBoundary(env, { tenantId, bookingId, booking, currentStatus, cancelledBy, actorType, actorId, reason });
       }
     }
     const profile = authorizedCustomerId ? await loadCustomerProfileById(env, tenantId, authorizedCustomerId) : await loadCustomerPrefillByPhone(env, tenantId, responseProfilePhone);
@@ -5684,10 +5829,22 @@ async function createBooking(request, env, data) {
   const redeemedPoints = requestedRedeemPoints;
   const payableAmount = Math.max(0, originalPrice - redeemedPoints);
   const bookingId = crypto.randomUUID();
-  await env.DB.prepare(`
+  const bookingInsertStatement = env.DB.prepare(`
     INSERT INTO bookings (id, tenant_id, customer_id, staff_id, service_id, service_name, duration_minutes, price, booking_date, start_time, end_time, customer_name, customer_phone, status, source, note)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-  `).bind(bookingId, tenantId, customerId, selectedStaffId, selectedService.id, selectedService.name, duration, payableAmount, date, start, end, name, rawPhone || '現場未留', source, payload.note || null).run();
+  `).bind(bookingId, tenantId, customerId, selectedStaffId, selectedService.id, selectedService.name, duration, payableAmount, date, start, end, name, rawPhone || '現場未留', source, payload.note || null);
+  const guestCancelTokenPlan = guestCancelTokenWriteEnabled(env) && !customerSession.ok && source === "web"
+    ? await prepareGuestCancelTokenInsert(env, { tenantId, bookingId, bookingDate: date, endTime: end })
+    : null;
+  if (guestCancelTokenPlan) {
+    if (typeof env.DB.batch === "function") await env.DB.batch([bookingInsertStatement, guestCancelTokenPlan.statement]);
+    else {
+      await bookingInsertStatement.run();
+      await guestCancelTokenPlan.statement.run();
+    }
+  } else {
+    await bookingInsertStatement.run();
+  }
 
   await env.DB.prepare("UPDATE customers SET total_bookings = total_bookings + 1, last_booking_at = ?, updated_at = datetime('now') WHERE tenant_id = ? AND id = ?").bind(`${date} ${start}`, tenantId, customerId).run();
 

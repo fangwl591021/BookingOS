@@ -1,0 +1,299 @@
+import assert from "node:assert/strict";
+import app from "../src/index.js";
+
+const SECRET = "guest-cancel-token-test-secret";
+const WEEKLY_HOURS = JSON.stringify({
+  monday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" },
+  tuesday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" },
+  wednesday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" },
+  thursday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" },
+  friday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" },
+  saturday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" },
+  sunday: { closed: false, open: "09:00", close: "18:00", breakStart: "", breakEnd: "" }
+});
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function tokenHash(tenantId, bookingId, token) {
+  return sha256Hex(`${tenantId}:${bookingId}:${token}`);
+}
+
+function makeBooking(overrides = {}) {
+  return {
+    id: "booking-1",
+    tenant_id: "tenant-a",
+    customer_id: "cust-1",
+    customer_name: "Guest A",
+    customer_phone: "0912345678",
+    status: "pending",
+    booking_date: "2026-07-20",
+    start_time: "09:00",
+    end_time: "10:00",
+    service_id: "svc-1",
+    staff_id: "staff-1",
+    updated_at: "2026-07-20 00:00:00",
+    ...overrides
+  };
+}
+
+function createDb(options = {}) {
+  const calls = [];
+  const events = [];
+  const tokens = options.tokens ? options.tokens.map((token) => ({ ...token })) : [];
+  const booking = options.booking === undefined ? makeBooking() : options.booking;
+  const batchCalls = [];
+
+  function tenantRow() {
+    return {
+      id: "tenant-a",
+      slug: "anhe",
+      name: "安和整復調理",
+      brand_name: "安和整復調理",
+      brand_primary_color: "#176b5b",
+      phone: "02-2345-6789",
+      email: "",
+      address: "台北市",
+      logo_url: "",
+      business_type: "整復推拿",
+      timezone: "Asia/Taipei",
+      status: "active",
+      contract_start: "2026-07-01",
+      contract_end: "2027-07-01",
+      billing_plan_id: "solo",
+      staff_limit: 2,
+      booking_enabled: 1,
+      setup_test_completed_at: "2026-07-01 00:00:00",
+      onboarding_status: "completed",
+      onboarding_completed_at: "2026-07-01 00:00:00",
+      active_staff_count: 1,
+      active_booking_staff_count: 1
+    };
+  }
+
+  function rowsFor(sql, binds) {
+    if (sql.includes("FROM tenants t WHERE t.slug = ?")) {
+      return binds[0] === "anhe" ? [tenantRow()] : [];
+    }
+    if (sql.includes("FROM tenants t WHERE t.id = ?")) {
+      return binds[0] === "tenant-a" ? [tenantRow()] : [];
+    }
+    if (sql.includes("FROM business_settings")) {
+      return [{ weekly_hours_json: WEEKLY_HOURS, allow_overtime_booking: 0, point_spend_amount: 100, point_reward_points: 1 }];
+    }
+    if (sql.includes("FROM services s")) {
+      return [{ id: "svc-1", name: "整復調理", category: "整復", service_enabled: 1, sort_order: 1, resource_type_id: "room", resource_type_name: "床位", point_redeem_limit: 0, minutes: 60, price: 1200, duration_enabled: 1 }];
+    }
+    if (sql.includes("FROM resource_types")) {
+      return [{ id: "room", name: "床位", quantity: 1 }];
+    }
+    if (sql.includes("FROM staff_members")) {
+      return [{ id: "staff-1", name: "Tony", avatar_url: "", phone: "", email: "", role: "整復師", enabled: 1, sort_order: 1, service_ids: JSON.stringify(["svc-1"]), crm_permissions: "[]", plan_booking_status: "active" }];
+    }
+    if (sql.includes("FROM bookings") && sql.includes("source = 'setup_test'")) {
+      return [{ count: 1 }];
+    }
+    if (sql.includes("FROM bookings b") && sql.includes("WHERE b.tenant_id = ? AND b.booking_date = ?")) {
+      return [];
+    }
+    if (sql.includes("FROM customers WHERE tenant_id = ? AND phone = ?")) {
+      return options.existingCustomer === false ? [] : [{ id: "cust-1" }];
+    }
+    if (sql.includes("SELECT points_balance FROM customers")) {
+      return [{ points_balance: 0 }];
+    }
+    if (sql.includes("SELECT b.id, b.customer_id, b.customer_phone, b.status")) {
+      if (!booking || binds[0] !== "tenant-a" || binds[1] !== booking.id) return [];
+      return [{ ...booking, member_phone: booking.customer_phone }];
+    }
+    if (sql.includes("SELECT id FROM booking_cancel_tokens WHERE tenant_id = ? AND booking_id = ? LIMIT 1")) {
+      return tokens.filter((token) => token.tenant_id === binds[0] && token.booking_id === binds[1]).slice(0, 1);
+    }
+    if (sql.includes("SELECT id, status, expires_at FROM booking_cancel_tokens")) {
+      return tokens.filter((token) => token.tenant_id === binds[0] && token.booking_id === binds[1] && token.token_hash === binds[2]).slice(0, 1);
+    }
+    if (sql.includes("point_transactions")) {
+      return [{ points: 10 }];
+    }
+    if (sql.includes("SELECT line_user_id FROM customers")) return [];
+    if (sql.includes("FROM line_oa_settings")) return [];
+    return [];
+  }
+
+  function runSql(sql, binds) {
+    const normalizedSql = sql.trimStart();
+    if (normalizedSql.startsWith("INSERT INTO bookings")) {
+      return { meta: { changes: 1 } };
+    }
+    if (normalizedSql.startsWith("INSERT INTO booking_cancel_tokens")) {
+      const row = { id: binds[0], tenant_id: binds[1], booking_id: binds[2], token_hash: binds[3], status: "active", expires_at: binds[4] };
+      tokens.push(row);
+      return { meta: { changes: 1 } };
+    }
+    if (normalizedSql.startsWith("UPDATE booking_cancel_tokens SET status = 'used'")) {
+      const token = tokens.find((item) => item.tenant_id === binds[0] && item.id === binds[1] && item.status === "active");
+      if (token && !options.failMarkUsed) token.status = "used";
+      return { meta: { changes: token && !options.failMarkUsed ? 1 : 0 } };
+    }
+    if (normalizedSql.startsWith("UPDATE booking_cancel_tokens SET last_verified_at")) {
+      return { meta: { changes: 1 } };
+    }
+    if (normalizedSql.startsWith("UPDATE bookings SET status = 'cancelled'")) {
+      if (booking) {
+        booking.status = "cancelled";
+        booking.cancelled_by = binds[0];
+      }
+      return { meta: { changes: booking ? 1 : 0 } };
+    }
+    if (normalizedSql.startsWith("INSERT INTO booking_events")) {
+      events.push({ event_type: binds[3], from_status: binds[4], to_status: binds[5] });
+      return { meta: { changes: 1 } };
+    }
+    if (normalizedSql.startsWith("UPDATE customers SET total_bookings") || normalizedSql.startsWith("UPDATE customers SET")) {
+      return { meta: { changes: 1 } };
+    }
+    if (normalizedSql.startsWith("INSERT INTO point_transactions")) {
+      return { meta: { changes: 1 } };
+    }
+    return { meta: { changes: 1 } };
+  }
+
+  function statement(sql, binds = []) {
+    return {
+      sql,
+      binds,
+      bind(...nextBinds) {
+        calls.push({ sql, binds: nextBinds });
+        return statement(sql, nextBinds);
+      },
+      all: async () => ({ results: rowsFor(sql, binds) }),
+      first: async () => rowsFor(sql, binds)[0] || null,
+      run: async () => runSql(sql, binds)
+    };
+  }
+
+  return {
+    calls,
+    events,
+    tokens,
+    booking,
+    batchCalls,
+    prepare(sql) {
+      return statement(sql);
+    },
+    async batch(statements) {
+      batchCalls.push(statements.map((item) => item.sql));
+      for (const item of statements) await item.run();
+      return statements.map(() => ({ success: true }));
+    }
+  };
+}
+
+function env(db, rollout = "verify") {
+  return {
+    DB: db,
+    CUSTOMER_SESSION_SECRET: SECRET,
+    CUSTOMER_SESSION_TTL_SECONDS: "3600",
+    GUEST_CANCEL_TOKEN_ROLLOUT: rollout
+  };
+}
+
+async function post(path, db, payload, rollout = "verify") {
+  const request = new Request("https://example.test" + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+  const response = await app.fetch(request, env(db, rollout), {});
+  return { response, body: JSON.parse(await response.text()) };
+}
+
+function countSql(db, fragment) {
+  return db.calls.filter((call) => call.sql.includes(fragment)).length;
+}
+
+function firstSqlIndex(db, fragment) {
+  return db.calls.findIndex((call) => call.sql.includes(fragment));
+}
+
+{
+  const db = createDb();
+  const { response, body } = await post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Guest A", customerPhone: "0912345678" }, "write");
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(db.batchCalls.length, 1, "guest booking and token row use one D1 batch when rollout writes tokens");
+  assert.equal(db.tokens.length, 1);
+  assert.match(db.tokens[0].token_hash, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(body).includes(db.tokens[0].token_hash), false);
+  assert.equal(JSON.stringify(db.tokens).includes("0912345678"), false);
+}
+
+{
+  const db = createDb({ booking: makeBooking({ source: "walk_in" }) });
+  const { response } = await post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Walk In", customerPhone: "", source: "walk_in" }, "write");
+  assert.equal(response.status, 200);
+  assert.equal(db.tokens.length, 0, "walk-in bookings do not receive guest cancel tokens");
+}
+
+{
+  const token = "valid_cancel_token_abcdefghijklmnopqrstuvwxyz123456";
+  const hash = await tokenHash("tenant-a", "booking-1", token);
+  const db = createDb({ tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: hash, status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token });
+  assert.equal(response.status, 200);
+  assert.deepEqual(body, { ok: true });
+  assert.equal(db.booking.status, "cancelled");
+  const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
+  const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
+  const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
+  assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "token cancel keeps update -> rollback -> event order");
+  assert.equal(db.tokens[0].status, "used");
+}
+
+for (const [label, tokenRow, tokenValue] of [
+  ["wrong token", { id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", "right_token_abcdefghijklmnopqrstuvwxyz123456"), status: "active", expires_at: "2099-01-01 00:00:00" }, "wrong_token_abcdefghijklmnopqrstuvwxyz123456"],
+  ["expired token", { id: "tok-2", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", "expired_token_abcdefghijklmnopqrstuvwxyz123456"), status: "active", expires_at: "2000-01-01 00:00:00" }, "expired_token_abcdefghijklmnopqrstuvwxyz123456"],
+  ["revoked token", { id: "tok-3", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", "revoked_token_abcdefghijklmnopqrstuvwxyz123456"), status: "revoked", expires_at: "2099-01-01 00:00:00" }, "revoked_token_abcdefghijklmnopqrstuvwxyz123456"],
+  ["used token", { id: "tok-4", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", "used_token_abcdefghijklmnopqrstuvwxyz123456"), status: "used", expires_at: "2099-01-01 00:00:00" }, "used_token_abcdefghijklmnopqrstuvwxyz123456"]
+]) {
+  const db = createDb({ tokens: [tokenRow] });
+  const { response, body } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: tokenValue });
+  assert.equal(response.status, 404, label);
+  assert.equal(body.error.code, "CANCELLATION_NOT_AVAILABLE", label);
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 0, label);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0, label);
+}
+
+{
+  const db = createDb();
+  const { response, body } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: "bad token in query-like string" });
+  assert.equal(response.status, 404);
+  assert.equal(body.error.code, "CANCELLATION_NOT_AVAILABLE");
+}
+
+{
+  const db = createDb({ tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, "write");
+  assert.equal(response.status, 404);
+  assert.equal(body.error.code, "CANCELLATION_NOT_AVAILABLE");
+  assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 0);
+}
+
+{
+  const db = createDb();
+  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" });
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(db.booking.status, "cancelled");
+}
+
+{
+  const token = "consume_fail_token_abcdefghijklmnopqrstuvwxyz123456";
+  const hash = await tokenHash("tenant-a", "booking-1", token);
+  const db = createDb({ failMarkUsed: true, tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: hash, status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const first = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token });
+  assert.equal(first.response.status, 200);
+  const second = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token });
+  assert.equal(second.response.status, 404);
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 1, "booking status prevents repeated cancellation even when mark used fails");
+}
+
+console.log("guest-cancel-token-test: PASS");

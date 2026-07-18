@@ -1,3 +1,23 @@
+## 2026-07-17 - Sprint B6.5 Guest Cancellation Token
+
+### Added
+
+- Added migration `0023_booking_cancel_tokens.sql` for hash-only guest cancellation tokens.
+- Added guest token cancellation page and slug-scoped token cancel API.
+- Added rollout flag handling for `GUEST_CANCEL_TOKEN_ROLLOUT=off|write|verify|enforce` without changing `wrangler.toml`.
+- Added focused B6.5 guest cancellation token tests.
+
+### Changed
+
+- New unauthenticated web guest bookings can create cancellation token rows when rollout writes tokens.
+- Tokenized bookings are prevented from using transitional phone fallback as soon as a cancel token row exists.
+
+### Safety
+
+- Token plaintext is not stored in D1 and is not returned by the booking creation response.
+- Token cancel success returns only `{ ok: true }`; token failures use generic `CANCELLATION_NOT_AVAILABLE`.
+- No remote D1 migration, binding, secret, wrangler, LINE/Web Push implementation change, or production deployment.
+- The known non-transaction and non-persistent-idempotency risks remain.
 ## 2026-07-17 - Sprint B6.4 Guest Cancellation Token ADR
 
 ### Added
