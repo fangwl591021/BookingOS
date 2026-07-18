@@ -4,6 +4,18 @@
 
 Proposed. Documentation-only PR. Not implemented. Not deployed.
 
+## B6.5 Adopted Values
+
+The B6.5 implementation adopts these values:
+
+- expiry: booking end time plus 24 hours;
+- public link: `/store/{slug}/cancel#b={bookingId}&t={token}`;
+- API: `POST /store/{slug}/api/bookings/cancel-token` with token in JSON body only;
+- rollout flag: `GUEST_CANCEL_TOKEN_ROLLOUT=off|write|verify|enforce`;
+- token success response: `{ "ok": true }`;
+- token failure response: `CANCELLATION_NOT_AVAILABLE`;
+- used marking: best-effort after successful cancellation;
+- no automatic backfill resend in B6.5.
 ## Context
 
 BookingOS currently has two customer-facing cancellation paths:
