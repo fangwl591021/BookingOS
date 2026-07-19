@@ -286,18 +286,27 @@
 - Proposed independent `booking_cancel_tokens` table, indexes, rollout, rollback, observability, and B6.5 minimal implementation scope.
 - This does not solve cancellation transactionality, point rollback atomicity, notification persistence, or idempotency.
 - No runtime, schema, migration file, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
+## Sprint B6.7 Guest Token Dark Launch Observability 2026-07-19
+
+- `GUEST_CANCEL_TOKEN_ROLLOUT=write` now acts as a true dark launch: it can create hash-only guest cancel token rows without blocking legacy `bookingId + phone` fallback.
+- `verify` / `enforce` still block phone fallback for bookings that already have a cancel-token row.
+- Invalid or missing rollout mode remains fail-safe to `off`.
+- Added log-only safe observations for token issued, token cancel success/failure, legacy fallback success, and token-policy fallback blocks.
+- Safe observation fields are limited to `eventType`, `rolloutMode`, `result`, `reasonCode`, `pathType`, and `credentialRowPresent`; no tenant id, booking id, phone, token plaintext, token hash, LINE UID, request body, cookie, or authorization header is logged by B6.7 observations.
+- No schema, migration file, Remote D1 write, wrangler/secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
+- Production rollout remains unauthorized until Remote D1 migration, link delivery, observability approval, and sunset gates are separately approved.
 ## Sprint B6.5 Guest Cancellation Token 2026-07-17
 
 - 新增 `booking_cancel_tokens` schema migration 檔，但尚未套用 remote D1。
 - 新增 guest token cancel route：`/store/{slug}/cancel#b={bookingId}&t={token}` 與 `POST /store/{slug}/api/bookings/cancel-token`。
 - 新 guest web booking 在 rollout flag 啟用 write/verify/enforce 時建立 hash-only token row；不回傳 token plaintext。
-- rollout flag 為 write/verify/enforce 時，只要 booking 已存在 token row，即禁止 legacy `bookingId + phone` fallback；僅既有且無 token row 的 booking 保留 legacy phone fallback。
+- B6.7 後 rollout flag 行為：`write` 只寫入 hash-only token row 且不封鎖 legacy phone fallback；`verify` / `enforce` 才會在 booking 已存在 token row 時禁止 legacy `bookingId + phone` fallback。
 - B6.5 已合併至開發基準，但未部署、未執行 remote migration、未核准 production rollout、未修改 wrangler/secret/binding，LINE/Web Push 實作未改。
 - 仍保留 cancellation 非 transaction 與無 persistent idempotency 的已知風險。
 ## Sprint B6.6 Guest Token Rollout Guardrails 2026-07-18
 
 - 新增文件化 rollout guardrails，明確標記 production `write` / `verify` / `enforce` 目前均為 NO-GO。
-- `write` 目前不是純 dark launch：只要 token row 存在就封鎖 legacy phone fallback，但 token API 在 `write` 中停用，可能讓新 guest 無法自助取消。
+- B6.7 已將 `write` 修正為真正 dark launch：寫入 token row 但不封鎖 legacy phone fallback。
 - `verify` / `enforce` 需等待取消連結傳遞、observability、Remote D1 migration 與正式核准條件完成。
 - `enforce` 目前與 `verify` 無實質 runtime 差異，不可宣稱已完成 fallback sunset。
 - B6.6 僅文件與狀態整理；未修改 runtime、schema、migration、wrangler、secret/binding，未執行 Remote D1、部署、LINE/Web Push 實送。

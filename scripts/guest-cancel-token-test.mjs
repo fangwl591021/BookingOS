@@ -206,6 +206,36 @@ async function post(path, db, payload, rollout = "verify") {
   return { response, body: JSON.parse(await response.text()) };
 }
 
+async function captureLogs(action) {
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (line) => lines.push(String(line));
+  try {
+    const result = await action();
+    return { result, lines };
+  } finally {
+    console.log = originalLog;
+  }
+}
+
+function parseGuestCancelObservations(lines) {
+  return lines
+    .map((line) => {
+      try { return JSON.parse(line); } catch (error) { return null; }
+    })
+    .filter((record) => record?.event === "guest_cancel.observation");
+}
+
+function assertSafeObservationLogs(lines, disallowedValues = []) {
+  const text = lines.join("\n");
+  for (const value of disallowedValues.filter(Boolean)) {
+    assert.equal(text.includes(value), false, `safe observations must not include ${value}`);
+  }
+  for (const record of parseGuestCancelObservations(lines)) {
+    assert.deepEqual(Object.keys(record).sort(), ["credentialRowPresent", "event", "eventType", "level", "pathType", "reasonCode", "result", "rolloutMode", "runtimeVersion", "service", "timestamp"].sort());
+  }
+}
+
 function countSql(db, fragment) {
   return db.calls.filter((call) => call.sql.includes(fragment)).length;
 }
@@ -216,7 +246,8 @@ function firstSqlIndex(db, fragment) {
 
 {
   const db = createDb();
-  const { response, body } = await post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Guest A", customerPhone: "0912345678" }, "write");
+  const { result, lines } = await captureLogs(() => post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Guest A", customerPhone: "0912345678" }, "write"));
+  const { response, body } = result;
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
   assert.equal(db.batchCalls.length, 1, "guest booking and token row use one D1 batch when rollout writes tokens");
@@ -224,6 +255,9 @@ function firstSqlIndex(db, fragment) {
   assert.match(db.tokens[0].token_hash, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(body).includes(db.tokens[0].token_hash), false);
   assert.equal(JSON.stringify(db.tokens).includes("0912345678"), false);
+  const observations = parseGuestCancelObservations(lines);
+  assert.ok(observations.some((record) => record.eventType === "guest_cancel_token_issued" && record.rolloutMode === "write" && record.credentialRowPresent === true));
+  assertSafeObservationLogs(lines, ["tenant-a", "booking-1", "0912345678", db.tokens[0].token_hash]);
 }
 
 {
@@ -237,15 +271,17 @@ function firstSqlIndex(db, fragment) {
   const token = "valid_cancel_token_abcdefghijklmnopqrstuvwxyz123456";
   const hash = await tokenHash("tenant-a", "booking-1", token);
   const db = createDb({ tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: hash, status: "active", expires_at: "2099-01-01 00:00:00" }] });
-  const { response, body } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token });
-  assert.equal(response.status, 200);
-  assert.deepEqual(body, { ok: true });
+  const { result, lines } = await captureLogs(() => post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token }));
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.body, { ok: true });
   assert.equal(db.booking.status, "cancelled");
   const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
   const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
   const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
   assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "token cancel keeps update -> rollback -> event order");
   assert.equal(db.tokens[0].status, "used");
+  assert.ok(parseGuestCancelObservations(lines).some((record) => record.eventType === "guest_cancel_token_cancel_success" && record.rolloutMode === "verify"));
+  assertSafeObservationLogs(lines, ["tenant-a", "booking-1", "0912345678", token, hash]);
 }
 
 for (const [label, tokenRow, tokenValue] of [
@@ -263,18 +299,40 @@ for (const [label, tokenRow, tokenValue] of [
 }
 
 {
+  const badToken = "bad token in query-like string";
   const db = createDb();
-  const { response, body } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: "bad token in query-like string" });
-  assert.equal(response.status, 404);
-  assert.equal(body.error.code, "CANCELLATION_NOT_AVAILABLE");
+  const { result, lines } = await captureLogs(() => post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: badToken }));
+  assert.equal(result.response.status, 404);
+  assert.equal(result.body.error.code, "CANCELLATION_NOT_AVAILABLE");
+  assert.ok(parseGuestCancelObservations(lines).some((record) => record.eventType === "guest_cancel_token_cancel_failure" && record.reasonCode === "malformed"));
+  assertSafeObservationLogs(lines, ["tenant-a", "booking-1", "0912345678", badToken]);
 }
 
 {
   const db = createDb({ tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
-  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, "write");
-  assert.equal(response.status, 404);
-  assert.equal(body.error.code, "CANCELLATION_NOT_AVAILABLE");
+  const { result, lines } = await captureLogs(() => post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, "write"));
+  assert.equal(result.response.status, 200, "write mode is a dark launch and must not block phone fallback");
+  assert.equal(result.body.ok, true);
+  assert.equal(db.booking.status, "cancelled");
+  assert.ok(parseGuestCancelObservations(lines).some((record) => record.eventType === "guest_cancel_legacy_fallback_success" && record.rolloutMode === "write" && record.credentialRowPresent === true));
+  assertSafeObservationLogs(lines, ["tenant-a", "booking-1", "0912345678", "x".repeat(64)]);
+}
+
+for (const rollout of ["verify", "enforce"]) {
+  const db = createDb({ tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { result, lines } = await captureLogs(() => post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, rollout));
+  assert.equal(result.response.status, 404, `${rollout} mode blocks tokenized phone fallback`);
+  assert.equal(result.body.error.code, "CANCELLATION_NOT_AVAILABLE");
   assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 0);
+  assert.ok(parseGuestCancelObservations(lines).some((record) => record.eventType === "guest_cancel_phone_fallback_blocked" && record.rolloutMode === rollout));
+  assertSafeObservationLogs(lines, ["tenant-a", "booking-1", "0912345678", "x".repeat(64)]);
+}
+
+for (const rollout of ["off", "typo"]) {
+  const db = createDb();
+  const { response } = await post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Guest A", customerPhone: "0912345678" }, rollout);
+  assert.equal(response.status, 200);
+  assert.equal(db.tokens.length, 0, `${rollout} mode must not create token rows`);
 }
 
 {

@@ -1,3 +1,20 @@
+## 2026-07-19 - Sprint B6.7 Guest Token Dark Launch Observability
+
+### Changed
+
+- Changed `GUEST_CANCEL_TOKEN_ROLLOUT=write` into a true dark launch: new guest web bookings can write hash-only token rows while legacy `bookingId + phone` fallback remains allowed.
+- Kept `verify` and `enforce` blocking phone fallback for tokenized bookings.
+
+### Added
+
+- Added safe structured observations for token issued, token cancel success/failure, legacy fallback success, and fallback blocked events.
+- Added B6.7 focused tests for rollout modes and sensitive-data-free log payloads.
+
+### Safety
+
+- Safe observations do not include tenant id, booking id, customer id, phone, token plaintext, token hash, LINE UID, request body, cookie, or authorization header.
+- No schema, migration file, binding, secret, wrangler, remote D1 write, LINE/Web Push implementation change, or production deployment.
+- Non-transaction and non-persistent-idempotency risks remain.
 ## 2026-07-18 - Sprint B6.6 Guest Token Rollout Guardrails
 
 ### Added
@@ -9,7 +26,7 @@
 ### Safety
 
 - Production `write`, `verify`, and `enforce` remain NO-GO until migration, link delivery, observability, and approval gates are complete.
-- `write` currently blocks phone fallback for tokenized bookings while token API remains disabled, so it is not a safe production dark launch.
+- Superseded by B6.7: `write` no longer blocks phone fallback and is now a true dark launch mode, but production rollout still requires authorization.
 - No runtime, schema, migration file, binding, secret, remote D1 write, LINE/Web Push implementation change, or production deployment.
 ## 2026-07-17 - Sprint B6.5 Guest Cancellation Token
 
@@ -23,7 +40,7 @@
 ### Changed
 
 - New unauthenticated web guest bookings can create cancellation token rows when rollout writes tokens.
-- Tokenized bookings are prevented from using transitional phone fallback as soon as a cancel token row exists.
+- Superseded by B6.7: tokenized bookings prevent transitional phone fallback only in `verify` / `enforce`; `write` keeps fallback available as dark launch.
 
 ### Safety
 
