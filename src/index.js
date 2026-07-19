@@ -127,14 +127,18 @@ function guestCancelTokenVerifyEnabled(env) {
 function logGuestCancelObservation(runtime, eventType, fields = {}) {
   const logger = runtime?.logger;
   if (!logger?.info) return;
-  logger.info("guest_cancel.observation", {
-    eventType,
-    rolloutMode: fields.rolloutMode || "off",
-    result: fields.result || "unknown",
-    reasonCode: fields.reasonCode || "none",
-    pathType: fields.pathType || "unknown",
-    credentialRowPresent: Boolean(fields.hasTokenRow)
-  });
+  try {
+    logger.info("guest_cancel.observation", {
+      eventType,
+      rolloutMode: fields.rolloutMode || "off",
+      result: fields.result || "unknown",
+      reasonCode: fields.reasonCode || "none",
+      pathType: fields.pathType || "unknown",
+      credentialRowPresent: Boolean(fields.hasTokenRow)
+    });
+  } catch (error) {
+    // Observation logging must never affect booking creation or cancellation.
+  }
 }
 
 async function secureCompare(actual, expected) {

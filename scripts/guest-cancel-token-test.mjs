@@ -218,6 +218,16 @@ async function captureLogs(action) {
   }
 }
 
+async function withThrowingLogger(action) {
+  const originalLog = console.log;
+  console.log = () => { throw new Error("LOGGER_FAILED"); };
+  try {
+    return await action();
+  } finally {
+    console.log = originalLog;
+  }
+}
+
 function parseGuestCancelObservations(lines) {
   return lines
     .map((line) => {
@@ -365,6 +375,42 @@ for (const rollout of ["off", "typo"]) {
   const second = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token });
   assert.equal(second.response.status, 404);
   assert.equal(countSql(db, "INSERT INTO booking_events"), 1, "booking status prevents repeated cancellation even when mark used fails");
+}
+
+{
+  const db = createDb();
+  const { response, body } = await withThrowingLogger(() => post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Logger Fail Guest", customerPhone: "0912345678" }, "write"));
+  assert.equal(response.status, 200, "logger failure must not break guest booking create");
+  assert.equal(body.ok, true);
+  assert.equal(db.batchCalls.length, 1, "logger failure must not change booking/token batch behavior");
+  assert.equal(db.tokens.length, 1, "logger failure must not prevent token row creation");
+}
+
+{
+  const token = "logger_fail_token_abcdefghijklmnopqrstuvwxyz123456";
+  const hash = await tokenHash("tenant-a", "booking-1", token);
+  const db = createDb({ tokens: [{ id: "tok-logger", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: hash, status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await withThrowingLogger(() => post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token }));
+  assert.equal(response.status, 200, "logger failure must not break token cancellation");
+  assert.deepEqual(body, { ok: true });
+  assert.equal(db.booking.status, "cancelled");
+  assert.equal(db.tokens[0].status, "used");
+  const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
+  const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
+  const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
+  assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "logger failure must not change token cancel update -> rollback -> event order");
+}
+
+{
+  const db = createDb({ tokens: [{ id: "tok-logger-phone", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await withThrowingLogger(() => post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, "write"));
+  assert.equal(response.status, 200, "logger failure must not break legacy phone fallback cancellation");
+  assert.equal(body.ok, true);
+  assert.equal(db.booking.status, "cancelled");
+  const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
+  const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
+  const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
+  assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "logger failure must not change phone fallback update -> rollback -> event order");
 }
 
 console.log("guest-cancel-token-test: PASS");
