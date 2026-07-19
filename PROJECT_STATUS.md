@@ -1,4 +1,4 @@
-# PROJECT_STATUS.md
+﻿# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -286,6 +286,15 @@
 - Proposed independent `booking_cancel_tokens` table, indexes, rollout, rollback, observability, and B6.5 minimal implementation scope.
 - This does not solve cancellation transactionality, point rollback atomicity, notification persistence, or idempotency.
 - No runtime, schema, migration file, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
+## Sprint B7 Guest Cancel Link Delivery 2026-07-19
+
+- Branch: `refactor/b7-guest-cancel-link-delivery`.
+- Scope: one-time guest cancellation link delivery after successful unauthenticated web booking creation.
+- Eligible responses may include `cancelUrl` using fragment transport: `/store/{slug}/cancel#b={bookingId}&t={token}`.
+- Plaintext token remains request/response only; D1 stores only token hash and the public booking page does not write the link to browser storage.
+- Customer Session, walk-in, setup test, rollout `off`, unknown rollout values, and failed token row creation do not return `cancelUrl`.
+- Cancel page clears the fragment with `history.replaceState()` and uses `Referrer-Policy: no-referrer`.
+- Not included: Remote D1 migration, production deployment, merchant resend/rotation, D1 aggregate observability, LINE/Email/SMS/Web Push link delivery, transaction redesign, or persistent idempotency.
 ## Sprint B6.7 Guest Token Dark Launch Observability 2026-07-19
 
 - `GUEST_CANCEL_TOKEN_ROLLOUT=write` now acts as a true dark launch: it can create hash-only guest cancel token rows without blocking legacy `bookingId + phone` fallback.

@@ -1,3 +1,9 @@
+﻿## 2026-07-19 - Sprint B7 Guest Cancel Link Delivery
+
+- Returned a one-time `cancelUrl` on successful unauthenticated web guest bookings when Guest cancel token rollout writes tokens.
+- Added public booking success UI for copying the cancellation link without browser storage or debug logging.
+- Hardened the public cancel page to clear URL fragments and use no-referrer protection.
+- Remote D1 migration, production rollout, merchant link rotation, D1 aggregate observability, and external link delivery remain unauthorized.
 ## 2026-07-19 - Sprint B6.7 Guest Token Dark Launch Observability
 
 ### Changed
