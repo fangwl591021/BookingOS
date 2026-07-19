@@ -339,6 +339,7 @@ function firstSqlIndex(db, fragment) {
   const { response, text } = await get("/store/anhe/cancel#b=booking-1&t=secret-token-value");
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
   assert.match(text, /<meta name="referrer" content="no-referrer">/);
   assert.match(text, /history\.replaceState\(null,document\.title,location\.pathname\+location\.search\)/);
   assert.match(text, /JSON\.stringify\(\{bookingId,token\}\)/);
@@ -348,6 +349,7 @@ function firstSqlIndex(db, fragment) {
 {
   const { response, text } = await get("/store/anhe");
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("referrer-policy"), null, "store booking page must not receive cancel-page referrer policy header");
   assert.match(text, /id="cancel-link-panel" hidden/);
   assert.match(text, /請立即複製保存；離開此頁後無法再次顯示。/);
   assert.match(text, /id="copy-cancel-url" type="button"/);

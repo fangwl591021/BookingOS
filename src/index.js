@@ -874,7 +874,7 @@ async function handleStoreRoute(request, env, route) {
     return redirectWithCookie(storePath(resolved.slug, "/login"), clearCustomerSessionCookie());
   }
   if (section === "cancel" && request.method === "GET") {
-    return html(renderStoreCancelPage({ ...(resolved.store || {}), slug: resolved.slug }));
+    return cancelPageHtml(renderStoreCancelPage({ ...(resolved.store || {}), slug: resolved.slug }));
   }
   if (["member", "points", "history"].includes(section) && request.method === "GET") {
     const session = await requireCustomerSession(request, env, resolved.tenantId);
@@ -2639,6 +2639,16 @@ window.addEventListener("load",async()=>{try{await initLiff();if(liff.isLoggedIn
 function html(body) {
   return new Response(body, {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
+  });
+}
+
+function cancelPageHtml(body) {
+  return new Response(body, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer"
+    }
   });
 }
 
