@@ -309,6 +309,19 @@ for (const [label, tokenRow, tokenValue] of [
 }
 
 {
+  const token = "disabled_mode_token_abcdefghijklmnopqrstuvwxyz123456";
+  for (const rollout of ["write", "off", "typo"]) {
+    const db = createDb({ tokens: [{ id: "tok-disabled", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", token), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+    const { result, lines } = await captureLogs(() => post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token }, rollout));
+    assert.equal(result.response.status, 404, `${rollout} token API is disabled`);
+    assert.equal(result.body.error.code, "CANCELLATION_NOT_AVAILABLE");
+    assert.equal(countSql(db, "UPDATE bookings SET status = 'cancelled'"), 0);
+    const expectedMode = rollout === "typo" ? "off" : rollout;
+    assert.ok(parseGuestCancelObservations(lines).some((record) => record.eventType === "guest_cancel_token_cancel_failure" && record.rolloutMode === expectedMode && record.reasonCode === "token_api_disabled"));
+    assertSafeObservationLogs(lines, ["tenant-a", "booking-1", "0912345678", token, db.tokens[0].token_hash]);
+  }
+}
+{
   const db = createDb({ tokens: [{ id: "tok-1", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
   const { result, lines } = await captureLogs(() => post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, "write"));
   assert.equal(result.response.status, 200, "write mode is a dark launch and must not block phone fallback");
