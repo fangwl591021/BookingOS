@@ -12,7 +12,7 @@ B6.5 implements the first Guest cancellation token path:
 - Creates cancel token rows for new unauthenticated web guest bookings when `GUEST_CANCEL_TOKEN_ROLLOUT` is `write`, `verify`, or `enforce`.
 - Adds public cancel page route: `/store/{slug}/cancel#b={bookingId}&t={token}`.
 - Adds token cancel API: `POST /store/{slug}/api/bookings/cancel-token`.
-- Blocks `bookingId + phone` fallback for tokenized bookings as soon as a cancel token row exists.
+- Originally blocked `bookingId + phone` fallback for tokenized bookings as soon as a cancel token row existed. B6.7 supersedes this so only `verify` / `enforce` block fallback; `write` remains a dark launch.
 
 ## Rollout Flag
 

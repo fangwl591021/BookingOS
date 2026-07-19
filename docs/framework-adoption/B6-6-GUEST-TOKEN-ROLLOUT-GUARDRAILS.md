@@ -8,9 +8,9 @@ Current production rollout is **NO-GO**.
 
 ## Production NO-GO
 
-Do not set production `GUEST_CANCEL_TOKEN_ROLLOUT` to `write` yet.
+B6.7 changes `write` into a true dark launch, but production `write` still requires Tony authorization because remote migration and observability approval remain pending.
 
-`write` creates `booking_cancel_tokens` rows for new unauthenticated web guest bookings and blocks legacy `bookingId + phone` fallback as soon as a token row exists. Because the token delivery path is not approved for production yet, switching directly to `write` can leave new guests without a working self-service cancellation path.
+After B6.7, `write` creates `booking_cancel_tokens` rows for new unauthenticated web guest bookings but does not block legacy `bookingId + phone` fallback. The earlier write-mode fallback lockout risk is resolved, but token delivery and production rollout are still not approved.
 
 Do not set production to `verify` or `enforce` yet. They also require approved cancel-link delivery, observability, Remote D1 migration execution, and formal rollout authorization.
 
@@ -23,25 +23,25 @@ Missing, empty, or misspelled `GUEST_CANCEL_TOKEN_ROLLOUT` values fail safe to `
 | Mode | Token rows for new guest web bookings | Token cancel API | Tokenized booking phone fallback | Legacy no-token phone fallback | Production status |
 | --- | --- | --- | --- | --- | --- |
 | `off` | No | Disabled | Not applicable | Allowed by existing legacy rules | Safe default |
-| `write` | Yes | Disabled | Blocked when token row exists | Allowed only when no token row exists | NO-GO for production |
+| `write` | Yes | Disabled | Allowed by existing legacy rules | Allowed by existing legacy rules | Requires Tony authorization before production |
 | `verify` | Yes | Enabled | Blocked when token row exists | Allowed only when no token row exists | NO-GO until gates pass |
 | `enforce` | Yes | Enabled | Blocked when token row exists | Allowed only when no token row exists | NO-GO; no sunset difference from `verify` yet |
 
-## P1 Risk: Write Mode Fallback Lockout
+## Resolved B6.7 Risk: Write Mode Fallback Lockout
 
-`write` is not a pure dark launch today. It writes token rows and immediately changes cancellation authorization for those bookings by blocking `bookingId + phone` fallback.
+Before B6.7, `write` was not a pure dark launch. B6.7 resolves this by allowing legacy phone fallback in `write` even when a token row exists.
 
 Risk:
 
 ```text
 new guest booking
 -> token row exists
--> legacy phone fallback blocked
+-> before B6.7, legacy phone fallback was blocked
 -> token API disabled in write mode
 -> guest cannot self-cancel
 ```
 
-This is a P1 rollout risk and blocks production `write` until Tony explicitly decides whether `write` should become a true dark launch.
+The fallback lockout itself is resolved. Production `write` remains authorization-gated because Remote D1 migration, link delivery, and observability decisions are still separate gates.
 
 ## Remote D1 Migration SOP for 0023
 
@@ -181,7 +181,7 @@ Required before claiming `enforce` or removing fallback:
 
 ## Tony Decisions Needed
 
-1. Should `write` become a true dark launch that writes tokens but does not block fallback yet?
+1. B6.7 answered yes: `write` is now a true dark launch that writes tokens but does not block fallback. Tony still must approve whether production may use it.
 2. What is the approved guest token link delivery channel?
 3. Can production skip `write` and move directly to `verify` after migration and delivery are ready?
 4. What exact observability thresholds, fallback usage gate, and sunset date should authorize fallback removal?
