@@ -286,6 +286,16 @@
 - Proposed independent `booking_cancel_tokens` table, indexes, rollout, rollback, observability, and B6.5 minimal implementation scope.
 - This does not solve cancellation transactionality, point rollback atomicity, notification persistence, or idempotency.
 - No runtime, schema, migration file, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
+## Sprint B7 PR 2 Merchant Cancel Token Rotation 2026-07-20
+
+- Branch: `refactor/b7-2-merchant-cancel-token-rotation`.
+- Scope: merchant operations can regenerate a one-time guest cancellation link for eligible web guest bookings.
+- Route: `POST /api/merchant/bookings/:bookingId/cancel-token` returns `{ ok: true, cancelUrl, expiresAt }` only on successful rotation.
+- Eligibility: rollout `write|verify|enforce`, cancellable booking status, `source=web`, no customer identity, and not `customer_type=member`.
+- Old active token rows are revoked before inserting a new hash-only token row; the plaintext token is returned only in the current merchant response as `/store/{slug}/cancel#b={bookingId}&t={token}`.
+- Accepted risk: rotation is sequential, not D1 batch/transaction. If revoke succeeds and insert fails, the API returns an error with no `cancelUrl`, and the merchant can retry rotation.
+- Not included: schema/migration changes, Remote D1 write, production deployment, LINE/Email/SMS/Web Push resend, D1 aggregate observability, persistent idempotency, or transaction redesign.
+
 ## Sprint B7 Guest Cancel Link Delivery 2026-07-19
 
 - Branch: `refactor/b7-guest-cancel-link-delivery`.

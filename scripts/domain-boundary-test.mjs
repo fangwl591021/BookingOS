@@ -176,7 +176,7 @@ assert.equal(runtime.modules.get("service").status, "partial");
   assert.equal(response.status, 200);
   assert.deepEqual(Object.keys(body), ["ok", "summary", "bookings", "planLimited"]);
   assert.deepEqual(Object.keys(body.summary), ["total", "pending", "confirmed", "checkedIn", "inService", "completed", "noShow", "cancelled", "expectedRevenue", "completedRevenue"]);
-  assert.deepEqual(Object.keys(body.bookings[0]), ["booking_id", "tenant_id", "customer_id", "customer_type", "customer_name", "customer_phone_masked", "staff", "service_id", "service", "resource_type_id", "duration", "price", "date", "start_time", "end_time", "status", "statusLabel", "source", "merchant_note", "updated_at", "canConfirm", "canCheckIn", "canStartService", "canComplete", "canNoShow", "canCancel", "canReschedule", "canReassign"]);
+  assert.deepEqual(Object.keys(body.bookings[0]), ["booking_id", "tenant_id", "customer_id", "customer_type", "customer_name", "customer_phone_masked", "staff", "service_id", "service", "resource_type_id", "duration", "price", "date", "start_time", "end_time", "status", "statusLabel", "source", "merchant_note", "updated_at", "canConfirm", "canCheckIn", "canStartService", "canComplete", "canNoShow", "canCancel", "canRotateCancelToken", "canReschedule", "canReassign"]);
   assert.deepEqual(Object.keys(body.planLimited), ["affectedBookings", "staff"]);
   const bookingCall = db.calls.find((call) => call.sql.includes("FROM bookings b") && call.sql.includes("LIMIT ? OFFSET ?"));
   assert.ok(bookingCall.sql.includes("b.status = ?"));

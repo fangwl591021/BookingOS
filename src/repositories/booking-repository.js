@@ -2,7 +2,7 @@ import { requireTenantId } from "./guards.js";
 
 const BOOKING_SELECT = `
   SELECT b.*, s.name AS staff_name, sv.name AS service_name,
-         rt.name AS resource_type_name, c.name AS customer_name, c.phone AS customer_phone
+         rt.name AS resource_type_name, c.name AS customer_name, c.phone AS customer_phone, COALESCE(c.identity_id, '') AS customer_identity_id
   FROM bookings b
   LEFT JOIN staff_members s ON s.id = b.staff_id AND s.tenant_id = b.tenant_id
   LEFT JOIN services sv ON sv.id = b.service_id AND sv.tenant_id = b.tenant_id
@@ -21,10 +21,11 @@ export function createBookingRepository(db) {
       const scopedTenantId = requireTenantId(tenantId);
       if (!db || !bookingId) return null;
       return db.prepare(`
-        SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id
+        SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name, COALESCE(s.resource_type_id, '') AS resource_type_id, COALESCE(c.identity_id, '') AS customer_identity_id
         FROM bookings b
         LEFT JOIN staff_members sm ON sm.id = b.staff_id AND sm.tenant_id = b.tenant_id
         LEFT JOIN services s ON s.id = b.service_id AND s.tenant_id = b.tenant_id
+        LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id
         WHERE b.tenant_id = ? AND b.id = ?
       `).bind(scopedTenantId, bookingId).first();
     },
