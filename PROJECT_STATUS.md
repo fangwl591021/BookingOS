@@ -1,4 +1,4 @@
-﻿# PROJECT_STATUS.md
+# PROJECT_STATUS.md
 
 最後更新：2026-07-10
 
@@ -286,6 +286,15 @@
 - Proposed independent `booking_cancel_tokens` table, indexes, rollout, rollback, observability, and B6.5 minimal implementation scope.
 - This does not solve cancellation transactionality, point rollback atomicity, notification persistence, or idempotency.
 - No runtime, schema, migration file, Remote D1 write, secret/binding change, LINE/Web Push implementation change, or production deployment in this scope.
+## Sprint B7 PR 3 Guest Cancel Aggregate Observability 2026-07-20
+
+- Added local migration proposal `0024_guest_cancel_observation_daily.sql` for aggregate-only daily counters with dimensions limited to day, rollout mode, event type, result, reason code, and path type.
+- Added `GUEST_CANCEL_AGGREGATE_ENABLED`; only `on` or `enabled` activates best-effort aggregate writes. Missing, `off`, or typo values fail-safe disabled.
+- Aggregate writes are fail-open and must not affect booking creation, token cancellation, legacy phone fallback cancellation, or merchant token rotation.
+- B7.3 does not add admin, merchant, public, or customer APIs. Operators must use controlled SQL reports until a future protected reporting surface is approved.
+- The aggregate is not idempotent and may undercount or overcount on retries, interruptions, or best-effort failures. Sunset requires live SQL token coverage cross-checks and Tony approval.
+- Remote D1 migration, production deploy, rollout sunset, secret/binding/wrangler changes, LINE API calls, and Web Push sends remain not executed.
+
 ## Sprint B7 PR 2 Merchant Cancel Token Rotation 2026-07-20
 
 - Branch: `refactor/b7-2-merchant-cancel-token-rotation`.

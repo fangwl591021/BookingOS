@@ -1,3 +1,10 @@
+## 2026-07-20 - Sprint B7 PR 3 Guest Cancel Aggregate Observability
+
+- Added migration proposal `0024_guest_cancel_observation_daily.sql` for aggregate-only daily guest cancellation rollout counters.
+- Added fail-open aggregate writes behind `GUEST_CANCEL_AGGREGATE_ENABLED=on|enabled`, mapped from existing B6.7 safe observations.
+- Added controlled SQL report documentation for 30-day legacy fallback usage and live token coverage checks.
+- No production deploy, Remote D1 migration/write, secret/binding change, LINE API call, Web Push send, or fallback sunset is included.
+
 ## 2026-07-20 - Sprint B7 PR 2 Merchant Cancel Token Rotation
 
 ### Added

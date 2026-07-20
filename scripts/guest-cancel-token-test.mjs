@@ -1,4 +1,5 @@
 ﻿import assert from "node:assert/strict";
+import fs from "node:fs";
 import app from "../src/index.js";
 
 const SECRET = "guest-cancel-token-test-secret";
@@ -65,6 +66,7 @@ function createDb(options = {}) {
   const calls = [];
   const events = [];
   const tokens = options.tokens ? options.tokens.map((token) => ({ ...token })) : [];
+  const aggregates = options.aggregates ? options.aggregates.map((row) => ({ ...row })) : [];
   const booking = options.booking === undefined ? makeBooking() : options.booking;
   const batchCalls = [];
 
@@ -188,6 +190,21 @@ function createDb(options = {}) {
     if (normalizedSql.startsWith("UPDATE booking_cancel_tokens SET last_verified_at")) {
       return { meta: { changes: 1 } };
     }
+    if (normalizedSql.startsWith("INSERT INTO guest_cancel_observation_daily")) {
+      if (options.failAggregateWrite) throw new Error("AGGREGATE_WRITE_FAILED");
+      const row = {
+        day: binds[0],
+        rollout_mode: binds[1],
+        event_type: binds[2],
+        result: binds[3],
+        reason_code: binds[4],
+        path_type: binds[5]
+      };
+      const existing = aggregates.find((item) => item.day === row.day && item.rollout_mode === row.rollout_mode && item.event_type === row.event_type && item.result === row.result && item.reason_code === row.reason_code && item.path_type === row.path_type);
+      if (existing) existing.count += 1;
+      else aggregates.push({ ...row, count: 1 });
+      return { meta: { changes: 1 } };
+    }
     if (normalizedSql.startsWith("UPDATE bookings SET status = 'cancelled'")) {
       if (booking) {
         booking.status = "cancelled";
@@ -226,6 +243,7 @@ function createDb(options = {}) {
     calls,
     events,
     tokens,
+    aggregates,
     booking,
     batchCalls,
     prepare(sql) {
@@ -250,31 +268,36 @@ function createDb(options = {}) {
   };
 }
 
-function env(db, rollout = "verify") {
+function env(db, rollout = "verify", aggregate = "off") {
   return {
     DB: db,
     CUSTOMER_SESSION_SECRET: SECRET,
     CUSTOMER_SESSION_TTL_SECONDS: "3600",
     MERCHANT_SESSION_SECRET: SECRET,
     MERCHANT_SESSION_TTL_SECONDS: "3600",
-    GUEST_CANCEL_TOKEN_ROLLOUT: rollout
+    GUEST_CANCEL_TOKEN_ROLLOUT: rollout,
+    GUEST_CANCEL_AGGREGATE_ENABLED: aggregate
   };
 }
 
-async function post(path, db, payload, rollout = "verify", headers = {}) {
+async function post(path, db, payload, rollout = "verify", headers = {}, aggregate = "off", ctx = {}) {
   const request = new Request("https://example.test" + path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
-  const response = await app.fetch(request, env(db, rollout), {});
+  const response = await app.fetch(request, env(db, rollout, aggregate), ctx);
   return { response, body: JSON.parse(await response.text()) };
 }
-async function postMerchant(path, db, payload = {}, rollout = "verify", headers = {}) {
+async function postMerchant(path, db, payload = {}, rollout = "verify", headers = {}, aggregate = "off", ctx = {}) {
   const request = new Request("https://example.test" + path, { method: "POST", headers: { cookie: await merchantCookie(), "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
-  const response = await app.fetch(request, env(db, rollout), {});
+  const response = await app.fetch(request, env(db, rollout, aggregate), ctx);
   return { response, body: JSON.parse(await response.text()) };
 }
 
-async function get(path, db = createDb(), rollout = "verify") {
-  const response = await app.fetch(new Request("https://example.test" + path), env(db, rollout), {});
+async function get(path, db = createDb(), rollout = "verify", aggregate = "off", ctx = {}) {
+  const response = await app.fetch(new Request("https://example.test" + path), env(db, rollout, aggregate), ctx);
   return { response, text: await response.text() };
+}
+
+async function flushObservability() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 async function captureLogs(action) {
@@ -321,8 +344,71 @@ function countSql(db, fragment) {
   return db.calls.filter((call) => call.sql.includes(fragment)).length;
 }
 
+{
+  const db = createDb();
+  const { response, body } = await post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Guest A", customerPhone: "0912345678" }, "write", {}, "on");
+  await flushObservability();
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  const row = db.aggregates.find((item) => item.event_type === "guest_cancel_token_issued");
+  assert.ok(row, "aggregate captures token-issued observations when enabled");
+  assert.equal(row.rollout_mode, "write");
+  assert.equal(row.result, "success");
+  assert.equal(row.reason_code, "token_row_created");
+  assert.equal(row.path_type, "guest_create");
+  assert.equal(row.count, 1);
+  assert.match(row.day, /^\d{4}-\d{2}-\d{2}$/);
+  assert.deepEqual(Object.keys(row).sort(), ["count", "day", "event_type", "path_type", "reason_code", "result", "rollout_mode"].sort());
+  assert.equal(JSON.stringify(db.aggregates).includes("tenant-a"), false);
+  assert.equal(JSON.stringify(db.aggregates).includes("booking-1"), false);
+  assert.equal(JSON.stringify(db.aggregates).includes("0912345678"), false);
+  assert.equal(JSON.stringify(db.aggregates).includes(db.tokens[0].token_hash), false);
+}
+
+{
+  for (const aggregate of ["off", "unknown", ""]) {
+    const db = createDb();
+    const { response } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "", token: "bad" }, "verify", {}, aggregate);
+    await flushObservability();
+    const label = aggregate || "missing";
+    assert.equal(response.status, 404, label + " aggregate mode keeps user contract");
+    assert.equal(db.aggregates.length, 0, label + " aggregate mode is fail-safe disabled");
+  }
+}
+
+{
+  const db = createDb();
+  await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "", token: "bad" }, "verify", {}, "on");
+  await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "", token: "bad" }, "verify", {}, "enabled");
+  await flushObservability();
+  assert.equal(db.aggregates.length, 1, "aggregate upsert reuses the same daily dimension row");
+  assert.equal(db.aggregates[0].event_type, "guest_cancel_token_cancel_failure");
+  assert.equal(db.aggregates[0].result, "failure");
+  assert.equal(db.aggregates[0].reason_code, "malformed");
+  assert.equal(db.aggregates[0].path_type, "token");
+  assert.equal(db.aggregates[0].rollout_mode, "verify");
+  assert.equal(db.aggregates[0].count, 2);
+}
+
+{
+  const db = createDb();
+  const ctx = { waitUntil() { throw new Error("WAITUNTIL_FAILED"); } };
+  const { response } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "", token: "bad" }, "verify", {}, "on", ctx);
+  await flushObservability();
+  assert.equal(response.status, 404, "waitUntil failure does not affect token API response");
+  assert.equal(db.aggregates.length, 1, "waitUntil failure falls back to best-effort aggregate write");
+}
+
 function firstSqlIndex(db, fragment) {
   return db.calls.findIndex((call) => call.sql.includes(fragment));
+}
+
+{
+  const migrationSql = fs.readFileSync(new URL("../migrations/0024_guest_cancel_observation_daily.sql", import.meta.url), "utf8");
+  assert.match(migrationSql, /CREATE TABLE IF NOT EXISTS guest_cancel_observation_daily/);
+  assert.match(migrationSql, /PRIMARY KEY \(\s*day,\s*rollout_mode,\s*event_type,\s*result,\s*reason_code,\s*path_type\s*\)/);
+  assert.match(migrationSql, /ON guest_cancel_observation_daily\(event_type, day\)/);
+  assert.equal(/tenant_id|booking_id|customer_id|phone|token_hash|line_user_id|email|name/i.test(migrationSql), false, "aggregate migration must not store identifying fields");
 }
 
 {
@@ -544,6 +630,47 @@ for (const rollout of ["off", "typo"]) {
   assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "logger failure must not change phone fallback update -> rollback -> event order");
 }
 
+
+{
+  const db = createDb({ failAggregateWrite: true });
+  const { response, body } = await post("/api/bookings?tenant=tenant-a", db, { serviceId: "svc-1", duration: 60, date: "2026-07-20", startTime: "09:00", staffId: "staff-1", customerName: "Aggregate Fail Guest", customerPhone: "0912345678" }, "write", {}, "on");
+  await flushObservability();
+  assert.equal(response.status, 200, "aggregate write failure must not break guest booking create");
+  assert.equal(body.ok, true);
+  assert.equal(db.tokens.length, 1, "aggregate write failure must not change token row creation");
+}
+
+{
+  const token = "aggregate_fail_token_abcdefghijklmnopqrstuvwxyz123456";
+  const hash = await tokenHash("tenant-a", "booking-1", token);
+  const db = createDb({ failAggregateWrite: true, tokens: [{ id: "tok-aggregate", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: hash, status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token }, "verify", {}, "on");
+  await flushObservability();
+  assert.equal(response.status, 200, "aggregate write failure must not break token cancellation");
+  assert.deepEqual(body, { ok: true });
+  const updateIndex = firstSqlIndex(db, "UPDATE bookings SET status = 'cancelled'");
+  const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
+  const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
+  assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "aggregate write failure must not change cancellation order");
+}
+
+{
+  const db = createDb({ failAggregateWrite: true, tokens: [{ id: "tok-phone-aggregate", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await post("/api/bookings/cancel?tenant=tenant-a", db, { bookingId: "booking-1", phone: "0912345678" }, "write", {}, "on");
+  await flushObservability();
+  assert.equal(response.status, 200, "aggregate write failure must not break legacy phone fallback cancellation");
+  assert.equal(body.ok, true);
+  assert.equal(db.booking.status, "cancelled");
+}
+
+{
+  const db = createDb({ failAggregateWrite: true, tokens: [{ id: "tok-merchant-aggregate", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db, {}, "verify", {}, "on");
+  await flushObservability();
+  assert.equal(response.status, 200, "aggregate write failure must not affect merchant rotation");
+  assert.equal(body.ok, true);
+  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1);
+}
 
 {
   const oldToken = "old_rotation_token_abcdefghijklmnopqrstuvwxyz123456";
