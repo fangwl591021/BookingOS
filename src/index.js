@@ -124,21 +124,84 @@ function guestCancelTokenVerifyEnabled(env) {
   return ["verify", "enforce"].includes(guestCancelTokenRolloutMode(env));
 }
 
+function guestCancelAggregateEnabled(env) {
+  const value = envValue(env, "GUEST_CANCEL_AGGREGATE_ENABLED", "off").toLowerCase();
+  return value === "on" || value === "enabled";
+}
+
+function guestCancelObservationFields(eventType, fields = {}) {
+  return {
+    eventType,
+    rolloutMode: ["off", "write", "verify", "enforce"].includes(String(fields.rolloutMode || "")) ? String(fields.rolloutMode) : "off",
+    result: String(fields.result || "unknown"),
+    reasonCode: String(fields.reasonCode || "none"),
+    pathType: String(fields.pathType || "unknown"),
+    credentialRowPresent: Boolean(fields.hasTokenRow)
+  };
+}
+
 function logGuestCancelObservation(runtime, eventType, fields = {}) {
   const logger = runtime?.logger;
   if (!logger?.info) return;
   try {
-    logger.info("guest_cancel.observation", {
-      eventType,
-      rolloutMode: fields.rolloutMode || "off",
-      result: fields.result || "unknown",
-      reasonCode: fields.reasonCode || "none",
-      pathType: fields.pathType || "unknown",
-      credentialRowPresent: Boolean(fields.hasTokenRow)
-    });
+    logger.info("guest_cancel.observation", guestCancelObservationFields(eventType, fields));
   } catch (error) {
     // Observation logging must never affect booking creation or cancellation.
   }
+}
+
+async function incrementGuestCancelObservationDaily(env, observation = {}, day = todayInTaipei()) {
+  if (!env?.DB || !guestCancelAggregateEnabled(env)) return;
+  try {
+    await env.DB.prepare(`
+      INSERT INTO guest_cancel_observation_daily (
+        day,
+        rollout_mode,
+        event_type,
+        result,
+        reason_code,
+        path_type,
+        count
+      )
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+      ON CONFLICT (
+        day,
+        rollout_mode,
+        event_type,
+        result,
+        reason_code,
+        path_type
+      )
+      DO UPDATE SET
+        count = count + 1,
+        updated_at = datetime('now')
+    `).bind(
+      day,
+      observation.rolloutMode,
+      observation.eventType,
+      observation.result,
+      observation.reasonCode,
+      observation.pathType
+    ).run();
+  } catch (error) {
+    // Aggregate observability is best-effort and must never affect user flows.
+  }
+}
+
+function observeGuestCancel(env, runtime, ctx, eventType, fields = {}) {
+  const observation = guestCancelObservationFields(eventType, fields);
+  logGuestCancelObservation(runtime, eventType, fields);
+  if (!guestCancelAggregateEnabled(env)) return;
+  const job = incrementGuestCancelObservationDaily(env, observation);
+  if (ctx && typeof ctx.waitUntil === "function") {
+    try {
+      ctx.waitUntil(job.catch(() => {}));
+      return;
+    } catch (error) {
+      // Fall through to local catch if waitUntil itself is unavailable/broken.
+    }
+  }
+  void job.catch(() => {});
 }
 
 async function secureCompare(actual, expected) {
@@ -315,7 +378,7 @@ export default {
     if (!url.searchParams.has("tenant") && liffStateParams.get("tenant")) activeTenantId = liffStateParams.get("tenant");
 
     const storeCancelTokenApiRoute = parseStoreBookingCancelTokenApiPath(url.pathname);
-    if (storeCancelTokenApiRoute) return handleStoreBookingCancelTokenApi(request, env, storeCancelTokenApiRoute, runtime);
+    if (storeCancelTokenApiRoute) return handleStoreBookingCancelTokenApi(request, env, storeCancelTokenApiRoute, runtime, ctx);
 
     const storeCustomerApiRoute = parseStoreCustomerApiPath(url.pathname);
     if (storeCustomerApiRoute) return handleStoreCustomerAuthApi(request, env, storeCustomerApiRoute);
@@ -567,11 +630,11 @@ export default {
     }
 
     if (url.pathname === "/api/bookings/cancel" && request.method === "POST") {
-      return cancelBooking(request, env, activeTenantId, runtime);
+      return cancelBooking(request, env, activeTenantId, runtime, ctx);
     }
 
     if (url.pathname === "/api/bookings" && request.method === "POST") {
-      return createBooking(request, env, await dashboardData(env, todayInTaipei(), activeTenantId), runtime);
+      return createBooking(request, env, await dashboardData(env, todayInTaipei(), activeTenantId), runtime, ctx);
     }
 
     if (url.pathname === "/pricing") {
@@ -843,11 +906,11 @@ async function handleStoreCustomerAuthApi(request, env, route) {
   return storeErrorResponse({ status: 404, code: "STORE_NOT_FOUND", message: "店家網址不存在" });
 }
 
-async function handleStoreBookingCancelTokenApi(request, env, route, runtime = null) {
+async function handleStoreBookingCancelTokenApi(request, env, route, runtime = null, ctx = null) {
   if (request.method !== "POST") return storeErrorResponse({ status: 405, code: "API_METHOD_NOT_ALLOWED", message: "API method is not allowed" });
   const resolved = await resolveTenantBySlug(env, route.slug);
   if (!resolved.ok) return guestCancelUnavailableResponse();
-  return cancelBookingWithGuestToken(request, env, resolved.tenantId, runtime);
+  return cancelBookingWithGuestToken(request, env, resolved.tenantId, runtime, ctx);
 }
 
 function renderStoreCancelPage(store = {}) {
@@ -5722,9 +5785,9 @@ async function cancelGuestBookingWithLegacyBoundary(env, { tenantId, bookingId, 
   await appendBookingEvent(env, { tenantId, bookingId, eventType: "cancelled", fromStatus: currentStatus, toStatus: "cancelled", actorType, actorId, reason });
 }
 
-async function cancelBookingWithGuestToken(request, env, tenantId, runtime = null) {
+async function cancelBookingWithGuestToken(request, env, tenantId, runtime = null, ctx = null) {
   if (!env.DB || !guestCancelTokenVerifyEnabled(env)) {
-    logGuestCancelObservation(runtime, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "token_api_disabled", pathType: "token", hasTokenRow: false });
+    observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "token_api_disabled", pathType: "token", hasTokenRow: false });
     return guestCancelUnavailableResponse();
   }
   try {
@@ -5732,35 +5795,35 @@ async function cancelBookingWithGuestToken(request, env, tenantId, runtime = nul
     const bookingId = String(payload.bookingId || payload.b || "").trim();
     const token = String(payload.token || payload.t || "").trim();
     if (!bookingId || !isValidGuestCancelToken(token)) {
-      logGuestCancelObservation(runtime, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "malformed", pathType: "token", hasTokenRow: false });
+      observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "malformed", pathType: "token", hasTokenRow: false });
       return guestCancelUnavailableResponse();
     }
     const tokenRow = await loadGuestCancelToken(env, tenantId, bookingId, token);
     if (tokenRow?.id) await markGuestCancelTokenVerified(env, tenantId, tokenRow.id);
     if (!isGuestCancelTokenUsable(tokenRow)) {
-      logGuestCancelObservation(runtime, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "not_available", pathType: "token", hasTokenRow: Boolean(tokenRow?.id) });
+      observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "not_available", pathType: "token", hasTokenRow: Boolean(tokenRow?.id) });
       return guestCancelUnavailableResponse();
     }
     const booking = await env.DB.prepare("SELECT b.id, b.customer_id, b.customer_phone, b.status, c.phone AS member_phone FROM bookings b LEFT JOIN customers c ON c.id = b.customer_id AND c.tenant_id = b.tenant_id WHERE b.tenant_id = ? AND b.id = ?").bind(tenantId, bookingId).first();
     if (!booking) {
-      logGuestCancelObservation(runtime, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "not_available", pathType: "token", hasTokenRow: true });
+      observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "not_available", pathType: "token", hasTokenRow: true });
       return guestCancelUnavailableResponse();
     }
     const currentStatus = normalizeBookingStatus(booking.status);
     if (currentStatus === "completed" || currentStatus === "cancelled") {
-      logGuestCancelObservation(runtime, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "not_cancellable", pathType: "token", hasTokenRow: true });
+      observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "not_cancellable", pathType: "token", hasTokenRow: true });
       return guestCancelUnavailableResponse();
     }
     await cancelGuestBookingWithLegacyBoundary(env, { tenantId, bookingId, booking, currentStatus, reason: limitText(payload.reason || "顧客取消", 300) });
     await markGuestCancelTokenUsed(env, tenantId, tokenRow.id);
-    logGuestCancelObservation(runtime, "guest_cancel_token_cancel_success", { rolloutMode: guestCancelTokenRolloutMode(env), result: "success", reasonCode: "cancelled", pathType: "token", hasTokenRow: true });
+    observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_success", { rolloutMode: guestCancelTokenRolloutMode(env), result: "success", reasonCode: "cancelled", pathType: "token", hasTokenRow: true });
     return Response.json({ ok: true }, { headers: jsonHeaders });
   } catch (error) {
-    logGuestCancelObservation(runtime, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "exception", pathType: "token", hasTokenRow: false });
+    observeGuestCancel(env, runtime, ctx, "guest_cancel_token_cancel_failure", { rolloutMode: guestCancelTokenRolloutMode(env), result: "failure", reasonCode: "exception", pathType: "token", hasTokenRow: false });
     return guestCancelUnavailableResponse();
   }
 }
-async function cancelBooking(request, env, tenantId, runtime = null) {
+async function cancelBooking(request, env, tenantId, runtime = null, ctx = null) {
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   try {
     const payload = await request.json();
@@ -5791,7 +5854,7 @@ async function cancelBooking(request, env, tenantId, runtime = null) {
       if (!phone) return Response.json({ ok: false, error: "bookingId and phone are required" }, { status: 400, headers: jsonHeaders });
       guestFallbackHasTokenRow = guestCancelTokenWriteEnabled(env) ? await bookingHasCancelToken(env, tenantId, bookingId) : false;
       if (guestCancelTokenVerifyEnabled(env) && guestFallbackHasTokenRow) {
-        logGuestCancelObservation(runtime, "guest_cancel_phone_fallback_blocked", { rolloutMode: guestCancelTokenRolloutMode(env), result: "blocked", reasonCode: "token_policy", pathType: "phone_fallback", hasTokenRow: true });
+        observeGuestCancel(env, runtime, ctx, "guest_cancel_phone_fallback_blocked", { rolloutMode: guestCancelTokenRolloutMode(env), result: "blocked", reasonCode: "token_policy", pathType: "phone_fallback", hasTokenRow: true });
         return guestCancelUnavailableResponse();
       }
       if (booking.member_phone !== phone && booking.customer_phone !== phone) return Response.json({ ok: false, error: "not allowed" }, { status: 403, headers: jsonHeaders });
@@ -5821,7 +5884,7 @@ async function cancelBooking(request, env, tenantId, runtime = null) {
         if (!result.ok) return Response.json({ ok: false, error: result.message }, { status: result.status || 400, headers: jsonHeaders });
       } else {
         await cancelGuestBookingWithLegacyBoundary(env, { tenantId, bookingId, booking, currentStatus, cancelledBy, actorType, actorId, reason });
-        logGuestCancelObservation(runtime, "guest_cancel_legacy_fallback_success", { rolloutMode: guestCancelTokenRolloutMode(env), result: "success", reasonCode: "cancelled", pathType: "phone_fallback", hasTokenRow: guestFallbackHasTokenRow });
+        observeGuestCancel(env, runtime, ctx, "guest_cancel_legacy_fallback_success", { rolloutMode: guestCancelTokenRolloutMode(env), result: "success", reasonCode: "cancelled", pathType: "phone_fallback", hasTokenRow: guestFallbackHasTokenRow });
       }
     }
     const profile = authorizedCustomerId ? await loadCustomerProfileById(env, tenantId, authorizedCustomerId) : await loadCustomerPrefillByPhone(env, tenantId, responseProfilePhone);
@@ -5830,7 +5893,7 @@ async function cancelBooking(request, env, tenantId, runtime = null) {
     return Response.json({ ok: false, error: error.message }, { status: 500, headers: jsonHeaders });
   }
 }
-async function createBooking(request, env, data, runtime = null) {
+async function createBooking(request, env, data, runtime = null, ctx = null) {
   const tenantId = data.store?.tenantId || TENANT_ID;
   if (!env.DB) return Response.json({ ok: false, error: "Database is not configured" }, { status: 503, headers: jsonHeaders });
   const payload = await request.json();
@@ -5935,7 +5998,7 @@ async function createBooking(request, env, data, runtime = null) {
       await bookingInsertStatement.run();
       await guestCancelTokenPlan.statement.run();
     }
-    logGuestCancelObservation(runtime, "guest_cancel_token_issued", { rolloutMode: guestCancelTokenRolloutMode(env), result: "success", reasonCode: "token_row_created", pathType: "guest_create", hasTokenRow: true });
+    observeGuestCancel(env, runtime, ctx, "guest_cancel_token_issued", { rolloutMode: guestCancelTokenRolloutMode(env), result: "success", reasonCode: "token_row_created", pathType: "guest_create", hasTokenRow: true });
   } else {
     await bookingInsertStatement.run();
   }
