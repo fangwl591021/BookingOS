@@ -5658,6 +5658,7 @@ async function prepareGuestCancelTokenInsert(env, { tenantId, bookingId, booking
 
 async function rotateMerchantGuestCancelToken(env, tenantId, booking) {
   if (!env.DB) return { ok: false, code: "DATABASE_NOT_CONFIGURED", message: "Database is not configured", status: 503 };
+  if (typeof env.DB.batch !== "function") return { ok: false, code: "CANCEL_TOKEN_ROTATION_UNAVAILABLE", message: "\u53d6\u6d88\u9023\u7d50\u7522\u751f\u5931\u6557\uff0c\u8acb\u91cd\u65b0\u5617\u8a66", status: 500 };
   if (!guestCancelTokenWriteEnabled(env)) return { ok: false, code: "CANCEL_TOKEN_ROTATION_DISABLED", message: "\u53d6\u6d88\u9023\u7d50\u529f\u80fd\u5c1a\u672a\u555f\u7528", status: 409 };
   if (!canRotateGuestCancelTokenForBooking(booking)) return { ok: false, code: "CANCEL_TOKEN_ROTATION_NOT_ALLOWED", message: "\u6b64\u9810\u7d04\u4e0d\u53ef\u91cd\u65b0\u7522\u751f\u53d6\u6d88\u9023\u7d50", status: 409 };
   const store = await loadStore(env, tenantId);
@@ -5666,18 +5667,21 @@ async function rotateMerchantGuestCancelToken(env, tenantId, booking) {
   const token = randomGuestCancelToken();
   const tokenHash = await guestCancelTokenHash(tenantId, booking.id, token);
   const expiresAt = guestCancelTokenExpiresAt(booking.booking_date, booking.end_time);
-  await env.DB.prepare("UPDATE booking_cancel_tokens SET status = 'revoked', revoked_at = COALESCE(revoked_at, datetime('now')), revoked_reason = COALESCE(revoked_reason, 'merchant_rotation') WHERE tenant_id = ? AND booking_id = ? AND status = 'active'").bind(tenantId, booking.id).run();
+  const revokeActiveTokenStatement = env.DB.prepare("UPDATE booking_cancel_tokens SET status = 'revoked', revoked_at = COALESCE(revoked_at, datetime('now')), revoked_reason = COALESCE(revoked_reason, 'merchant_rotation') WHERE tenant_id = ? AND booking_id = ? AND status = 'active'").bind(tenantId, booking.id);
+  const insertNewTokenStatement = env.DB.prepare(`
+    INSERT INTO booking_cancel_tokens (id, tenant_id, booking_id, token_hash, status, expires_at, created_by, created_reason, metadata_json)
+    VALUES (?, ?, ?, ?, 'active', ?, 'merchant', 'merchant_rotation', '{}')
+  `).bind(crypto.randomUUID(), tenantId, booking.id, tokenHash, expiresAt);
   try {
-    await env.DB.prepare(`
-      INSERT INTO booking_cancel_tokens (id, tenant_id, booking_id, token_hash, status, expires_at, created_by, created_reason, metadata_json)
-      VALUES (?, ?, ?, ?, 'active', ?, 'merchant', 'merchant_rotation', '{}')
-    `).bind(crypto.randomUUID(), tenantId, booking.id, tokenHash, expiresAt).run();
+    const results = await env.DB.batch([revokeActiveTokenStatement, insertNewTokenStatement]);
+    if (!Array.isArray(results) || results.length !== 2 || results.some((result) => result && result.error)) {
+      return { ok: false, code: "CANCEL_TOKEN_ROTATION_FAILED", message: "\u53d6\u6d88\u9023\u7d50\u7522\u751f\u5931\u6557\uff0c\u8acb\u91cd\u65b0\u5617\u8a66", status: 500 };
+    }
   } catch (error) {
     return { ok: false, code: "CANCEL_TOKEN_ROTATION_FAILED", message: "\u53d6\u6d88\u9023\u7d50\u7522\u751f\u5931\u6557\uff0c\u8acb\u91cd\u65b0\u5617\u8a66", status: 500 };
   }
   return { ok: true, cancelUrl: `${storePath(slug, "/cancel")}#b=${encodeURIComponent(booking.id)}&t=${encodeURIComponent(token)}`, expiresAt };
 }
-
 async function bookingHasCancelToken(env, tenantId, bookingId) {
   if (!env.DB) return false;
   const row = await env.DB.prepare("SELECT id FROM booking_cancel_tokens WHERE tenant_id = ? AND booking_id = ? LIMIT 1").bind(tenantId, bookingId).first();

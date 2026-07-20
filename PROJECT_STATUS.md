@@ -292,8 +292,8 @@
 - Scope: merchant operations can regenerate a one-time guest cancellation link for eligible web guest bookings.
 - Route: `POST /api/merchant/bookings/:bookingId/cancel-token` returns `{ ok: true, cancelUrl, expiresAt }` only on successful rotation.
 - Eligibility: rollout `write|verify|enforce`, cancellable booking status, `source=web`, no customer identity, and not `customer_type=member`.
-- Old active token rows are revoked before inserting a new hash-only token row; the plaintext token is returned only in the current merchant response as `/store/{slug}/cancel#b={bookingId}&t={token}`.
-- Accepted risk: rotation is sequential, not D1 batch/transaction. If revoke succeeds and insert fails, the API returns an error with no `cancelUrl`, and the merchant can retry rotation.
+- Old active token rows are revoked and the new hash-only token row is inserted through `env.DB.batch()`; the plaintext token is returned only in the current merchant response as `/store/{slug}/cancel#b={bookingId}&t={token}`.
+- D1 batch is used for the revoke + insert pair. Remaining risks: no persistent idempotency, no rotation rate limit, no long-term audit/aggregate, and no broader cancellation transaction redesign.
 - Not included: schema/migration changes, Remote D1 write, production deployment, LINE/Email/SMS/Web Push resend, D1 aggregate observability, persistent idempotency, or transaction redesign.
 
 ## Sprint B7 Guest Cancel Link Delivery 2026-07-19

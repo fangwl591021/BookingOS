@@ -233,8 +233,19 @@ function createDb(options = {}) {
     },
     async batch(statements) {
       batchCalls.push(statements.map((item) => item.sql));
-      for (const item of statements) await item.run();
-      return statements.map(() => ({ success: true }));
+      const tokenSnapshot = tokens.map((token) => ({ ...token }));
+      const eventSnapshot = events.map((event) => ({ ...event }));
+      const bookingSnapshot = booking ? { ...booking } : null;
+      try {
+        const results = [];
+        for (const item of statements) results.push(await item.run());
+        return results;
+      } catch (error) {
+        tokens.splice(0, tokens.length, ...tokenSnapshot.map((token) => ({ ...token })));
+        events.splice(0, events.length, ...eventSnapshot.map((event) => ({ ...event })));
+        if (booking && bookingSnapshot) Object.assign(booking, bookingSnapshot);
+        throw error;
+      }
     }
   };
 }
@@ -549,6 +560,10 @@ for (const rollout of ["off", "typo"]) {
   const newToken = params.get("t") || "";
   assert.equal(params.get("b"), "booking-1");
   assert.match(newToken, /^[A-Za-z0-9_-]{32,256}$/);
+  assert.equal(db.batchCalls.length, 1, "merchant rotation uses D1 batch");
+  assert.equal(db.batchCalls[0].length, 2, "rotation batch contains revoke and insert statements");
+  assert.ok(db.batchCalls[0][0].includes("UPDATE booking_cancel_tokens SET status = 'revoked'"), "batch revokes active token first");
+  assert.ok(db.batchCalls[0][1].includes("INSERT INTO booking_cancel_tokens"), "batch inserts new active token second");
   assert.equal(db.tokens.find((token) => token.id === "tok-old")?.status, "revoked", "old active token is revoked");
   assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "only one active token remains");
   assert.equal(db.tokens.find((token) => token.status === "active")?.token_hash, await tokenHash("tenant-a", "booking-1", newToken));
@@ -594,6 +609,8 @@ for (const status of ["in_service", "completed", "no_show", "cancelled"]) {
   assert.equal(body.ok, false);
   assert.equal(body.cancelUrl, undefined, "insert failure never returns plaintext cancelUrl");
   assert.equal(JSON.stringify(body).includes(oldToken), false);
+  assert.equal(db.tokens.find((token) => token.id === "tok-old")?.status, "active", "batch rollback keeps original active token on insert failure");
+  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "insert failure does not leave zero active tokens");
   assert.equal(countSql(db, "INSERT INTO booking_events"), 0, "rotation insert failure does not append events");
 }
 
@@ -607,7 +624,7 @@ for (const status of ["in_service", "completed", "no_show", "cancelled"]) {
   assert.equal(first.response.status, 200);
   assert.equal(second.response.status, 200);
   assert.notEqual(firstToken, secondToken);
-  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "sequential rotations leave one active token");
+  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "repeated rotations leave one active token");
   const firstCancel = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: firstToken });
   assert.equal(firstCancel.response.status, 404, "previous rotated token is revoked by later rotation");
   const secondCancel = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: secondToken });

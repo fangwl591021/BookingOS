@@ -61,13 +61,14 @@ The route rejects `in_service`, `completed`, `no_show`, and `cancelled` bookings
 
 ## Rotation Flow
 
-The current implementation intentionally does not use D1 batch or transaction for rotation, per product approval.
+Rotation uses `env.DB.batch()` for the revoke-and-insert pair so the old active token revoke and new active token insert are submitted as one D1 batch.
 
 ```text
-1. Revoke active token rows for tenant_id + booking_id.
-2. Generate a new 256-bit random token in request memory.
-3. Store only SHA-256 hash in booking_cancel_tokens.
-4. Return a fragment cancel URL once in the merchant response.
+1. Generate a new 256-bit random token in request memory.
+2. Prepare revoke of active token rows for tenant_id + booking_id.
+3. Prepare insert of the new SHA-256 token hash into booking_cancel_tokens.
+4. Execute revoke + insert through env.DB.batch().
+5. Return a fragment cancel URL once in the merchant response only when the batch succeeds.
 ```
 
 The cancel URL keeps token transport in the fragment:
@@ -80,15 +81,15 @@ The plaintext token is not stored in D1, booking events, logs, list responses, o
 
 ## Non-Atomic Risk
 
-Because B7 PR 2 does not use a D1 batch/transaction, this partial failure remains possible:
+The rotation no longer accepts the revoke-success/insert-failure gap as a successful partial result. If D1 rejects the batch, the API returns an error and no plaintext `cancelUrl`.
 
 ```text
-old active token revoked -> new token insert fails
+D1 batch rejected -> no cancelUrl returned
 ```
 
-In that case the API returns an error and does not return `cancelUrl`. The booking may temporarily have no active guest cancel token. The minimal operational remediation is for the merchant to retry rotation. This PR does not claim atomicity, persistent idempotency, or automatic compensation.
+The 0023 active-token unique constraint remains the last line of defense against two active tokens for the same booking. This PR still does not add persistent idempotency, replay storage, rotation rate limiting, or long-term audit/aggregate reporting.
 
-A second partial failure class also remains outside this PR:
+A separate failure class remains outside this PR:
 
 ```text
 rotation succeeds -> later guest cancellation point/event/notification side effects follow B6 behavior
@@ -112,7 +113,7 @@ The UI does not store the cancel URL in localStorage, sessionStorage, cookies, b
 - No merchant automatic LINE/Email/SMS resend.
 - No D1 aggregate observability table.
 - No persistent idempotency or replay result.
-- No transaction redesign.
+- No cancellation transaction redesign.
 
 ## Regression Coverage
 
@@ -123,8 +124,8 @@ The focused guest token test covers:
 - New token can cancel.
 - Terminal statuses reject without token mutation.
 - Member/customer-linked booking rejects without token mutation.
-- Insert failure returns no cancel URL and writes no booking event.
-- Sequential rotations leave one active token.
+- Batch insert failure returns no cancel URL, keeps the original active token in the fake D1 rollback test, and writes no booking event.
+- Repeated rotations leave one active token.
 - Existing B6 token cancellation, phone fallback, rollout, anti-enumeration, and logger fail-open behavior remain covered.
 
 Full PR validation should include:
