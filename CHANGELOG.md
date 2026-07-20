@@ -1,3 +1,16 @@
+## 2026-07-20 - Sprint B7 PR 2 Merchant Cancel Token Rotation
+
+### Added
+
+- Added merchant-protected cancellation link rotation for eligible web guest bookings.
+- Added focused regression coverage for old-token revocation, new-token cancellation, terminal/member rejection, batch insert failure, and repeated rotation active-token safety.
+
+### Safety
+
+- Plaintext rotated tokens are returned only once in the merchant response and are not stored in D1, booking events, logs, or list responses.
+- Rotation now uses `env.DB.batch()` for active-token revoke + new hash insert; long-term idempotency, rate limit, audit/aggregate, and broader cancellation transaction redesign remain out of scope.
+- No schema, migration, binding, secret, wrangler, Remote D1 write, LINE/Web Push implementation change, or production deployment.
+
 ﻿## 2026-07-19 - Sprint B7 Guest Cancel Link Delivery
 
 - Returned a one-time `cancelUrl` on successful unauthenticated web guest bookings when Guest cancel token rollout writes tokens.

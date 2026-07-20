@@ -28,6 +28,12 @@ async function customerCookie({ tenantId = "tenant-a", customerId = "cust-1", id
   const payloadSegment = base64Url(JSON.stringify(payload));
   return "bookingos_customer_session=" + encodeURIComponent(payloadSegment + "." + await hmacBase64Url(SECRET, payloadSegment));
 }
+async function merchantCookie({ tenantId = "tenant-a", identityId = "identity-merchant", role = "owner" } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = { v: 1, sub: identityId, tenant_id: tenantId, role, iat: now, exp: now + 3600 };
+  const payloadSegment = base64Url(JSON.stringify(payload));
+  return "bookingos_merchant_session=" + encodeURIComponent(payloadSegment + "." + await hmacBase64Url(SECRET, payloadSegment));
+}
 async function sha256Hex(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value || "")));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -90,6 +96,9 @@ function createDb(options = {}) {
   }
 
   function rowsFor(sql, binds) {
+    if (sql.includes("FROM tenant_admins a JOIN identities")) {
+      return binds[0] === "identity-merchant" && binds[1] === "tenant-a" ? [{ admin_id: "admin-a", identity_id: "identity-merchant", tenant_id: "tenant-a", role: "owner", admin_status: "active", identity_status: "active", tenant_status: "active", tenant_name: "Tenant A", contract_start: "2026-07-01", contract_end: "2027-07-01", billing_plan_id: "solo", staff_limit: 2, active_staff_count: 1 }] : [];
+    }
     if (sql.includes("FROM tenants t WHERE t.slug = ?")) {
       return binds[0] === "anhe" ? [tenantRow()] : [];
     }
@@ -126,6 +135,10 @@ function createDb(options = {}) {
     if (sql.includes("SELECT points_balance FROM customers")) {
       return [{ points_balance: 0 }];
     }
+    if (sql.includes("SELECT b.*, COALESCE(sm.name, b.staff_id) AS staff_name") && sql.includes("WHERE b.tenant_id = ? AND b.id = ?")) {
+      if (!booking || binds[0] !== "tenant-a" || binds[1] !== booking.id) return [];
+      return [{ ...booking, staff_name: "Tony", resource_type_id: "room", customer_identity_id: options.customerIdentityId || "" }];
+    }
     if (sql.includes("SELECT b.id, b.customer_id, b.customer_phone, b.status")) {
       if (!booking || binds[0] !== "tenant-a" || binds[1] !== booking.id) return [];
       return [{ ...booking, member_phone: booking.customer_phone }];
@@ -151,9 +164,21 @@ function createDb(options = {}) {
     }
     if (normalizedSql.startsWith("INSERT INTO booking_cancel_tokens")) {
       if (options.failTokenInsert) throw new Error("TOKEN_INSERT_FAILED");
-      const row = { id: binds[0], tenant_id: binds[1], booking_id: binds[2], token_hash: binds[3], status: "active", expires_at: binds[4] };
+      if (tokens.some((token) => token.tenant_id === binds[1] && token.booking_id === binds[2] && token.status === "active")) throw new Error("SQLITE_CONSTRAINT: one active token");
+      const row = { id: binds[0], tenant_id: binds[1], booking_id: binds[2], token_hash: binds[3], status: "active", expires_at: binds[4], created_by: binds[5] || "system" };
       tokens.push(row);
       return { meta: { changes: 1 } };
+    }
+    if (normalizedSql.startsWith("UPDATE booking_cancel_tokens SET status = 'revoked'")) {
+      let changes = 0;
+      for (const token of tokens) {
+        if (token.tenant_id === binds[0] && token.booking_id === binds[1] && token.status === "active") {
+          token.status = "revoked";
+          token.revoked_reason = "merchant_rotation";
+          changes += 1;
+        }
+      }
+      return { meta: { changes } };
     }
     if (normalizedSql.startsWith("UPDATE booking_cancel_tokens SET status = 'used'")) {
       const token = tokens.find((item) => item.tenant_id === binds[0] && item.id === binds[1] && item.status === "active");
@@ -208,8 +233,19 @@ function createDb(options = {}) {
     },
     async batch(statements) {
       batchCalls.push(statements.map((item) => item.sql));
-      for (const item of statements) await item.run();
-      return statements.map(() => ({ success: true }));
+      const tokenSnapshot = tokens.map((token) => ({ ...token }));
+      const eventSnapshot = events.map((event) => ({ ...event }));
+      const bookingSnapshot = booking ? { ...booking } : null;
+      try {
+        const results = [];
+        for (const item of statements) results.push(await item.run());
+        return results;
+      } catch (error) {
+        tokens.splice(0, tokens.length, ...tokenSnapshot.map((token) => ({ ...token })));
+        events.splice(0, events.length, ...eventSnapshot.map((event) => ({ ...event })));
+        if (booking && bookingSnapshot) Object.assign(booking, bookingSnapshot);
+        throw error;
+      }
     }
   };
 }
@@ -219,12 +255,19 @@ function env(db, rollout = "verify") {
     DB: db,
     CUSTOMER_SESSION_SECRET: SECRET,
     CUSTOMER_SESSION_TTL_SECONDS: "3600",
+    MERCHANT_SESSION_SECRET: SECRET,
+    MERCHANT_SESSION_TTL_SECONDS: "3600",
     GUEST_CANCEL_TOKEN_ROLLOUT: rollout
   };
 }
 
 async function post(path, db, payload, rollout = "verify", headers = {}) {
   const request = new Request("https://example.test" + path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
+  const response = await app.fetch(request, env(db, rollout), {});
+  return { response, body: JSON.parse(await response.text()) };
+}
+async function postMerchant(path, db, payload = {}, rollout = "verify", headers = {}) {
+  const request = new Request("https://example.test" + path, { method: "POST", headers: { cookie: await merchantCookie(), "content-type": "application/json", ...headers }, body: JSON.stringify(payload) });
   const response = await app.fetch(request, env(db, rollout), {});
   return { response, body: JSON.parse(await response.text()) };
 }
@@ -499,6 +542,93 @@ for (const rollout of ["off", "typo"]) {
   const pointsIndex = firstSqlIndex(db, "UPDATE customers SET total_bookings");
   const eventIndex = firstSqlIndex(db, "INSERT INTO booking_events");
   assert.ok(updateIndex >= 0 && pointsIndex > updateIndex && eventIndex > pointsIndex, "logger failure must not change phone fallback update -> rollback -> event order");
+}
+
+
+{
+  const oldToken = "old_rotation_token_abcdefghijklmnopqrstuvwxyz123456";
+  const db = createDb({ tokens: [{ id: "tok-old", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", oldToken), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  assert.equal(response.status, 200, "merchant rotation succeeds for guest active booking");
+  assert.equal(body.ok, true);
+  assert.equal(typeof body.cancelUrl, "string");
+  assert.equal(typeof body.expiresAt, "string");
+  const cancelUrl = new URL(body.cancelUrl, "https://example.test");
+  assert.equal(cancelUrl.pathname, "/store/anhe/cancel");
+  assert.equal(cancelUrl.search, "", "merchant rotation must use fragment transport");
+  const params = new URLSearchParams(cancelUrl.hash.slice(1));
+  const newToken = params.get("t") || "";
+  assert.equal(params.get("b"), "booking-1");
+  assert.match(newToken, /^[A-Za-z0-9_-]{32,256}$/);
+  assert.equal(db.batchCalls.length, 1, "merchant rotation uses D1 batch");
+  assert.equal(db.batchCalls[0].length, 2, "rotation batch contains revoke and insert statements");
+  assert.ok(db.batchCalls[0][0].includes("UPDATE booking_cancel_tokens SET status = 'revoked'"), "batch revokes active token first");
+  assert.ok(db.batchCalls[0][1].includes("INSERT INTO booking_cancel_tokens"), "batch inserts new active token second");
+  assert.equal(db.tokens.find((token) => token.id === "tok-old")?.status, "revoked", "old active token is revoked");
+  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "only one active token remains");
+  assert.equal(db.tokens.find((token) => token.status === "active")?.token_hash, await tokenHash("tenant-a", "booking-1", newToken));
+  assert.equal(JSON.stringify(db.tokens).includes(newToken), false, "plaintext rotated token is not persisted");
+  assert.equal(JSON.stringify(db.calls).includes(newToken), false, "plaintext rotated token is not bound into SQL");
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0, "rotation itself does not append booking events");
+  const oldCancel = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: oldToken });
+  assert.equal(oldCancel.response.status, 404, "revoked old token cannot cancel");
+  const newCancel = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: newToken });
+  assert.equal(newCancel.response.status, 200, "new rotated token can cancel");
+  assert.deepEqual(newCancel.body, { ok: true });
+}
+
+for (const status of ["in_service", "completed", "no_show", "cancelled"]) {
+  const db = createDb({ booking: makeBooking({ status }), tokens: [{ id: `tok-${status}`, tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  assert.equal(response.status, 409, `${status} bookings cannot rotate guest cancel token`);
+  assert.equal(body.ok, false);
+  assert.equal(db.tokens[0].status, "active", `${status} rejection does not mutate tokens`);
+}
+
+{
+  const db = createDb({ customerIdentityId: "identity-customer", tokens: [{ id: "tok-member", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  assert.equal(response.status, 409, "member/customer-linked booking cannot rotate guest cancel token");
+  assert.equal(body.ok, false);
+  assert.equal(db.tokens[0].status, "active", "member/customer-linked rejection does not mutate tokens");
+}
+
+{
+  const db = createDb({ booking: makeBooking({ customer_type: "member" }), tokens: [{ id: "tok-member-type", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: "x".repeat(64), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  assert.equal(response.status, 409, "member booking cannot rotate guest cancel token even when identity is missing");
+  assert.equal(body.ok, false);
+  assert.equal(db.tokens[0].status, "active", "member booking rejection does not mutate tokens");
+}
+
+{
+  const oldToken = "insert_failure_old_token_abcdefghijklmnopqrstuvwxyz123456";
+  const db = createDb({ failTokenInsert: true, tokens: [{ id: "tok-old", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", oldToken), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const { response, body } = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  assert.equal(response.status, 500, "insert failure returns compatible error");
+  assert.equal(body.ok, false);
+  assert.equal(body.cancelUrl, undefined, "insert failure never returns plaintext cancelUrl");
+  assert.equal(JSON.stringify(body).includes(oldToken), false);
+  assert.equal(db.tokens.find((token) => token.id === "tok-old")?.status, "active", "batch rollback keeps original active token on insert failure");
+  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "insert failure does not leave zero active tokens");
+  assert.equal(countSql(db, "INSERT INTO booking_events"), 0, "rotation insert failure does not append events");
+}
+
+{
+  const firstOldToken = "first_old_rotation_token_abcdefghijklmnopqrstuvwxyz123456";
+  const db = createDb({ tokens: [{ id: "tok-old", tenant_id: "tenant-a", booking_id: "booking-1", token_hash: await tokenHash("tenant-a", "booking-1", firstOldToken), status: "active", expires_at: "2099-01-01 00:00:00" }] });
+  const first = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  const firstToken = new URLSearchParams(new URL(first.body.cancelUrl, "https://example.test").hash.slice(1)).get("t") || "";
+  const second = await postMerchant("/api/merchant/bookings/booking-1/cancel-token", db);
+  const secondToken = new URLSearchParams(new URL(second.body.cancelUrl, "https://example.test").hash.slice(1)).get("t") || "";
+  assert.equal(first.response.status, 200);
+  assert.equal(second.response.status, 200);
+  assert.notEqual(firstToken, secondToken);
+  assert.equal(db.tokens.filter((token) => token.status === "active").length, 1, "repeated rotations leave one active token");
+  const firstCancel = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: firstToken });
+  assert.equal(firstCancel.response.status, 404, "previous rotated token is revoked by later rotation");
+  const secondCancel = await post("/store/anhe/api/bookings/cancel-token", db, { bookingId: "booking-1", token: secondToken });
+  assert.equal(secondCancel.response.status, 200, "latest rotated token remains usable");
 }
 
 console.log("guest-cancel-token-test: PASS");

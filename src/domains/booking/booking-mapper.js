@@ -45,6 +45,7 @@ export function toBookingView(row = {}) {
     canComplete: status === "in_service",
     canNoShow: status === "confirmed",
     canCancel: ["pending", "confirmed", "checked_in"].includes(status),
+    canRotateCancelToken: ["pending", "confirmed", "checked_in"].includes(status) && String(row.source || "web") === "web" && String(row.customer_type || "guest") !== "member" && !String(row.customer_identity_id || "").trim(),
     canReschedule: ["pending", "confirmed"].includes(status),
     canReassign: ["pending", "confirmed"].includes(status)
   };
